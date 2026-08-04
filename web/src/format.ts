@@ -1,4 +1,19 @@
-/** Formatting helpers. Kept pure and separate so they are unit-testable. */
+/**
+ * Formatting helpers. Kept pure and separate so they are unit-testable.
+ *
+ * Anything date- or number-shaped defers to ./locale, which follows the operating
+ * system. These were pinned to en-GB.
+ */
+
+import {
+  dateAndTime,
+  dateCompact,
+  dateFull,
+  formatDayKey,
+  numberGrouped,
+  parseWhen,
+  todayLocal,
+} from './locale'
 
 /** hours renders a duration in hours with a fixed precision. */
 export function hours(h: number, digits = 1): string {
@@ -39,36 +54,33 @@ export function pct(ratio: number): string {
   return `${Math.round(ratio * 100)}%`
 }
 
-/** num groups thousands. */
+/** num groups thousands in the operating system's locale. */
 export function num(n: number): string {
-  return n.toLocaleString('en-GB')
+  return numberGrouped(n)
 }
 
-/** day renders an ISO date as a short readable date. */
+/**
+ * day renders a date as a short readable date, with its year.
+ *
+ * It accepts either an instant or a date-only string. parseWhen is what keeps the
+ * two apart: a date-only value is a calendar day and must not be shifted into
+ * another one by being read as UTC midnight.
+ */
 export function day(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+  const d = parseWhen(iso)
+  return d ? dateFull(d) : iso
 }
 
-/** dayShort renders an ISO timestamp as a compact date. */
+/** dayShort renders a date without its year, for dense tables. */
 export function dayShort(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso.slice(0, 10)
-  return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })
+  const d = parseWhen(iso)
+  return d ? dateCompact(d) : iso.slice(0, 10)
 }
 
-/** dateTime renders an ISO timestamp as date and time. */
+/** dateTime renders an instant as a date and a clock time. */
 export function dateTime(iso: string): string {
-  const d = new Date(iso)
-  if (Number.isNaN(d.getTime())) return iso
-  return d.toLocaleString('en-GB', {
-    day: 'numeric',
-    month: 'short',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  })
+  const d = parseWhen(iso)
+  return d ? dateAndTime(d) : iso
 }
 
 /** bytes renders a byte count in binary units. */
@@ -166,14 +178,20 @@ export function causeLabel(cause: string): string {
   }
 }
 
-/** isoDay returns the YYYY-MM-DD form of a date. */
+/**
+ * isoDay returns the YYYY-MM-DD form of a date, in the viewer's own zone.
+ *
+ * Deliberately not toISOString, which is UTC. At 20:00 in Chicago that returns
+ * tomorrow's date, so every relative filter was off by a day for anyone looking at
+ * their data in the evening — the range simply covered the wrong week.
+ */
 export function isoDay(d: Date): string {
-  return d.toISOString().slice(0, 10)
+  return formatDayKey(d)
 }
 
-/** daysAgo returns the YYYY-MM-DD date n days before today. */
+/** daysAgo returns the YYYY-MM-DD date n days before today, locally. */
 export function daysAgo(n: number): string {
-  const d = new Date()
+  const d = todayLocal()
   d.setDate(d.getDate() - n)
   return isoDay(d)
 }

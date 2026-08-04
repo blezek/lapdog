@@ -2,7 +2,8 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api, type DailyRow, type SummaryRow } from '../api'
-import { hours, labelForKey, num, pct, position, dayShort, lapTime } from '../format'
+import { hours, labelForKey, num, pct, position, day, dayShort, lapTime } from '../format'
+import { monthAndYear, monthNames, weekdayNames } from '../locale'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { categoryColour, categoryOrderAll, totalsFromSummary } from '../categories'
@@ -245,7 +246,7 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
       tooltip: {
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
         formatter: (p: { value: [string, number] }) =>
-          `${p.value[0]}<br/><strong>${p.value[1].toFixed(1)} h</strong> driving`,
+          `${day(p.value[0])}<br/><strong>${p.value[1].toFixed(1)} h</strong> driving`,
       },
       visualMap: {
         min: 0,
@@ -286,11 +287,23 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
           borderColor: theme.surface,
         },
         yearLabel: { show: years.length > 1, color: theme.textMuted, fontSize: 10 },
-        monthLabel: { color: theme.textMuted, fontSize: 10, nameMap: 'en' },
+        // Month and weekday names come from the locale. ECharts only ships English
+        // and Chinese as built-in codes, so an explicit list is the only way a
+        // calendar labels itself in the viewer's language.
+        monthLabel: { color: theme.textMuted, fontSize: 10, nameMap: monthNames() },
         // The week starts on Sunday, so Sunday is the top row. Since the driver
         // never races on one, that row reads as consistently empty — which is
         // itself worth seeing rather than hiding mid-grid.
-        dayLabel: { color: theme.textMuted, fontSize: 9, firstDay: 0, nameMap: 'en' },
+        dayLabel: {
+          color: theme.textMuted,
+          fontSize: 9,
+          // firstDay stays 0 rather than following the locale's own first day. The
+          // week starting on Sunday is a deliberate choice: the driver never races
+          // on one, so a consistently empty top row is itself worth seeing. Deriving
+          // it from the locale would silently rotate the grid.
+          firstDay: 0,
+          nameMap: weekdayNames(),
+        },
       },
       series: [{ type: 'heatmap', coordinateSystem: 'calendar', data }],
     }
@@ -321,7 +334,7 @@ function DailyTable({ rows }: { rows: DailyRow[] }) {
         <tbody>
           {recent.map((r) => (
             <tr key={r.day}>
-              <td>{r.day}</td>
+              <td>{day(r.day)}</td>
               <td className="num">{hours(r.drivingHours)}</td>
             </tr>
           ))}
@@ -470,7 +483,7 @@ function MonthBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
       },
       xAxis: {
         type: 'category',
-        data: sorted.map((r) => r.key),
+        data: sorted.map((r) => monthLabel(r.key)),
         ...axisStyle(theme.textMuted, theme.baseline),
       },
       yAxis: { type: 'value', ...valueAxisStyle(theme.textMuted, theme.line) },
@@ -503,7 +516,7 @@ function MonthTable({ rows }: { rows: SummaryRow[] }) {
         <tbody>
           {sorted.map((r) => (
             <tr key={r.key}>
-              <td>{r.key}</td>
+              <td>{monthLabel(r.key)}</td>
               <td className="num">{hours(r.drivingHours)}</td>
               <td className="num">{num(r.sessions)}</td>
             </tr>
@@ -698,6 +711,19 @@ function weekStart(iso: string): string {
   const d = new Date(`${iso}T00:00:00Z`)
   d.setUTCDate(d.getUTCDate() - d.getUTCDay())
   return d.toISOString().slice(0, 10)
+}
+
+/**
+ * monthLabel renders a "YYYY-MM" summary key in the viewer's locale.
+ *
+ * The key is a sort-stable database value, not something to show: "2026-08" read as
+ * a date to nobody. The day is fixed at the first so the month cannot roll over.
+ */
+function monthLabel(key: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(key)
+  if (!m) return key
+  const [, y, mo] = m
+  return monthAndYear(new Date(Number(y), Number(mo) - 1, 1))
 }
 
 /** weekEnd returns the Saturday on or after an ISO date. */
