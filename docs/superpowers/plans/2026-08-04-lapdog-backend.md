@@ -3560,3 +3560,580 @@ Expected: PASS for all packages.
 git add internal/classify/
 git commit -m "Add session classifier with AI detection"
 ```
+
+---
+
+### Task 9: Configuration and data paths
+
+**Files:**
+- Create: `internal/config/config.go`, `internal/config/paths.go`
+- Test: `internal/config/config_test.go`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `type Config struct { PollIntervalSeconds, MinSessionSeconds float64; CaptureEnabled bool; CaptureMaxBytes int64; Port int; StartWithWindows bool; Units, Theme string }`
+  - `func Default() Config`
+  - `func (c Config) Validate() error`
+  - `func (c *Config) Normalise()` — clamps out-of-range values to the nearest legal value
+  - `func (c Config) PollInterval() time.Duration`
+  - `func Load(path string) (Config, error)` — returns `Default()` if the file does not exist
+  - `func Save(path string, c Config) error` — atomic write via temp file plus rename
+  - `func DataDir() (string, error)`
+  - `func ConfigPath(dir string) string`, `func DBPath(dir string) string`, `func CapturesDir(dir string) string`, `func LogPath(dir string) string`
+  - `func CheckLocalFilesystem(dir string) error`
+  - `var ErrNetworkPath error`
+  - Constants: `MinPollSeconds = 0.25`, `MaxPollSeconds = 30.0`, `DefaultPort = 47047`, `DefaultCaptureMaxBytes = 2 << 30`
+
+`Load` returning `Default()` for a missing file is deliberate: first run must not be an error. A *corrupt* file **is** an error, because silently reverting a user's settings is worse than refusing to start.
+
+`CheckLocalFilesystem` exists because SQLite WAL requires a real local filesystem — the `-shm` file misbehaves on SMB shares and under file-sync tools. On Windows it rejects UNC paths (`\\server\share`) and mapped network drives; elsewhere it is a no-op, since development machines are local.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/config/config_test.go`:
+
+```go
+package config
+
+import (
+	"errors"
+	"math"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+func TestDefaultIsValid(t *testing.T) {
+	d := Default()
+	if err := d.Validate(); err != nil {
+		t.Fatalf("Default() is not valid: %v", err)
+	}
+	if d.PollIntervalSeconds != 1.0 {
+		t.Errorf("PollIntervalSeconds = %v, want 1.0", d.PollIntervalSeconds)
+	}
+	if d.MinSessionSeconds != 30 {
+		t.Errorf("MinSessionSeconds = %v, want 30", d.MinSessionSeconds)
+	}
+	if !d.CaptureEnabled {
+		t.Error("CaptureEnabled = false, want true — capture defaults on")
+	}
+	if d.CaptureMaxBytes != DefaultCaptureMaxBytes {
+		t.Errorf("CaptureMaxBytes = %d, want %d", d.CaptureMaxBytes, DefaultCaptureMaxBytes)
+	}
+	if d.Port != DefaultPort {
+		t.Errorf("Port = %d, want %d", d.Port, DefaultPort)
+	}
+	if !d.StartWithWindows {
+		t.Error("StartWithWindows = false, want true")
+	}
+	if d.Units != "metric" || d.Theme != "system" {
+		t.Errorf("Units=%q Theme=%q", d.Units, d.Theme)
+	}
+}
+
+func TestPollInterval(t *testing.T) {
+	c := Config{PollIntervalSeconds: 0.25}
+	if got := c.PollInterval(); got != 250*time.Millisecond {
+		t.Errorf("PollInterval() = %v, want 250ms", got)
+	}
+}
+
+func TestValidateRejectsOutOfRange(t *testing.T) {
+	cases := []struct {
+		name string
+		mut  func(*Config)
+	}{
+		{"poll below minimum", func(c *Config) { c.PollIntervalSeconds = 0.1 }},
+		{"poll above maximum", func(c *Config) { c.PollIntervalSeconds = 31 }},
+		{"negative min session", func(c *Config) { c.MinSessionSeconds = -1 }},
+		{"negative capture cap", func(c *Config) { c.CaptureMaxBytes = -1 }},
+		{"port zero", func(c *Config) { c.Port = 0 }},
+		{"port too large", func(c *Config) { c.Port = 70000 }},
+		{"unknown units", func(c *Config) { c.Units = "furlongs" }},
+		{"unknown theme", func(c *Config) { c.Theme = "chartreuse" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := Default()
+			tc.mut(&c)
+			if err := c.Validate(); err == nil {
+				t.Error("Validate() = nil, want an error")
+			}
+		})
+	}
+}
+
+// Zero is the documented "unlimited" value for the capture cap.
+func TestValidateAcceptsZeroCaptureCap(t *testing.T) {
+	c := Default()
+	c.CaptureMaxBytes = 0
+	if err := c.Validate(); err != nil {
+		t.Errorf("CaptureMaxBytes 0 must mean unlimited, got error: %v", err)
+	}
+}
+
+func TestNormaliseClampsRatherThanFailing(t *testing.T) {
+	c := Config{PollIntervalSeconds: 100, MinSessionSeconds: -5, Port: 0, CaptureMaxBytes: -3}
+	c.Normalise()
+	if c.PollIntervalSeconds != MaxPollSeconds {
+		t.Errorf("PollIntervalSeconds = %v, want clamped to %v", c.PollIntervalSeconds, MaxPollSeconds)
+	}
+	if c.MinSessionSeconds != 0 {
+		t.Errorf("MinSessionSeconds = %v, want clamped to 0", c.MinSessionSeconds)
+	}
+	if c.Port != DefaultPort {
+		t.Errorf("Port = %d, want reset to %d", c.Port, DefaultPort)
+	}
+	if c.CaptureMaxBytes != 0 {
+		t.Errorf("CaptureMaxBytes = %d, want clamped to 0", c.CaptureMaxBytes)
+	}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Normalise() must produce a valid config, got %v", err)
+	}
+
+	low := Config{PollIntervalSeconds: 0.001}
+	low.Normalise()
+	if math.Abs(low.PollIntervalSeconds-MinPollSeconds) > 1e-9 {
+		t.Errorf("PollIntervalSeconds = %v, want clamped to %v", low.PollIntervalSeconds, MinPollSeconds)
+	}
+}
+
+// A missing file is first run, not an error.
+func TestLoadMissingFileReturnsDefaults(t *testing.T) {
+	got, err := Load(filepath.Join(t.TempDir(), "absent.json"))
+	if err != nil {
+		t.Fatalf("Load on a missing file = %v, want nil", err)
+	}
+	if got != Default() {
+		t.Errorf("Load = %+v, want Default()", got)
+	}
+}
+
+// A corrupt file IS an error — silently reverting settings is worse.
+func TestLoadCorruptFileIsAnError(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(p, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(p); err == nil {
+		t.Fatal("Load on a corrupt file = nil, want an error")
+	}
+}
+
+func TestSaveLoadRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	want := Default()
+	want.PollIntervalSeconds = 2.5
+	want.CaptureEnabled = false
+	want.CaptureMaxBytes = 500 << 20
+	want.Theme = "dark"
+
+	if err := Save(p, want); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got != want {
+		t.Errorf("round trip = %+v, want %+v", got, want)
+	}
+}
+
+// Save must not leave a truncated file behind if it is interrupted, so it
+// writes to a temp file and renames. Verify no stray temp files remain.
+func TestSaveLeavesNoTempFiles(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.json")
+	if err := Save(p, Default()); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "config.json" {
+		var names []string
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("directory contains %v, want only config.json", names)
+	}
+}
+
+// An out-of-range value in the file is clamped on load rather than
+// rejected, so hand-editing cannot brick the application.
+func TestLoadNormalisesOutOfRangeValues(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(p, []byte(`{"pollIntervalSeconds": 999, "port": 47047, "units":"metric","theme":"system"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.PollIntervalSeconds != MaxPollSeconds {
+		t.Errorf("PollIntervalSeconds = %v, want clamped to %v", got.PollIntervalSeconds, MaxPollSeconds)
+	}
+}
+
+func TestPaths(t *testing.T) {
+	dir := filepath.Join("C:", "Users", "test", "AppData", "Local", "lapdog")
+	if got := ConfigPath(dir); got != filepath.Join(dir, "config.json") {
+		t.Errorf("ConfigPath = %q", got)
+	}
+	if got := DBPath(dir); got != filepath.Join(dir, "lapdog.db") {
+		t.Errorf("DBPath = %q", got)
+	}
+	if got := CapturesDir(dir); got != filepath.Join(dir, "captures") {
+		t.Errorf("CapturesDir = %q", got)
+	}
+	if got := LogPath(dir); got != filepath.Join(dir, "lapdog.log") {
+		t.Errorf("LogPath = %q", got)
+	}
+}
+
+func TestDataDirIsAbsolute(t *testing.T) {
+	got, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir: %v", err)
+	}
+	if !filepath.IsAbs(got) {
+		t.Errorf("DataDir() = %q, want an absolute path", got)
+	}
+}
+
+func TestCheckLocalFilesystemAcceptsTempDir(t *testing.T) {
+	if err := CheckLocalFilesystem(t.TempDir()); err != nil {
+		t.Errorf("CheckLocalFilesystem on a temp dir = %v, want nil", err)
+	}
+}
+
+func TestCheckLocalFilesystemRejectsUNC(t *testing.T) {
+	err := CheckLocalFilesystem(`\\fileserver\share\lapdog`)
+	if !errors.Is(err, ErrNetworkPath) {
+		t.Errorf("CheckLocalFilesystem on a UNC path = %v, want ErrNetworkPath", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/config/ -v`
+Expected: FAIL — build error, `undefined: Default`, `undefined: Config`.
+
+- [ ] **Step 3: Write the config type**
+
+Create `internal/config/config.go`:
+
+```go
+// Package config loads and saves LapDog's user settings.
+package config
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// Poll interval bounds, in seconds. Below the minimum the collector
+// burns CPU for no extra fidelity; above the maximum, time accounting
+// and lap attribution get too coarse to be useful.
+const (
+	MinPollSeconds = 0.25
+	MaxPollSeconds = 30.0
+)
+
+// DefaultPort is the fixed web UI port. The bind address is always
+// loopback and is deliberately not configurable.
+const DefaultPort = 47047
+
+// DefaultCaptureMaxBytes is the default capture retention cap, 2 GiB.
+// A value of 0 means unlimited.
+const DefaultCaptureMaxBytes int64 = 2 << 30
+
+// Config is the persisted user settings.
+type Config struct {
+	PollIntervalSeconds float64 `json:"pollIntervalSeconds"`
+	MinSessionSeconds   float64 `json:"minSessionSeconds"`
+	CaptureEnabled      bool    `json:"captureEnabled"`
+	CaptureMaxBytes     int64   `json:"captureMaxBytes"`
+	Port                int     `json:"port"`
+	StartWithWindows    bool    `json:"startWithWindows"`
+	Units               string  `json:"units"`
+	Theme               string  `json:"theme"`
+}
+
+// Default returns the settings a fresh install starts with.
+func Default() Config {
+	return Config{
+		PollIntervalSeconds: 1.0,
+		MinSessionSeconds:   30,
+		CaptureEnabled:      true,
+		CaptureMaxBytes:     DefaultCaptureMaxBytes,
+		Port:                DefaultPort,
+		StartWithWindows:    true,
+		Units:               "metric",
+		Theme:               "system",
+	}
+}
+
+// PollInterval returns PollIntervalSeconds as a duration.
+func (c Config) PollInterval() time.Duration {
+	return time.Duration(c.PollIntervalSeconds * float64(time.Second))
+}
+
+// Validate reports whether every field holds a legal value.
+func (c Config) Validate() error {
+	if c.PollIntervalSeconds < MinPollSeconds || c.PollIntervalSeconds > MaxPollSeconds {
+		return fmt.Errorf("config: pollIntervalSeconds %v outside [%v, %v]",
+			c.PollIntervalSeconds, MinPollSeconds, MaxPollSeconds)
+	}
+	if c.MinSessionSeconds < 0 {
+		return fmt.Errorf("config: minSessionSeconds %v is negative", c.MinSessionSeconds)
+	}
+	if c.CaptureMaxBytes < 0 {
+		return fmt.Errorf("config: captureMaxBytes %d is negative (0 means unlimited)", c.CaptureMaxBytes)
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		return fmt.Errorf("config: port %d outside [1, 65535]", c.Port)
+	}
+	switch c.Units {
+	case "metric", "imperial":
+	default:
+		return fmt.Errorf("config: units %q must be metric or imperial", c.Units)
+	}
+	switch c.Theme {
+	case "system", "light", "dark":
+	default:
+		return fmt.Errorf("config: theme %q must be system, light or dark", c.Theme)
+	}
+	return nil
+}
+
+// Normalise clamps out-of-range values to the nearest legal value so a
+// hand-edited file cannot prevent the application from starting.
+func (c *Config) Normalise() {
+	if c.PollIntervalSeconds < MinPollSeconds {
+		c.PollIntervalSeconds = MinPollSeconds
+	}
+	if c.PollIntervalSeconds > MaxPollSeconds {
+		c.PollIntervalSeconds = MaxPollSeconds
+	}
+	if c.MinSessionSeconds < 0 {
+		c.MinSessionSeconds = 0
+	}
+	if c.CaptureMaxBytes < 0 {
+		c.CaptureMaxBytes = 0
+	}
+	if c.Port < 1 || c.Port > 65535 {
+		c.Port = DefaultPort
+	}
+	switch c.Units {
+	case "metric", "imperial":
+	default:
+		c.Units = "metric"
+	}
+	switch c.Theme {
+	case "system", "light", "dark":
+	default:
+		c.Theme = "system"
+	}
+}
+
+// Load reads the config at path.
+//
+// A missing file returns Default with no error, because that is a first
+// run rather than a fault. A file that exists but cannot be decoded IS
+// an error: silently reverting a user's settings is worse than refusing
+// to continue. Values that decode but are out of range are clamped.
+func Load(path string) (Config, error) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Default(), nil
+		}
+		return Config{}, fmt.Errorf("config: read %s: %w", path, err)
+	}
+	c := Default()
+	if err := json.Unmarshal(b, &c); err != nil {
+		return Config{}, fmt.Errorf("config: parse %s: %w", path, err)
+	}
+	c.Normalise()
+	return c, nil
+}
+
+// Save writes c to path atomically, so an interrupted write cannot leave
+// a truncated config behind.
+func Save(path string, c Config) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("config: create directory: %w", err)
+	}
+	b, err := json.MarshalIndent(c, "", "  ")
+	if err != nil {
+		return fmt.Errorf("config: marshal: %w", err)
+	}
+	b = append(b, '\n')
+
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".config-*.tmp")
+	if err != nil {
+		return fmt.Errorf("config: create temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+
+	if _, err := tmp.Write(b); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: write temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("config: sync temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("config: close temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("config: rename into place: %w", err)
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: Write the path helpers**
+
+Create `internal/config/paths.go`:
+
+```go
+package config
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+)
+
+// ErrNetworkPath indicates the data directory is on a network
+// filesystem, where SQLite WAL is unsafe.
+var ErrNetworkPath = errors.New("config: data directory is on a network path")
+
+// DataDir returns the directory holding the database, config, log and
+// captures.
+//
+// On Windows this is %LOCALAPPDATA%\lapdog, which is deliberate:
+// LOCALAPPDATA is not synced by OneDrive, and SQLite WAL requires a real
+// local filesystem.
+func DataDir() (string, error) {
+	if runtime.GOOS == "windows" {
+		if base := os.Getenv("LOCALAPPDATA"); base != "" {
+			return filepath.Join(base, "lapdog"), nil
+		}
+	}
+	if base := os.Getenv("XDG_DATA_HOME"); base != "" {
+		return filepath.Join(base, "lapdog"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("config: locate home directory: %w", err)
+	}
+	return filepath.Join(home, ".local", "share", "lapdog"), nil
+}
+
+// ConfigPath returns the settings file path within dir.
+func ConfigPath(dir string) string { return filepath.Join(dir, "config.json") }
+
+// DBPath returns the SQLite database path within dir.
+func DBPath(dir string) string { return filepath.Join(dir, "lapdog.db") }
+
+// CapturesDir returns the capture directory within dir.
+func CapturesDir(dir string) string { return filepath.Join(dir, "captures") }
+
+// LogPath returns the log file path within dir.
+func LogPath(dir string) string { return filepath.Join(dir, "lapdog.log") }
+
+// CheckLocalFilesystem reports whether dir is safe to hold a WAL-mode
+// SQLite database.
+//
+// The WAL shared-memory file misbehaves on SMB shares and under
+// file-sync tools, so a network path must be refused loudly rather than
+// producing intermittent corruption. On non-Windows platforms this is a
+// no-op, since development machines are local.
+func CheckLocalFilesystem(dir string) error {
+	if runtime.GOOS != "windows" {
+		if strings.HasPrefix(dir, `\\`) {
+			return fmt.Errorf("%w: %s", ErrNetworkPath, dir)
+		}
+		return nil
+	}
+	if strings.HasPrefix(dir, `\\`) || strings.HasPrefix(dir, "//") {
+		return fmt.Errorf("%w: %s", ErrNetworkPath, dir)
+	}
+	if drive := filepath.VolumeName(dir); len(drive) == 2 && drive[1] == ':' {
+		if remote, err := isRemoteDrive(drive); err == nil && remote {
+			return fmt.Errorf("%w: %s is a mapped network drive", ErrNetworkPath, drive)
+		}
+	}
+	return nil
+}
+```
+
+- [ ] **Step 5: Add the Windows drive-type probe and its stub**
+
+Create `internal/config/drive_windows.go`:
+
+```go
+//go:build windows
+
+package config
+
+import "golang.org/x/sys/windows"
+
+// driveRemote is DRIVE_REMOTE from the Win32 GetDriveType API.
+const driveRemote = 4
+
+// isRemoteDrive reports whether a drive letter such as "Z:" refers to a
+// mapped network drive.
+func isRemoteDrive(drive string) (bool, error) {
+	root, err := windows.UTF16PtrFromString(drive + `\`)
+	if err != nil {
+		return false, err
+	}
+	return windows.GetDriveType(root) == driveRemote, nil
+}
+```
+
+Create `internal/config/drive_other.go`:
+
+```go
+//go:build !windows
+
+package config
+
+// isRemoteDrive is a no-op off Windows, where drive letters do not exist.
+func isRemoteDrive(string) (bool, error) { return false, nil }
+```
+
+- [ ] **Step 6: Run test to verify it passes**
+
+Run: `go test ./internal/config/ -v`
+Expected: PASS
+
+- [ ] **Step 7: Verify the Windows build still compiles**
+
+Run: `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/config/`
+Expected: no output, exit 0. This is the first task with build-tagged files, so confirming both sides compile matters.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/config/
+git commit -m "Add configuration loading and data path resolution"
+```
