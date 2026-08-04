@@ -4137,3 +4137,583 @@ Expected: no output, exit 0. This is the first task with build-tagged files, so 
 git add internal/config/
 git commit -m "Add configuration loading and data path resolution"
 ```
+
+---
+
+### Task 10: Store — schema, migrations, WAL and the writer/reader split
+
+**Files:**
+- Create: `internal/store/migrations/0001_init.sql`, `internal/store/store.go`
+- Test: `internal/store/store_test.go`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `type Store struct { ... }`
+  - `func Open(path string) (*Store, error)`
+  - `func (s *Store) Close() error`
+  - `func (s *Store) Writer() *sql.DB` — `MaxOpenConns(1)`
+  - `func (s *Store) Reader() *sql.DB` — pooled
+  - `func (s *Store) SchemaVersion() (int, error)`
+  - `func (s *Store) Path() string`
+  - `var ErrSchemaTooNew error`
+  - `const CurrentSchemaVersion = 1`
+
+The writer/reader split is the whole point of this task. SQLite permits one writer and many concurrent readers in WAL mode. Serialising every write through a single connection owned by the collector means `SQLITE_BUSY` cannot occur by construction, rather than being retried away.
+
+Driver import is `_ "modernc.org/sqlite"`, driver name `"sqlite"`. Pragmas are passed in the DSN.
+
+- [ ] **Step 1: Write the migration**
+
+Create `internal/store/migrations/0001_init.sql`. This is spec §11 verbatim.
+
+```sql
+CREATE TABLE schema_version (version INTEGER NOT NULL);
+INSERT INTO schema_version (version) VALUES (1);
+
+CREATE TABLE sessions (
+  id                     INTEGER PRIMARY KEY,
+  uuid                   TEXT    NOT NULL UNIQUE,
+  session_key            TEXT    NOT NULL UNIQUE,
+  subsession_id          INTEGER NOT NULL DEFAULT 0,
+  session_num            INTEGER NOT NULL,
+  session_type           TEXT    NOT NULL,
+  event_context          TEXT    NOT NULL,
+  league_id              INTEGER NOT NULL DEFAULT 0,
+  series_id              INTEGER NOT NULL DEFAULT 0,
+  season_id              INTEGER NOT NULL DEFAULT 0,
+  official               INTEGER NOT NULL DEFAULT 0,
+  track_id               INTEGER,
+  track_name             TEXT,
+  track_config           TEXT,
+  track_length_km        REAL,
+  car_id                 INTEGER,
+  car_name               TEXT,
+  car_class_id           INTEGER,
+  car_class_name         TEXT,
+  started_at             TEXT    NOT NULL,
+  ended_at               TEXT,
+  connected_seconds      REAL    NOT NULL DEFAULT 0,
+  in_car_seconds         REAL    NOT NULL DEFAULT 0,
+  driving_seconds        REAL    NOT NULL DEFAULT 0,
+  laps_completed         INTEGER NOT NULL DEFAULT 0,
+  incidents              INTEGER NOT NULL DEFAULT 0,
+  best_lap_time_s        REAL,
+  starting_position      INTEGER,
+  finish_position        INTEGER,
+  finish_class_position  INTEGER,
+  qualify_position       INTEGER,
+  qualify_class_position INTEGER,
+  qualify_best_time_s    REAL,
+  field_size             INTEGER,
+  ai_opponent_count      INTEGER NOT NULL DEFAULT 0,
+  ai_detection           TEXT,
+  incident_source        TEXT    NOT NULL DEFAULT 'yaml',
+  classify_source_json   TEXT    NOT NULL,
+  capture_file           TEXT,
+  created_at             TEXT    NOT NULL,
+  updated_at             TEXT    NOT NULL,
+  uploaded_at            TEXT
+);
+
+CREATE INDEX idx_sessions_started  ON sessions(started_at);
+CREATE INDEX idx_sessions_type_ctx ON sessions(session_type, event_context);
+CREATE INDEX idx_sessions_track    ON sessions(track_id);
+CREATE INDEX idx_sessions_car      ON sessions(car_id);
+CREATE INDEX idx_sessions_upload   ON sessions(uploaded_at);
+CREATE INDEX idx_sessions_ai       ON sessions(ai_detection);
+
+CREATE TABLE laps (
+  id               INTEGER PRIMARY KEY,
+  uuid             TEXT    NOT NULL UNIQUE,
+  session_id       INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  lap_number       INTEGER NOT NULL,
+  lap_time_s       REAL,
+  delta_to_best_s  REAL,
+  fuel_used_l      REAL,
+  fuel_level_end_l REAL,
+  incidents_on_lap INTEGER NOT NULL DEFAULT 0,
+  is_pit_lap       INTEGER NOT NULL DEFAULT 0,
+  position         INTEGER,
+  class_position   INTEGER,
+  recorded_at      TEXT    NOT NULL,
+  uploaded_at      TEXT,
+  UNIQUE(session_id, lap_number)
+);
+
+CREATE INDEX idx_laps_session ON laps(session_id, lap_number);
+CREATE INDEX idx_laps_time    ON laps(lap_time_s);
+
+CREATE TABLE position_events (
+  id               INTEGER PRIMARY KEY,
+  uuid             TEXT    NOT NULL UNIQUE,
+  session_id       INTEGER NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+  lap_number       INTEGER NOT NULL,
+  session_time_s   REAL    NOT NULL,
+  from_position    INTEGER NOT NULL,
+  to_position      INTEGER NOT NULL,
+  is_class         INTEGER NOT NULL DEFAULT 0,
+  opponent_car_idx INTEGER,
+  opponent_name    TEXT,
+  cause            TEXT    NOT NULL,
+  recorded_at      TEXT    NOT NULL,
+  uploaded_at      TEXT
+);
+
+CREATE INDEX idx_pos_session ON position_events(session_id, lap_number);
+CREATE INDEX idx_pos_cause   ON position_events(cause);
+```
+
+- [ ] **Step 2: Write the failing test**
+
+Create `internal/store/store_test.go`:
+
+```go
+package store
+
+import (
+	"errors"
+	"path/filepath"
+	"sync"
+	"testing"
+)
+
+// openTemp opens a store in a temp directory and closes it on cleanup.
+func openTemp(t *testing.T) *Store {
+	t.Helper()
+	s, err := Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func TestOpenAppliesMigrations(t *testing.T) {
+	s := openTemp(t)
+	v, err := s.SchemaVersion()
+	if err != nil {
+		t.Fatalf("SchemaVersion: %v", err)
+	}
+	if v != CurrentSchemaVersion {
+		t.Errorf("SchemaVersion = %d, want %d", v, CurrentSchemaVersion)
+	}
+}
+
+func TestOpenCreatesAllTables(t *testing.T) {
+	s := openTemp(t)
+	for _, table := range []string{"schema_version", "sessions", "laps", "position_events"} {
+		var name string
+		err := s.Reader().QueryRow(
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table,
+		).Scan(&name)
+		if err != nil {
+			t.Errorf("table %s missing: %v", table, err)
+		}
+	}
+}
+
+func TestWALIsEnabled(t *testing.T) {
+	s := openTemp(t)
+	var mode string
+	if err := s.Reader().QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil {
+		t.Fatalf("PRAGMA journal_mode: %v", err)
+	}
+	if mode != "wal" {
+		t.Errorf("journal_mode = %q, want wal", mode)
+	}
+}
+
+func TestForeignKeysAreEnforced(t *testing.T) {
+	s := openTemp(t)
+	// Inserting a lap against a non-existent session must fail, otherwise
+	// ON DELETE CASCADE is decorative.
+	_, err := s.Writer().Exec(
+		`INSERT INTO laps (uuid, session_id, lap_number, recorded_at) VALUES ('u1', 9999, 1, '2026-01-01T00:00:00Z')`,
+	)
+	if err == nil {
+		t.Fatal("insert with a dangling session_id succeeded; foreign keys are not enforced")
+	}
+}
+
+// The writer must be limited to a single connection: that is what makes
+// SQLITE_BUSY impossible rather than merely unlikely.
+func TestWriterIsSingleConnection(t *testing.T) {
+	s := openTemp(t)
+	if got := s.Writer().Stats().MaxOpenConnections; got != 1 {
+		t.Errorf("writer MaxOpenConnections = %d, want 1", got)
+	}
+}
+
+func TestReaderAllowsConcurrentReads(t *testing.T) {
+	s := openTemp(t)
+	if got := s.Reader().Stats().MaxOpenConnections; got <= 1 {
+		t.Errorf("reader MaxOpenConnections = %d, want more than 1", got)
+	}
+}
+
+// Readers must not block while a write is in flight. In WAL mode they
+// read the last committed snapshot instead.
+func TestConcurrentWriteAndReadDoNotDeadlock(t *testing.T) {
+	s := openTemp(t)
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			_, err := s.Writer().Exec(
+				`INSERT INTO sessions
+				  (uuid, session_key, session_num, session_type, event_context,
+				   started_at, classify_source_json, created_at, updated_at)
+				 VALUES (?, ?, 0, 'Practice', 'Hosted', '2026-01-01T00:00:00Z', '{}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`,
+				uuidish(i), keyish(i),
+			)
+			if err != nil {
+				t.Errorf("write %d: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 50; i++ {
+			var n int
+			if err := s.Reader().QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n); err != nil {
+				t.Errorf("read %d: %v", i, err)
+				return
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	var n int
+	if err := s.Reader().QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 50 {
+		t.Errorf("session count = %d, want 50", n)
+	}
+}
+
+func TestOpenIsIdempotent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapdog.db")
+	s1, err := Open(path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	if err := s1.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatalf("second Open on an existing database: %v", err)
+	}
+	defer s2.Close()
+	v, err := s2.SchemaVersion()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v != CurrentSchemaVersion {
+		t.Errorf("SchemaVersion after reopen = %d, want %d", v, CurrentSchemaVersion)
+	}
+}
+
+// A database written by a newer build must be refused, not silently used.
+func TestOpenRefusesNewerSchema(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapdog.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Writer().Exec(`UPDATE schema_version SET version = ?`, CurrentSchemaVersion+1); err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+
+	if _, err := Open(path); !errors.Is(err, ErrSchemaTooNew) {
+		t.Fatalf("Open on a newer schema = %v, want ErrSchemaTooNew", err)
+	}
+}
+
+func TestPath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapdog.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if s.Path() != path {
+		t.Errorf("Path() = %q, want %q", s.Path(), path)
+	}
+}
+
+func uuidish(i int) string { return "uuid-" + itoa(i) }
+func keyish(i int) string  { return "key-" + itoa(i) }
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b []byte
+	for i > 0 {
+		b = append([]byte{byte('0' + i%10)}, b...)
+		i /= 10
+	}
+	return string(b)
+}
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `go test ./internal/store/ -v`
+Expected: FAIL — build error, `undefined: Open`, `undefined: Store`.
+
+- [ ] **Step 4: Write the store**
+
+Create `internal/store/store.go`:
+
+```go
+// Package store persists sessions, laps and position events to SQLite.
+//
+// Concurrency model: SQLite in WAL mode permits one writer and many
+// concurrent readers. This package therefore exposes two *sql.DB
+// handles. The writer is capped at a single connection and is owned by
+// the collector, which means two writes can never race and SQLITE_BUSY
+// cannot occur by construction rather than being retried away. The
+// reader is a pool used by the HTTP API; in WAL mode readers see the
+// last committed snapshot and are never blocked by the writer.
+package store
+
+import (
+	"database/sql"
+	"embed"
+	"errors"
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"sort"
+
+	_ "modernc.org/sqlite"
+)
+
+//go:embed migrations/*.sql
+var migrationFS embed.FS
+
+// CurrentSchemaVersion is the schema this build understands.
+const CurrentSchemaVersion = 1
+
+// ErrSchemaTooNew indicates the database was written by a newer build.
+// Downgrade is not supported, so this is refused rather than risked.
+var ErrSchemaTooNew = errors.New("store: database schema is newer than this build")
+
+// Store owns the database connections.
+type Store struct {
+	path   string
+	writer *sql.DB
+	reader *sql.DB
+}
+
+// dsn builds a connection string with the pragmas LapDog depends on.
+//
+// busy_timeout is set even though single-writer discipline should make
+// it unnecessary: if it ever fires, that is a genuine anomaly worth
+// surviving rather than crashing on.
+func dsn(path string, readOnly bool) string {
+	s := "file:" + path +
+		"?_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=foreign_keys(ON)" +
+		"&_pragma=synchronous(NORMAL)"
+	if readOnly {
+		s += "&mode=ro"
+	}
+	return s
+}
+
+// Open opens or creates the database at path and applies any pending
+// migrations.
+func Open(path string) (*Store, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("store: create directory: %w", err)
+	}
+
+	writer, err := sql.Open("sqlite", dsn(path, false))
+	if err != nil {
+		return nil, fmt.Errorf("store: open writer: %w", err)
+	}
+	// Exactly one writer connection. This is the core of the concurrency
+	// model, not a tuning knob.
+	writer.SetMaxOpenConns(1)
+	writer.SetMaxIdleConns(1)
+
+	if err := writer.Ping(); err != nil {
+		writer.Close()
+		return nil, fmt.Errorf("store: ping writer: %w", err)
+	}
+
+	s := &Store{path: path, writer: writer}
+	if err := s.migrate(); err != nil {
+		writer.Close()
+		return nil, err
+	}
+
+	// The reader pool is opened after migration so it never observes a
+	// half-built schema.
+	reader, err := sql.Open("sqlite", dsn(path, false))
+	if err != nil {
+		writer.Close()
+		return nil, fmt.Errorf("store: open reader: %w", err)
+	}
+	reader.SetMaxOpenConns(4)
+	reader.SetMaxIdleConns(4)
+	if err := reader.Ping(); err != nil {
+		writer.Close()
+		reader.Close()
+		return nil, fmt.Errorf("store: ping reader: %w", err)
+	}
+	s.reader = reader
+	return s, nil
+}
+
+// Path returns the database file path.
+func (s *Store) Path() string { return s.path }
+
+// Writer returns the single-connection write handle.
+func (s *Store) Writer() *sql.DB { return s.writer }
+
+// Reader returns the pooled read handle.
+func (s *Store) Reader() *sql.DB { return s.reader }
+
+// Close releases both connection pools.
+func (s *Store) Close() error {
+	var firstErr error
+	if s.reader != nil {
+		if err := s.reader.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	if s.writer != nil {
+		if err := s.writer.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+// SchemaVersion returns the schema version recorded in the database, or
+// 0 if the schema_version table does not exist yet.
+func (s *Store) SchemaVersion() (int, error) {
+	var name string
+	err := s.writer.QueryRow(
+		`SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'`,
+	).Scan(&name)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("store: probe schema_version: %w", err)
+	}
+	var v int
+	if err := s.writer.QueryRow(`SELECT version FROM schema_version`).Scan(&v); err != nil {
+		return 0, fmt.Errorf("store: read schema version: %w", err)
+	}
+	return v, nil
+}
+
+// migrate applies every migration newer than the recorded version, each
+// inside its own transaction. Downgrade is not supported.
+func (s *Store) migrate() error {
+	have, err := s.SchemaVersion()
+	if err != nil {
+		return err
+	}
+	if have > CurrentSchemaVersion {
+		return fmt.Errorf("%w: database is version %d, this build understands %d",
+			ErrSchemaTooNew, have, CurrentSchemaVersion)
+	}
+	if have == CurrentSchemaVersion {
+		return nil
+	}
+
+	names, err := migrationNames()
+	if err != nil {
+		return err
+	}
+	for i, name := range names {
+		version := i + 1
+		if version <= have {
+			continue
+		}
+		body, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			return fmt.Errorf("store: read migration %s: %w", name, err)
+		}
+		tx, err := s.writer.Begin()
+		if err != nil {
+			return fmt.Errorf("store: begin migration %s: %w", name, err)
+		}
+		if _, err := tx.Exec(string(body)); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("store: apply migration %s: %w", name, err)
+		}
+		// 0001 seeds schema_version itself; later migrations update it.
+		if version > 1 {
+			if _, err := tx.Exec(`UPDATE schema_version SET version = ?`, version); err != nil {
+				tx.Rollback()
+				return fmt.Errorf("store: record version %d: %w", version, err)
+			}
+		}
+		if err := tx.Commit(); err != nil {
+			return fmt.Errorf("store: commit migration %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
+// migrationNames returns the embedded migration filenames in apply order.
+func migrationNames() ([]string, error) {
+	entries, err := fs.ReadDir(migrationFS, "migrations")
+	if err != nil {
+		return nil, fmt.Errorf("store: list migrations: %w", err)
+	}
+	var names []string
+	for _, e := range entries {
+		if !e.IsDir() && filepath.Ext(e.Name()) == ".sql" {
+			names = append(names, e.Name())
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `go test ./internal/store/ -v`
+Expected: PASS, ten tests. `TestConcurrentWriteAndReadDoNotDeadlock` is the important one — if it hangs rather than fails, WAL is not active.
+
+- [ ] **Step 6: Verify no cgo and that Windows still builds**
+
+```bash
+CGO_ENABLED=0 go build ./internal/store/
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/store/
+```
+
+Expected: no output from either, exit 0. If the second fails, a cgo-requiring dependency has crept in and the driver choice needs revisiting.
+
+- [ ] **Step 7: Run the whole suite with the race detector**
+
+Run: `go test -race ./...`
+Expected: PASS with no race reports. This is the first task with concurrent access, so it is worth checking here rather than at the end.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/store/
+git commit -m "Add SQLite store with WAL, migrations and writer/reader split"
+```
