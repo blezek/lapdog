@@ -4717,3 +4717,717 @@ Expected: PASS with no race reports. This is the first task with concurrent acce
 git add internal/store/
 git commit -m "Add SQLite store with WAL, migrations and writer/reader split"
 ```
+
+---
+
+### Task 11: Store — session upsert and session_key identity
+
+**Files:**
+- Create: `internal/store/sessions.go`
+- Test: `internal/store/sessions_test.go`
+
+**Interfaces:**
+- Consumes: Task 10's `Store`.
+- Produces:
+  - `type Session struct { ... }` — one field per `sessions` column, nullable columns as pointers
+  - `func SessionKey(subsessionID, sessionNum int, startedAt time.Time) string`
+  - `func (s *Store) UpsertSession(rec *Session) (int64, error)` — sets `rec.ID` and returns it
+  - `func (s *Store) SessionByKey(key string) (*Session, error)`
+  - `func (s *Store) SessionByID(id int64) (*Session, error)`
+  - `func (s *Store) DeleteSession(id int64) error`
+  - `var ErrNotFound error`
+  - `func Now() string` and `func FormatTime(t time.Time) string` — RFC3339 UTC
+
+The identity rule matters and is easy to get wrong. Offline sessions report `SubSessionID = 0`, so `(subsession_id, session_num)` is **not** unique across them — two offline test sessions on the same day would collide and the second would overwrite the first. Hence:
+
+- `subsession_id != 0` → `"<subsession_id>/<session_num>"`
+- `subsession_id == 0` → `"offline/<session_num>/<started_at RFC3339>"`
+
+`UpsertSession` must **preserve** `id`, `uuid` and `created_at` on update while overwriting the counters and results. It generates a UUID on first insert only. This is what lets the collector flush the same session every ten seconds without churning identity.
+
+Nullable columns are pointers rather than zero values because "finished P0" and "did not finish" are different facts, and a practice session legitimately has no finish position at all.
+
+- [ ] **Step 1: Write the failing key-derivation test**
+
+Create `internal/store/sessions_test.go`:
+
+```go
+package store
+
+import (
+	"errors"
+	"testing"
+	"time"
+)
+
+func TestSessionKeyOnline(t *testing.T) {
+	at := time.Date(2026, 8, 4, 19, 30, 0, 0, time.UTC)
+	if got := SessionKey(55667788, 2, at); got != "55667788/2" {
+		t.Errorf("SessionKey = %q, want %q", got, "55667788/2")
+	}
+}
+
+// Offline sessions all report SubSessionID 0, so the key must include the
+// start time or two offline tests would collide and overwrite each other.
+func TestSessionKeyOfflineIncludesStartTime(t *testing.T) {
+	a := time.Date(2026, 8, 4, 19, 30, 0, 0, time.UTC)
+	b := time.Date(2026, 8, 4, 21, 15, 0, 0, time.UTC)
+
+	ka := SessionKey(0, 0, a)
+	kb := SessionKey(0, 0, b)
+	if ka == kb {
+		t.Fatalf("two offline sessions produced the same key %q", ka)
+	}
+	if ka != "offline/0/2026-08-04T19:30:00Z" {
+		t.Errorf("SessionKey = %q", ka)
+	}
+}
+
+// The key must be stable for the same inputs, since it is the upsert target.
+func TestSessionKeyIsStable(t *testing.T) {
+	at := time.Date(2026, 8, 4, 19, 30, 0, 0, time.UTC)
+	if SessionKey(0, 1, at) != SessionKey(0, 1, at) {
+		t.Error("SessionKey is not deterministic")
+	}
+}
+
+// Local time in must produce UTC out, or the same session keyed from two
+// timezones would produce two rows.
+func TestSessionKeyNormalisesToUTC(t *testing.T) {
+	loc := time.FixedZone("UTC-5", -5*3600)
+	local := time.Date(2026, 8, 4, 14, 30, 0, 0, loc)
+	utc := local.UTC()
+	if SessionKey(0, 0, local) != SessionKey(0, 0, utc) {
+		t.Error("SessionKey depends on the input timezone; it must normalise to UTC")
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/store/ -run SessionKey -v`
+Expected: FAIL — `undefined: SessionKey`.
+
+- [ ] **Step 3: Write the session type and key derivation**
+
+Create `internal/store/sessions.go`:
+
+```go
+package store
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"strconv"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// ErrNotFound indicates no row matched the lookup.
+var ErrNotFound = errors.New("store: not found")
+
+// FormatTime renders t as an RFC3339 string in UTC, which is the only
+// timestamp format stored in the database.
+func FormatTime(t time.Time) string {
+	return t.UTC().Format(time.RFC3339)
+}
+
+// Now returns the current time in the stored format.
+func Now() string { return FormatTime(time.Now()) }
+
+// Session is one row of the sessions table.
+//
+// Nullable columns are pointers because absent and zero mean different
+// things: a practice session has no finish position at all, which is not
+// the same as finishing in position zero.
+type Session struct {
+	ID           int64
+	UUID         string
+	SessionKey   string
+	SubsessionID int
+	SessionNum   int
+	SessionType  string
+	EventContext string
+
+	LeagueID int
+	SeriesID int
+	SeasonID int
+	Official int
+
+	TrackID       *int
+	TrackName     *string
+	TrackConfig   *string
+	TrackLengthKm *float64
+
+	CarID        *int
+	CarName      *string
+	CarClassID   *int
+	CarClassName *string
+
+	StartedAt string
+	EndedAt   *string
+
+	ConnectedSeconds float64
+	InCarSeconds     float64
+	DrivingSeconds   float64
+
+	LapsCompleted int
+	Incidents     int
+	BestLapTimeS  *float64
+
+	StartingPosition     *int
+	FinishPosition       *int
+	FinishClassPosition  *int
+	QualifyPosition      *int
+	QualifyClassPosition *int
+	QualifyBestTimeS     *float64
+	FieldSize            *int
+
+	AIOpponentCount int
+	AIDetection     *string
+	IncidentSource  string
+
+	ClassifySourceJSON string
+	CaptureFile        *string
+
+	CreatedAt  string
+	UpdatedAt  string
+	UploadedAt *string
+}
+
+// SessionKey derives the stable identity of a session segment.
+//
+// Online sessions are identified by subsession and session number. Offline
+// sessions all report SubSessionID 0, so that pair is not unique among
+// them and the start time is folded in — otherwise two offline test
+// sessions would collide and the second would overwrite the first.
+func SessionKey(subsessionID, sessionNum int, startedAt time.Time) string {
+	if subsessionID != 0 {
+		return strconv.Itoa(subsessionID) + "/" + strconv.Itoa(sessionNum)
+	}
+	return "offline/" + strconv.Itoa(sessionNum) + "/" + FormatTime(startedAt)
+}
+```
+
+- [ ] **Step 4: Run the key test to verify it passes**
+
+Run: `go test ./internal/store/ -run SessionKey -v`
+Expected: PASS, four tests.
+
+- [ ] **Step 5: Write the failing upsert test**
+
+Append to `internal/store/sessions_test.go`:
+
+```go
+// minimalSession returns a Session with only the NOT NULL columns set.
+func minimalSession(key string) *Session {
+	return &Session{
+		SessionKey:         key,
+		SubsessionID:       55667788,
+		SessionNum:         2,
+		SessionType:        "Race",
+		EventContext:       "OfficialRace",
+		StartedAt:          "2026-08-04T19:30:00Z",
+		ClassifySourceJSON: `{"WeekendInfo":{"LeagueID":0}}`,
+		IncidentSource:     "yaml",
+	}
+}
+
+func intp(v int) *int          { return &v }
+func f64p(v float64) *float64  { return &v }
+func strp(v string) *string    { return &v }
+
+func TestUpsertSessionInsertsAndAssignsIdentity(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+
+	id, err := s.UpsertSession(rec)
+	if err != nil {
+		t.Fatalf("UpsertSession: %v", err)
+	}
+	if id == 0 {
+		t.Fatal("UpsertSession returned id 0")
+	}
+	if rec.ID != id {
+		t.Errorf("rec.ID = %d, want %d — UpsertSession must write the id back", rec.ID, id)
+	}
+	if rec.UUID == "" {
+		t.Error("rec.UUID is empty; a UUID must be generated on first insert")
+	}
+	if rec.CreatedAt == "" || rec.UpdatedAt == "" {
+		t.Errorf("timestamps not set: created=%q updated=%q", rec.CreatedAt, rec.UpdatedAt)
+	}
+}
+
+// The collector flushes the same session every ten seconds. Identity must
+// survive that, and the counters must be overwritten.
+func TestUpsertSessionUpdatePreservesIdentity(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	firstID, firstUUID, firstCreated := rec.ID, rec.UUID, rec.CreatedAt
+
+	rec.ConnectedSeconds = 1200
+	rec.InCarSeconds = 900
+	rec.DrivingSeconds = 840
+	rec.LapsCompleted = 24
+	rec.Incidents = 6
+	rec.FinishPosition = intp(4)
+	rec.BestLapTimeS = f64p(141.882)
+	rec.EndedAt = strp("2026-08-04T20:18:00Z")
+
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatalf("second UpsertSession: %v", err)
+	}
+	if rec.ID != firstID {
+		t.Errorf("ID changed on update: %d -> %d", firstID, rec.ID)
+	}
+	if rec.UUID != firstUUID {
+		t.Errorf("UUID changed on update: %q -> %q", firstUUID, rec.UUID)
+	}
+	if rec.CreatedAt != firstCreated {
+		t.Errorf("CreatedAt changed on update: %q -> %q", firstCreated, rec.CreatedAt)
+	}
+
+	got, err := s.SessionByKey("55667788/2")
+	if err != nil {
+		t.Fatalf("SessionByKey: %v", err)
+	}
+	if got.DrivingSeconds != 840 || got.LapsCompleted != 24 || got.Incidents != 6 {
+		t.Errorf("counters not updated: %+v", got)
+	}
+	if got.FinishPosition == nil || *got.FinishPosition != 4 {
+		t.Errorf("FinishPosition = %v, want 4", got.FinishPosition)
+	}
+	if got.EndedAt == nil || *got.EndedAt != "2026-08-04T20:18:00Z" {
+		t.Errorf("EndedAt = %v", got.EndedAt)
+	}
+
+	// Exactly one row: the upsert must not have inserted a duplicate.
+	var n int
+	if err := s.Reader().QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 {
+		t.Errorf("session count = %d, want 1", n)
+	}
+}
+
+func TestUpsertSessionRoundTripsAllFields(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+	rec.LeagueID = 4242
+	rec.SeriesID = 411
+	rec.SeasonID = 4703
+	rec.Official = 1
+	rec.TrackID = intp(341)
+	rec.TrackName = strp("Circuit de Spa-Francorchamps")
+	rec.TrackConfig = strp("Grand Prix Pits")
+	rec.TrackLengthKm = f64p(7.0)
+	rec.CarID = intp(173)
+	rec.CarName = strp("Porsche 911 GT3 R")
+	rec.CarClassID = intp(2523)
+	rec.CarClassName = strp("GT3")
+	rec.StartingPosition = intp(6)
+	rec.FinishClassPosition = intp(3)
+	rec.QualifyPosition = intp(6)
+	rec.QualifyClassPosition = intp(5)
+	rec.QualifyBestTimeS = f64p(140.912)
+	rec.FieldSize = intp(40)
+	rec.AIOpponentCount = 0
+	rec.AIDetection = strp("none")
+	rec.CaptureFile = strp("2026-08-04T193000Z-55667788-2.lpd")
+
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SessionByID(rec.ID)
+	if err != nil {
+		t.Fatalf("SessionByID: %v", err)
+	}
+	if got.LeagueID != 4242 || got.Official != 1 {
+		t.Errorf("context = %+v", got)
+	}
+	if got.TrackName == nil || *got.TrackName != "Circuit de Spa-Francorchamps" {
+		t.Errorf("TrackName = %v", got.TrackName)
+	}
+	if got.CarName == nil || *got.CarName != "Porsche 911 GT3 R" {
+		t.Errorf("CarName = %v", got.CarName)
+	}
+	if got.QualifyPosition == nil || *got.QualifyPosition != 6 {
+		t.Errorf("QualifyPosition = %v", got.QualifyPosition)
+	}
+	if got.QualifyBestTimeS == nil || *got.QualifyBestTimeS != 140.912 {
+		t.Errorf("QualifyBestTimeS = %v", got.QualifyBestTimeS)
+	}
+	if got.FieldSize == nil || *got.FieldSize != 40 {
+		t.Errorf("FieldSize = %v", got.FieldSize)
+	}
+	if got.AIDetection == nil || *got.AIDetection != "none" {
+		t.Errorf("AIDetection = %v", got.AIDetection)
+	}
+	if got.CaptureFile == nil {
+		t.Error("CaptureFile is nil")
+	}
+	if got.ClassifySourceJSON != rec.ClassifySourceJSON {
+		t.Errorf("ClassifySourceJSON = %q", got.ClassifySourceJSON)
+	}
+}
+
+// Nullable columns must come back nil, not zero, when never set.
+func TestUpsertSessionNullsStayNull(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SessionByID(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.FinishPosition != nil {
+		t.Errorf("FinishPosition = %v, want nil for a session with no result", got.FinishPosition)
+	}
+	if got.EndedAt != nil {
+		t.Errorf("EndedAt = %v, want nil for an in-progress session", got.EndedAt)
+	}
+	if got.UploadedAt != nil {
+		t.Errorf("UploadedAt = %v, want nil — nothing writes it in this version", got.UploadedAt)
+	}
+	if got.BestLapTimeS != nil {
+		t.Errorf("BestLapTimeS = %v, want nil", got.BestLapTimeS)
+	}
+}
+
+// Two offline sessions must produce two rows, not one overwritten row.
+func TestUpsertSessionOfflineSessionsDoNotCollide(t *testing.T) {
+	s := openTemp(t)
+	a := time.Date(2026, 8, 4, 19, 0, 0, 0, time.UTC)
+	b := time.Date(2026, 8, 4, 21, 0, 0, 0, time.UTC)
+
+	for _, at := range []time.Time{a, b} {
+		rec := minimalSession(SessionKey(0, 0, at))
+		rec.SubsessionID = 0
+		rec.SessionNum = 0
+		rec.SessionType = "OfflineTest"
+		rec.EventContext = "Offline"
+		rec.StartedAt = FormatTime(at)
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatalf("UpsertSession(%v): %v", at, err)
+		}
+	}
+
+	var n int
+	if err := s.Reader().QueryRow(`SELECT COUNT(*) FROM sessions`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 2 {
+		t.Errorf("session count = %d, want 2 — offline sessions collided", n)
+	}
+}
+
+func TestSessionByKeyNotFound(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.SessionByKey("nope/0"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionByKey on a missing key = %v, want ErrNotFound", err)
+	}
+}
+
+func TestSessionByIDNotFound(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.SessionByID(9999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SessionByID on a missing id = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteSessionCascades(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Writer().Exec(
+		`INSERT INTO laps (uuid, session_id, lap_number, recorded_at) VALUES ('lap-uuid', ?, 1, '2026-08-04T19:35:00Z')`,
+		rec.ID,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSession(rec.ID); err != nil {
+		t.Fatalf("DeleteSession: %v", err)
+	}
+	var n int
+	if err := s.Reader().QueryRow(`SELECT COUNT(*) FROM laps WHERE session_id = ?`, rec.ID).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Errorf("lap count after delete = %d, want 0 — cascade did not fire", n)
+	}
+}
+
+func TestDeleteSessionNotFound(t *testing.T) {
+	s := openTemp(t)
+	if err := s.DeleteSession(9999); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("DeleteSession on a missing id = %v, want ErrNotFound", err)
+	}
+}
+
+func TestUpdatedAtAdvancesOnUpdate(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	// updated_at is written by the store, so force a distinguishable value
+	// to prove the update path rewrites it.
+	if _, err := s.Writer().Exec(`UPDATE sessions SET updated_at = '2000-01-01T00:00:00Z' WHERE id = ?`, rec.ID); err != nil {
+		t.Fatal(err)
+	}
+	rec.DrivingSeconds = 10
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SessionByID(rec.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UpdatedAt == "2000-01-01T00:00:00Z" {
+		t.Error("updated_at was not advanced on update; it is the sync cursor")
+	}
+}
+```
+
+- [ ] **Step 6: Run test to verify it fails**
+
+Run: `go test ./internal/store/ -run 'Upsert|SessionBy|DeleteSession|UpdatedAt' -v`
+Expected: FAIL — `undefined: (*Store).UpsertSession`.
+
+- [ ] **Step 7: Write the upsert and readers**
+
+Append to `internal/store/sessions.go`:
+
+```go
+// sessionColumns is the column list used by every session read, in the
+// order scanSession expects.
+const sessionColumns = `
+	id, uuid, session_key, subsession_id, session_num, session_type, event_context,
+	league_id, series_id, season_id, official,
+	track_id, track_name, track_config, track_length_km,
+	car_id, car_name, car_class_id, car_class_name,
+	started_at, ended_at,
+	connected_seconds, in_car_seconds, driving_seconds,
+	laps_completed, incidents, best_lap_time_s,
+	starting_position, finish_position, finish_class_position,
+	qualify_position, qualify_class_position, qualify_best_time_s, field_size,
+	ai_opponent_count, ai_detection, incident_source,
+	classify_source_json, capture_file,
+	created_at, updated_at, uploaded_at`
+
+// UpsertSession inserts rec, or updates it if a row with the same
+// session_key already exists.
+//
+// On update, id, uuid and created_at are preserved and everything else is
+// overwritten. That is what lets the collector flush the same session
+// every few seconds without churning its identity.
+func (s *Store) UpsertSession(rec *Session) (int64, error) {
+	if rec == nil {
+		return 0, errors.New("store: UpsertSession called with nil record")
+	}
+	if rec.SessionKey == "" {
+		return 0, errors.New("store: UpsertSession requires a SessionKey")
+	}
+
+	existing, err := s.SessionByKey(rec.SessionKey)
+	switch {
+	case err == nil:
+		rec.ID = existing.ID
+		rec.UUID = existing.UUID
+		rec.CreatedAt = existing.CreatedAt
+	case errors.Is(err, ErrNotFound):
+		if rec.UUID == "" {
+			rec.UUID = uuid.NewString()
+		}
+		if rec.CreatedAt == "" {
+			rec.CreatedAt = Now()
+		}
+	default:
+		return 0, err
+	}
+	rec.UpdatedAt = Now()
+	if rec.IncidentSource == "" {
+		rec.IncidentSource = "yaml"
+	}
+
+	const q = `
+INSERT INTO sessions (
+	uuid, session_key, subsession_id, session_num, session_type, event_context,
+	league_id, series_id, season_id, official,
+	track_id, track_name, track_config, track_length_km,
+	car_id, car_name, car_class_id, car_class_name,
+	started_at, ended_at,
+	connected_seconds, in_car_seconds, driving_seconds,
+	laps_completed, incidents, best_lap_time_s,
+	starting_position, finish_position, finish_class_position,
+	qualify_position, qualify_class_position, qualify_best_time_s, field_size,
+	ai_opponent_count, ai_detection, incident_source,
+	classify_source_json, capture_file,
+	created_at, updated_at
+) VALUES (
+	?, ?, ?, ?, ?, ?,
+	?, ?, ?, ?,
+	?, ?, ?, ?,
+	?, ?, ?, ?,
+	?, ?,
+	?, ?, ?,
+	?, ?, ?,
+	?, ?, ?,
+	?, ?, ?, ?,
+	?, ?, ?,
+	?, ?,
+	?, ?
+)
+ON CONFLICT(session_key) DO UPDATE SET
+	subsession_id = excluded.subsession_id,
+	session_num = excluded.session_num,
+	session_type = excluded.session_type,
+	event_context = excluded.event_context,
+	league_id = excluded.league_id,
+	series_id = excluded.series_id,
+	season_id = excluded.season_id,
+	official = excluded.official,
+	track_id = excluded.track_id,
+	track_name = excluded.track_name,
+	track_config = excluded.track_config,
+	track_length_km = excluded.track_length_km,
+	car_id = excluded.car_id,
+	car_name = excluded.car_name,
+	car_class_id = excluded.car_class_id,
+	car_class_name = excluded.car_class_name,
+	started_at = excluded.started_at,
+	ended_at = excluded.ended_at,
+	connected_seconds = excluded.connected_seconds,
+	in_car_seconds = excluded.in_car_seconds,
+	driving_seconds = excluded.driving_seconds,
+	laps_completed = excluded.laps_completed,
+	incidents = excluded.incidents,
+	best_lap_time_s = excluded.best_lap_time_s,
+	starting_position = excluded.starting_position,
+	finish_position = excluded.finish_position,
+	finish_class_position = excluded.finish_class_position,
+	qualify_position = excluded.qualify_position,
+	qualify_class_position = excluded.qualify_class_position,
+	qualify_best_time_s = excluded.qualify_best_time_s,
+	field_size = excluded.field_size,
+	ai_opponent_count = excluded.ai_opponent_count,
+	ai_detection = excluded.ai_detection,
+	incident_source = excluded.incident_source,
+	classify_source_json = excluded.classify_source_json,
+	capture_file = excluded.capture_file,
+	updated_at = excluded.updated_at
+RETURNING id`
+
+	var id int64
+	err = s.writer.QueryRow(q,
+		rec.UUID, rec.SessionKey, rec.SubsessionID, rec.SessionNum, rec.SessionType, rec.EventContext,
+		rec.LeagueID, rec.SeriesID, rec.SeasonID, rec.Official,
+		rec.TrackID, rec.TrackName, rec.TrackConfig, rec.TrackLengthKm,
+		rec.CarID, rec.CarName, rec.CarClassID, rec.CarClassName,
+		rec.StartedAt, rec.EndedAt,
+		rec.ConnectedSeconds, rec.InCarSeconds, rec.DrivingSeconds,
+		rec.LapsCompleted, rec.Incidents, rec.BestLapTimeS,
+		rec.StartingPosition, rec.FinishPosition, rec.FinishClassPosition,
+		rec.QualifyPosition, rec.QualifyClassPosition, rec.QualifyBestTimeS, rec.FieldSize,
+		rec.AIOpponentCount, rec.AIDetection, rec.IncidentSource,
+		rec.ClassifySourceJSON, rec.CaptureFile,
+		rec.CreatedAt, rec.UpdatedAt,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("store: upsert session %s: %w", rec.SessionKey, err)
+	}
+	rec.ID = id
+	return id, nil
+}
+
+// scanSession reads one session row in sessionColumns order.
+func scanSession(sc interface{ Scan(...any) error }) (*Session, error) {
+	var r Session
+	err := sc.Scan(
+		&r.ID, &r.UUID, &r.SessionKey, &r.SubsessionID, &r.SessionNum, &r.SessionType, &r.EventContext,
+		&r.LeagueID, &r.SeriesID, &r.SeasonID, &r.Official,
+		&r.TrackID, &r.TrackName, &r.TrackConfig, &r.TrackLengthKm,
+		&r.CarID, &r.CarName, &r.CarClassID, &r.CarClassName,
+		&r.StartedAt, &r.EndedAt,
+		&r.ConnectedSeconds, &r.InCarSeconds, &r.DrivingSeconds,
+		&r.LapsCompleted, &r.Incidents, &r.BestLapTimeS,
+		&r.StartingPosition, &r.FinishPosition, &r.FinishClassPosition,
+		&r.QualifyPosition, &r.QualifyClassPosition, &r.QualifyBestTimeS, &r.FieldSize,
+		&r.AIOpponentCount, &r.AIDetection, &r.IncidentSource,
+		&r.ClassifySourceJSON, &r.CaptureFile,
+		&r.CreatedAt, &r.UpdatedAt, &r.UploadedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &r, nil
+}
+
+// SessionByKey looks up a session by its session_key.
+func (s *Store) SessionByKey(key string) (*Session, error) {
+	row := s.writer.QueryRow(`SELECT `+sessionColumns+` FROM sessions WHERE session_key = ?`, key)
+	rec, err := scanSession(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: session_key %s", ErrNotFound, key)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: read session %s: %w", key, err)
+	}
+	return rec, nil
+}
+
+// SessionByID looks up a session by its primary key.
+func (s *Store) SessionByID(id int64) (*Session, error) {
+	row := s.reader.QueryRow(`SELECT `+sessionColumns+` FROM sessions WHERE id = ?`, id)
+	rec, err := scanSession(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: session id %d", ErrNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("store: read session %d: %w", id, err)
+	}
+	return rec, nil
+}
+
+// DeleteSession removes a session and, by cascade, its laps and position
+// events.
+func (s *Store) DeleteSession(id int64) error {
+	res, err := s.writer.Exec(`DELETE FROM sessions WHERE id = ?`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete session %d: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("store: delete session %d: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("%w: session id %d", ErrNotFound, id)
+	}
+	return nil
+}
+```
+
+Note on `SessionByKey` using the writer handle: the upsert path calls it to decide insert-versus-update, and reading through the same single connection the write will use avoids observing a stale WAL snapshot mid-flush.
+
+- [ ] **Step 8: Run test to verify it passes**
+
+Run: `go test ./internal/store/ -v`
+Expected: PASS, all tests.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/store/
+git commit -m "Add session upsert with stable session_key identity"
+```
