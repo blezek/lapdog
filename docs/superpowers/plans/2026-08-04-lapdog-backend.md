@@ -8733,3 +8733,439 @@ Expected: PASS, all tests from Tasks 14–16.
 git add internal/collector/
 git commit -m "Add lap detection with fuel, incident and pit attribution"
 ```
+
+---
+
+### Task 17: Collector — position events and cause attribution
+
+**Files:**
+- Create: `internal/collector/positions.go`
+- Test: `internal/collector/positions_test.go`
+
+**Interfaces:**
+- Consumes: Task 2's `irsdk.TrkLoc`; Task 4's `irsdk.Row`; Task 7's `sessionyaml.Info`; Task 12's `store.PositionEvent`, `store.Cause`.
+- Produces:
+  - `type PositionDetector struct { ... }`
+  - `func NewPositionDetector() *PositionDetector`
+  - `func (d *PositionDetector) Observe(row irsdk.Row, driverCarIdx int, sessionTimeS float64, info *sessionyaml.Info) (*store.PositionEvent, bool)`
+  - `func (d *PositionDetector) Reset()`
+
+The attribution logic is the whole point, per spec §9. A position change is **not** an overtake: if two cars ahead pit, you gain two positions without passing anyone. So on a change, find the `CarIdx` that now holds your *former* position, then read that car's state at that moment:
+
+| Condition on the opponent | `cause` |
+|---|---|
+| `CarIdxOnPitRoad[i]` true | `OpponentPit` |
+| `CarIdxTrackSurface[i] == NotInWorld` | `OpponentOffWorld` |
+| neither | `OnTrack` |
+| opponent not identifiable | `Unknown` |
+
+Only `OnTrack` counts toward the pass/passed ratio. The other causes are still stored, so attrition stays visible without polluting the metric.
+
+`opponent_name` is populated from `DriverInfo.Drivers[].UserName`. There is no anonymisation.
+
+Known limitation, documented rather than solved: at 1 Hz two position changes within the same second collapse into one event and the intermediate position is lost; a simultaneous multi-car shuffle may attribute the swap to the wrong opponent. Inherent to polling.
+
+The caller only invokes this for races — `Segment.IsRace()` gates it.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/collector/positions_test.go`:
+
+```go
+package collector
+
+import (
+	"encoding/binary"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+	"github.com/blezek/lapdog/internal/sessionyaml"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+// posRow builds a row with the per-car arrays the position detector reads.
+// positions, onPit and surface are indexed by CarIdx.
+func posRow(myPos, myClassPos, lap int32, positions []int32, onPit []bool, surface []int32) irsdk.Row {
+	n := len(positions)
+	vars := []irsdk.VarHeader{
+		{Name: "PlayerCarPosition", Type: irsdk.VarInt, Offset: 0, Count: 1},
+		{Name: "PlayerCarClassPosition", Type: irsdk.VarInt, Offset: 4, Count: 1},
+		{Name: "Lap", Type: irsdk.VarInt, Offset: 8, Count: 1},
+		{Name: "CarIdxPosition", Type: irsdk.VarInt, Offset: 12, Count: int32(n)},
+		{Name: "CarIdxOnPitRoad", Type: irsdk.VarBool, Offset: int32(12 + 4*n), Count: int32(n)},
+		{Name: "CarIdxTrackSurface", Type: irsdk.VarInt, Offset: int32(12 + 5*n), Count: int32(n)},
+	}
+	data := make([]byte, 12+9*n)
+	binary.LittleEndian.PutUint32(data[0:], uint32(myPos))
+	binary.LittleEndian.PutUint32(data[4:], uint32(myClassPos))
+	binary.LittleEndian.PutUint32(data[8:], uint32(lap))
+	for i, p := range positions {
+		binary.LittleEndian.PutUint32(data[12+4*i:], uint32(p))
+	}
+	for i, b := range onPit {
+		if b {
+			data[12+4*n+i] = 1
+		}
+	}
+	for i, s := range surface {
+		binary.LittleEndian.PutUint32(data[12+5*n+i:], uint32(s))
+	}
+	return irsdk.NewRow(vars, data)
+}
+
+// raceInfo returns Info with named drivers at the given car indices.
+func raceInfo(myIdx int, names map[int]string) *sessionyaml.Info {
+	i := &sessionyaml.Info{}
+	i.DriverInfo.DriverCarIdx = myIdx
+	for idx, name := range names {
+		i.DriverInfo.Drivers = append(i.DriverInfo.Drivers, sessionyaml.Driver{CarIdx: idx, UserName: name})
+	}
+	return i
+}
+
+func TestPositionDetectorFirstObservationEmitsNothing(t *testing.T) {
+	d := NewPositionDetector()
+	row := posRow(6, 4, 1, []int32{6, 5}, []bool{false, false}, []int32{3, 3})
+	if ev, ok := d.Observe(row, 0, 100, raceInfo(0, map[int]string{0: "Me", 1: "Rival"})); ok {
+		t.Errorf("first Observe emitted %+v, want nothing", ev)
+	}
+}
+
+// A real on-track pass: the car now in my old position is on track.
+func TestPositionDetectorOnTrackPass(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Rival"})
+
+	// I am P6, rival is P5.
+	d.Observe(posRow(6, 4, 3, []int32{6, 5}, []bool{false, false}, []int32{3, 3}), 0, 400, info)
+	// I take P5; the rival drops to P6 and is still on track.
+	ev, ok := d.Observe(posRow(5, 3, 3, []int32{5, 6}, []bool{false, false}, []int32{3, 3}), 0, 412, info)
+	if !ok {
+		t.Fatal("no event emitted on a position change")
+	}
+	if ev.FromPosition != 6 || ev.ToPosition != 5 {
+		t.Errorf("from=%d to=%d, want 6 and 5", ev.FromPosition, ev.ToPosition)
+	}
+	if ev.Cause != store.CauseOnTrack {
+		t.Errorf("Cause = %q, want OnTrack", ev.Cause)
+	}
+	if ev.OpponentCarIdx == nil || *ev.OpponentCarIdx != 1 {
+		t.Errorf("OpponentCarIdx = %v, want 1", ev.OpponentCarIdx)
+	}
+	if ev.OpponentName == nil || *ev.OpponentName != "Rival" {
+		t.Errorf("OpponentName = %v, want Rival — names are stored, never anonymised", ev.OpponentName)
+	}
+	if ev.LapNumber != 3 || ev.SessionTimeS != 412 {
+		t.Errorf("lap=%d t=%v", ev.LapNumber, ev.SessionTimeS)
+	}
+}
+
+// Gaining a place because the car ahead pitted is not a pass.
+func TestPositionDetectorOpponentPit(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Pitter"})
+
+	d.Observe(posRow(5, 3, 9, []int32{5, 4}, []bool{false, false}, []int32{3, 3}), 0, 500, info)
+	ev, ok := d.Observe(posRow(4, 2, 9, []int32{4, 5}, []bool{false, true}, []int32{3, 1}), 0, 531, info)
+	if !ok {
+		t.Fatal("no event emitted")
+	}
+	if ev.Cause != store.CauseOpponentPit {
+		t.Errorf("Cause = %q, want OpponentPit", ev.Cause)
+	}
+	if ev.ToPosition >= ev.FromPosition {
+		t.Errorf("expected a position gain: from=%d to=%d", ev.FromPosition, ev.ToPosition)
+	}
+}
+
+// Gaining a place because the car ahead crashed out is not a pass either.
+func TestPositionDetectorOpponentOffWorld(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Crasher"})
+
+	d.Observe(posRow(5, 3, 14, []int32{5, 4}, []bool{false, false}, []int32{3, 3}), 0, 800, info)
+	ev, ok := d.Observe(
+		posRow(4, 2, 14, []int32{4, 5}, []bool{false, false},
+			[]int32{3, int32(irsdk.NotInWorld)}), 0, 823, info)
+	if !ok {
+		t.Fatal("no event emitted")
+	}
+	if ev.Cause != store.CauseOpponentOffWorld {
+		t.Errorf("Cause = %q, want OpponentOffWorld", ev.Cause)
+	}
+}
+
+// Pit road takes precedence: a car in its pit box is both on pit road and
+// InPitStall, and OpponentPit is the more informative answer.
+func TestPositionDetectorPitTakesPrecedenceOverPitStall(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Pitter"})
+	d.Observe(posRow(5, 3, 9, []int32{5, 4}, []bool{false, false}, []int32{3, 3}), 0, 500, info)
+	ev, _ := d.Observe(
+		posRow(4, 2, 9, []int32{4, 5}, []bool{false, true},
+			[]int32{3, int32(irsdk.InPitStall)}), 0, 531, info)
+	if ev.Cause != store.CauseOpponentPit {
+		t.Errorf("Cause = %q, want OpponentPit", ev.Cause)
+	}
+}
+
+// Being passed is recorded too, with to_position greater than from.
+func TestPositionDetectorBeingPassed(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Faster"})
+	d.Observe(posRow(4, 2, 12, []int32{4, 5}, []bool{false, false}, []int32{3, 3}), 0, 700, info)
+	ev, ok := d.Observe(posRow(5, 3, 12, []int32{5, 4}, []bool{false, false}, []int32{3, 3}), 0, 702, info)
+	if !ok {
+		t.Fatal("no event emitted")
+	}
+	if ev.FromPosition != 4 || ev.ToPosition != 5 {
+		t.Errorf("from=%d to=%d, want 4 and 5", ev.FromPosition, ev.ToPosition)
+	}
+	if ev.Cause != store.CauseOnTrack {
+		t.Errorf("Cause = %q, want OnTrack", ev.Cause)
+	}
+}
+
+// If nobody occupies my former position, the swap is unattributable but
+// must still be recorded.
+func TestPositionDetectorUnknownWhenOpponentNotFound(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me"})
+	d.Observe(posRow(6, 4, 3, []int32{6}, []bool{false}, []int32{3}), 0, 400, info)
+	ev, ok := d.Observe(posRow(5, 3, 3, []int32{5}, []bool{false}, []int32{3}), 0, 410, info)
+	if !ok {
+		t.Fatal("no event emitted; an unattributable change must still be recorded")
+	}
+	if ev.Cause != store.CauseUnknown {
+		t.Errorf("Cause = %q, want Unknown", ev.Cause)
+	}
+	if ev.OpponentCarIdx != nil {
+		t.Errorf("OpponentCarIdx = %v, want nil", ev.OpponentCarIdx)
+	}
+}
+
+func TestPositionDetectorNoEventWithoutChange(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Rival"})
+	row := posRow(5, 3, 7, []int32{5, 6}, []bool{false, false}, []int32{3, 3})
+	d.Observe(row, 0, 400, info)
+	for i := 0; i < 10; i++ {
+		if ev, ok := d.Observe(row, 0, float64(401+i), info); ok {
+			t.Fatalf("emitted %+v without a position change", ev)
+		}
+	}
+}
+
+// Position 0 means not yet classified (pre-green), not first place.
+func TestPositionDetectorIgnoresZeroPosition(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Rival"})
+	d.Observe(posRow(0, 0, 0, []int32{0, 0}, []bool{false, false}, []int32{3, 3}), 0, 0, info)
+	if ev, ok := d.Observe(posRow(6, 4, 1, []int32{6, 5}, []bool{false, false}, []int32{3, 3}), 0, 10, info); ok {
+		t.Errorf("emitted %+v on the transition out of position 0, want nothing", ev)
+	}
+	// A genuine change after classification must still be detected.
+	ev, ok := d.Observe(posRow(5, 3, 1, []int32{5, 6}, []bool{false, false}, []int32{3, 3}), 0, 20, info)
+	if !ok {
+		t.Fatal("no event emitted for a real change after classification")
+	}
+	if ev.FromPosition != 6 || ev.ToPosition != 5 {
+		t.Errorf("from=%d to=%d", ev.FromPosition, ev.ToPosition)
+	}
+}
+
+func TestPositionDetectorMissingRaceVariables(t *testing.T) {
+	d := NewPositionDetector()
+	// PlayerCarPosition present but the CarIdx arrays absent.
+	vars := []irsdk.VarHeader{
+		{Name: "PlayerCarPosition", Type: irsdk.VarInt, Offset: 0, Count: 1},
+	}
+	data := make([]byte, 4)
+	binary.LittleEndian.PutUint32(data, 5)
+	row := irsdk.NewRow(vars, data)
+	if _, ok := d.Observe(row, 0, 100, raceInfo(0, nil)); ok {
+		t.Error("emitted an event with the CarIdx arrays absent")
+	}
+}
+
+func TestPositionDetectorReset(t *testing.T) {
+	d := NewPositionDetector()
+	info := raceInfo(0, map[int]string{0: "Me", 1: "Rival"})
+	d.Observe(posRow(6, 4, 3, []int32{6, 5}, []bool{false, false}, []int32{3, 3}), 0, 400, info)
+	d.Reset()
+	if ev, ok := d.Observe(posRow(5, 3, 3, []int32{5, 6}, []bool{false, false}, []int32{3, 3}), 0, 410, info); ok {
+		t.Errorf("emitted %+v immediately after Reset, want a fresh baseline", ev)
+	}
+}
+
+// Nil info must not panic; the event is recorded without an opponent name.
+func TestPositionDetectorNilInfo(t *testing.T) {
+	d := NewPositionDetector()
+	d.Observe(posRow(6, 4, 3, []int32{6, 5}, []bool{false, false}, []int32{3, 3}), 0, 400, nil)
+	ev, ok := d.Observe(posRow(5, 3, 3, []int32{5, 6}, []bool{false, false}, []int32{3, 3}), 0, 410, nil)
+	if !ok {
+		t.Fatal("no event emitted with nil info")
+	}
+	if ev.OpponentName != nil {
+		t.Errorf("OpponentName = %v, want nil with no driver info", ev.OpponentName)
+	}
+	if ev.OpponentCarIdx == nil || *ev.OpponentCarIdx != 1 {
+		t.Errorf("OpponentCarIdx = %v, want 1 — the index comes from telemetry, not the YAML", ev.OpponentCarIdx)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/collector/ -run PositionDetector -v`
+Expected: FAIL — `undefined: NewPositionDetector`.
+
+- [ ] **Step 3: Write the position detector**
+
+Create `internal/collector/positions.go`:
+
+```go
+package collector
+
+import (
+	"github.com/blezek/lapdog/internal/irsdk"
+	"github.com/blezek/lapdog/internal/sessionyaml"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+// PositionDetector turns changes in the local driver's race position into
+// attributed position events.
+//
+// The attribution is the point. A position change is not an overtake: if
+// two cars ahead pit, the driver gains two places without passing anyone.
+// So when the position changes, the car now occupying the driver's former
+// position is identified and its state at that moment decides the cause.
+// Only OnTrack causes count toward a pass/passed ratio.
+//
+// Known limitation at the default 1 Hz poll rate: two changes within the
+// same second collapse into one event and the intermediate position is
+// lost, and a simultaneous multi-car shuffle may attribute the swap to the
+// wrong opponent. This is inherent to polling.
+type PositionDetector struct {
+	havePrev bool
+	prevPos  int32
+}
+
+// NewPositionDetector returns a detector with no baseline.
+func NewPositionDetector() *PositionDetector { return &PositionDetector{} }
+
+// Reset forgets the baseline. Called when a session segment changes.
+func (d *PositionDetector) Reset() { *d = PositionDetector{} }
+
+// Observe consumes one row and returns a position event when the local
+// driver's position changed.
+//
+// Callers must only invoke this for races; position in practice is an
+// artefact of who happens to be on track.
+func (d *PositionDetector) Observe(
+	row irsdk.Row, driverCarIdx int, sessionTimeS float64, info *sessionyaml.Info,
+) (*store.PositionEvent, bool) {
+	pos, ok := row.Int("PlayerCarPosition")
+	if !ok {
+		return nil, false
+	}
+	carPositions, ok := row.IntArray("CarIdxPosition")
+	if !ok {
+		return nil, false
+	}
+
+	// Position 0 means not yet classified, which happens before the green
+	// flag. It is not first place, and transitions in and out of it are not
+	// position changes.
+	if pos <= 0 {
+		d.havePrev = false
+		return nil, false
+	}
+	if !d.havePrev {
+		d.havePrev = true
+		d.prevPos = pos
+		return nil, false
+	}
+	if pos == d.prevPos {
+		return nil, false
+	}
+
+	from := d.prevPos
+	d.prevPos = pos
+
+	ev := &store.PositionEvent{
+		SessionTimeS: sessionTimeS,
+		FromPosition: int(from),
+		ToPosition:   int(pos),
+		Cause:        store.CauseUnknown,
+	}
+	if lap, ok := row.Int("Lap"); ok {
+		ev.LapNumber = int(lap)
+	}
+
+	// Find the car that now holds the position the driver just vacated.
+	opponent := -1
+	for idx, p := range carPositions {
+		if idx == driverCarIdx {
+			continue
+		}
+		if p == from {
+			opponent = idx
+			break
+		}
+	}
+	if opponent < 0 {
+		return ev, true
+	}
+
+	ev.OpponentCarIdx = &opponent
+	ev.Cause = attributeCause(row, opponent)
+	if info != nil {
+		for _, dr := range info.DriverInfo.Drivers {
+			if dr.CarIdx == opponent && dr.UserName != "" {
+				name := dr.UserName
+				ev.OpponentName = &name
+				break
+			}
+		}
+	}
+	return ev, true
+}
+
+// attributeCause decides why a swap with the given car happened, based on
+// that car's state at this moment.
+//
+// Pit road is checked before track surface because a car in its own pit box
+// is both on pit road and InPitStall, and "they pitted" is the more
+// informative answer than "they were in a pit stall".
+func attributeCause(row irsdk.Row, opponent int) store.Cause {
+	if onPit, ok := row.BoolArray("CarIdxOnPitRoad"); ok &&
+		opponent < len(onPit) && onPit[opponent] {
+		return store.CauseOpponentPit
+	}
+	if surfaces, ok := row.IntArray("CarIdxTrackSurface"); ok && opponent < len(surfaces) {
+		if irsdk.TrkLoc(surfaces[opponent]) == irsdk.NotInWorld {
+			return store.CauseOpponentOffWorld
+		}
+		return store.CauseOnTrack
+	}
+	return store.CauseUnknown
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/collector/ -run PositionDetector -v`
+Expected: PASS, eleven tests.
+
+- [ ] **Step 5: Run the whole collector suite**
+
+Run: `go test ./internal/collector/ -v`
+Expected: PASS, all tests from Tasks 14–17.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/collector/
+git commit -m "Add position event detection with cause attribution"
+```
