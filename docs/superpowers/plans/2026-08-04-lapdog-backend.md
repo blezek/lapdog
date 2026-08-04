@@ -6048,3 +6048,905 @@ Expected: PASS, all tests.
 git add internal/store/
 git commit -m "Add lap and position event writes"
 ```
+
+---
+
+### Task 13: Store — filters and aggregation queries
+
+**Files:**
+- Create: `internal/store/queries.go`
+- Test: `internal/store/queries_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 10–12.
+- Produces:
+  - `type Filter struct { From, To string; SessionType, EventContext []string; TrackID, CarID, LeagueID *int; ExcludeAI bool; Limit, Offset int }`
+  - `func (f Filter) where() (string, []any)` — unexported, but its behaviour is pinned by tests through the exported functions
+  - `func (s *Store) ListSessions(f Filter) ([]Session, int, error)` — rows plus total match count ignoring `Limit`/`Offset`
+  - `type SummaryRow struct { Key string; ConnectedHours, InCarHours, DrivingHours float64; Sessions, Laps, Incidents int }`
+  - `func (s *Store) Summary(f Filter, groupBy string) ([]SummaryRow, error)` — `groupBy` one of `type`, `context`, `typecontext`, `track`, `car`, `week`, `month`
+  - `type DailyRow struct { Day string; DrivingHours float64 }`
+  - `func (s *Store) Daily(f Filter) ([]DailyRow, error)`
+  - `type Totals struct { ConnectedHours, InCarHours, DrivingHours, Utilisation, IncidentsPerHour float64; Sessions, Laps, Incidents, PassesMade, TimesPassed int }`
+  - `func (s *Store) Totals(f Filter) (Totals, error)`
+  - `type LapRow struct { Lap; SessionID int64; StartedAt, TrackName, CarName, SessionType, EventContext string }`
+  - `func (s *Store) ListLaps(f Filter) ([]LapRow, int, error)`
+  - `type Facets struct { Tracks, Cars []Facet; Leagues []Facet; SessionTypes, EventContexts []string }`
+  - `type Facet struct { ID int; Name string; Sessions int }`
+  - `func (s *Store) Facets() (Facets, error)`
+  - `var ErrBadGroupBy error`
+
+`groupBy` is validated against an allowlist and mapped to a fixed SQL fragment. It is **never** interpolated from user input — that would be SQL injection through a query parameter, and a test pins the rejection.
+
+`ExcludeAI` exists because AI results are not comparable to human ones. Per spec §6.3 the UI defaults to excluding `event_context = 'AI'` from pace and pass metrics.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/store/queries_test.go`:
+
+```go
+package store
+
+import (
+	"errors"
+	"math"
+	"testing"
+)
+
+// seed builds a small but realistic dataset: two race weekends at
+// different tracks, one league race, one AI race, and one practice-only day.
+func seed(t *testing.T, s *Store) {
+	t.Helper()
+
+	type spec struct {
+		key        string
+		sub        int
+		num        int
+		st, ctx    string
+		started    string
+		conn, car_, drive float64
+		laps, inc  int
+		trackID    int
+		trackName  string
+		carID      int
+		carName    string
+		leagueID   int
+		best       float64
+	}
+	rows := []spec{
+		{"1001/0", 1001, 0, "Practice", "OfficialPractice", "2026-07-01T10:00:00Z", 3600, 2400, 2000, 20, 2, 18, "Watkins Glen", 173, "Porsche 911 GT3 R", 0, 102.5},
+		{"1002/0", 1002, 0, "Practice", "OfficialRace", "2026-07-08T18:00:00Z", 1800, 1500, 1400, 15, 1, 18, "Watkins Glen", 173, "Porsche 911 GT3 R", 0, 102.1},
+		{"1002/1", 1002, 1, "Qualify", "OfficialRace", "2026-07-08T18:30:00Z", 600, 500, 450, 3, 0, 18, "Watkins Glen", 173, "Porsche 911 GT3 R", 0, 101.8},
+		{"1002/2", 1002, 2, "Race", "OfficialRace", "2026-07-08T18:45:00Z", 3000, 2900, 2800, 25, 6, 18, "Watkins Glen", 173, "Porsche 911 GT3 R", 0, 102.0},
+		{"2001/2", 2001, 2, "Race", "League", "2026-07-15T19:00:00Z", 3600, 3500, 3400, 30, 4, 341, "Spa", 173, "Porsche 911 GT3 R", 4242, 141.9},
+		{"3001/0", 3001, 0, "Race", "AI", "2026-07-20T12:00:00Z", 1200, 1100, 1000, 10, 0, 341, "Spa", 45, "Mazda MX-5", 0, 150.2},
+	}
+	for _, r := range rows {
+		rec := &Session{
+			SessionKey:         r.key,
+			SubsessionID:       r.sub,
+			SessionNum:         r.num,
+			SessionType:        r.st,
+			EventContext:       r.ctx,
+			LeagueID:           r.leagueID,
+			StartedAt:          r.started,
+			ConnectedSeconds:   r.conn,
+			InCarSeconds:       r.car_,
+			DrivingSeconds:     r.drive,
+			LapsCompleted:      r.laps,
+			Incidents:          r.inc,
+			BestLapTimeS:       f64p(r.best),
+			TrackID:            intp(r.trackID),
+			TrackName:          strp(r.trackName),
+			CarID:              intp(r.carID),
+			CarName:            strp(r.carName),
+			ClassifySourceJSON: "{}",
+			IncidentSource:     "yaml",
+		}
+		id, err := s.UpsertSession(rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Two laps per session so lap queries have something to chew on.
+		for n := 1; n <= 2; n++ {
+			if _, err := s.InsertLap(&Lap{
+				SessionID: id, LapNumber: n,
+				LapTimeS: f64p(r.best + float64(n)*0.5),
+				Position: intp(5),
+			}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if r.st == "Race" {
+			// One real pass, one real loss, one attrition gain.
+			for _, ev := range []PositionEvent{
+				{LapNumber: 2, SessionTimeS: 100, FromPosition: 6, ToPosition: 5, Cause: CauseOnTrack},
+				{LapNumber: 4, SessionTimeS: 200, FromPosition: 5, ToPosition: 6, Cause: CauseOnTrack},
+				{LapNumber: 6, SessionTimeS: 300, FromPosition: 6, ToPosition: 5, Cause: CauseOpponentPit},
+			} {
+				ev.SessionID = id
+				if _, err := s.InsertPositionEvent(&ev); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+}
+
+func TestListSessionsNoFilter(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	rows, total, err := s.ListSessions(Filter{})
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	if total != 6 || len(rows) != 6 {
+		t.Errorf("total=%d len=%d, want 6 and 6", total, len(rows))
+	}
+	// Newest first, so the AI race on 2026-07-20 leads.
+	if rows[0].StartedAt != "2026-07-20T12:00:00Z" {
+		t.Errorf("rows[0].StartedAt = %q, want the newest session first", rows[0].StartedAt)
+	}
+}
+
+func TestListSessionsFilters(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	cases := []struct {
+		name  string
+		f     Filter
+		want  int
+	}{
+		{"by session type", Filter{SessionType: []string{"Race"}}, 3},
+		{"by two session types", Filter{SessionType: []string{"Practice", "Qualify"}}, 3},
+		{"by event context", Filter{EventContext: []string{"League"}}, 1},
+		{"by track", Filter{TrackID: intp(341)}, 2},
+		{"by car", Filter{CarID: intp(45)}, 1},
+		{"by league", Filter{LeagueID: intp(4242)}, 1},
+		{"date range inclusive of both ends", Filter{From: "2026-07-08T00:00:00Z", To: "2026-07-15T23:59:59Z"}, 4},
+		{"exclude AI", Filter{ExcludeAI: true}, 5},
+		{"races excluding AI", Filter{SessionType: []string{"Race"}, ExcludeAI: true}, 2},
+		{"no matches", Filter{TrackID: intp(9999)}, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			rows, total, err := s.ListSessions(c.f)
+			if err != nil {
+				t.Fatalf("ListSessions: %v", err)
+			}
+			if total != c.want || len(rows) != c.want {
+				t.Errorf("total=%d len=%d, want %d", total, len(rows), c.want)
+			}
+		})
+	}
+}
+
+// Total must count every match, not just the returned page.
+func TestListSessionsPaginationTotalIgnoresLimit(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	rows, total, err := s.ListSessions(Filter{Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Errorf("len(rows) = %d, want 2", len(rows))
+	}
+	if total != 6 {
+		t.Errorf("total = %d, want 6 — total must ignore Limit", total)
+	}
+
+	page2, _, err := s.ListSessions(Filter{Limit: 2, Offset: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page2) != 2 || page2[0].SessionKey == rows[0].SessionKey {
+		t.Error("Offset did not advance the page")
+	}
+}
+
+func TestSummaryByType(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	got, err := s.Summary(Filter{}, "type")
+	if err != nil {
+		t.Fatalf("Summary: %v", err)
+	}
+	byKey := map[string]SummaryRow{}
+	for _, r := range got {
+		byKey[r.Key] = r
+	}
+	// Practice: 2000 + 1400 driving seconds = 3400 s = 0.9444 h
+	if r, ok := byKey["Practice"]; !ok {
+		t.Error("no Practice row")
+	} else if math.Abs(r.DrivingHours-3400.0/3600.0) > 1e-9 {
+		t.Errorf("Practice DrivingHours = %v, want %v", r.DrivingHours, 3400.0/3600.0)
+	} else if r.Sessions != 2 {
+		t.Errorf("Practice Sessions = %d, want 2", r.Sessions)
+	}
+	// Race: 2800 + 3400 + 1000 = 7200 s = 2 h
+	if r := byKey["Race"]; math.Abs(r.DrivingHours-2.0) > 1e-9 {
+		t.Errorf("Race DrivingHours = %v, want 2.0", r.DrivingHours)
+	}
+}
+
+func TestSummaryByTypeContext(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	got, err := s.Summary(Filter{}, "typecontext")
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]bool{}
+	for _, r := range got {
+		keys[r.Key] = true
+	}
+	// This grouping is what drives the stacked bar, so both practice
+	// flavours must be distinguishable.
+	for _, want := range []string{"Practice/OfficialPractice", "Practice/OfficialRace", "Race/League", "Race/AI"} {
+		if !keys[want] {
+			t.Errorf("missing group %q; got %v", want, keys)
+		}
+	}
+}
+
+func TestSummaryGroupings(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	for _, g := range []string{"type", "context", "typecontext", "track", "car", "week", "month"} {
+		t.Run(g, func(t *testing.T) {
+			got, err := s.Summary(Filter{}, g)
+			if err != nil {
+				t.Fatalf("Summary(%q): %v", g, err)
+			}
+			if len(got) == 0 {
+				t.Errorf("Summary(%q) returned no rows", g)
+			}
+		})
+	}
+}
+
+// groupBy must be an allowlist, never interpolated. Otherwise an API
+// parameter becomes SQL injection.
+func TestSummaryRejectsUnknownGroupBy(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	for _, bad := range []string{"", "nonsense", "track; DROP TABLE sessions", "1=1"} {
+		if _, err := s.Summary(Filter{}, bad); !errors.Is(err, ErrBadGroupBy) {
+			t.Errorf("Summary(%q) = %v, want ErrBadGroupBy", bad, err)
+		}
+	}
+	// Prove nothing was dropped.
+	if _, total, err := s.ListSessions(Filter{}); err != nil || total != 6 {
+		t.Errorf("after injection attempts: total=%d err=%v, want 6 and nil", total, err)
+	}
+}
+
+func TestDaily(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	got, err := s.Daily(Filter{})
+	if err != nil {
+		t.Fatalf("Daily: %v", err)
+	}
+	byDay := map[string]float64{}
+	for _, r := range got {
+		byDay[r.Day] = r.DrivingHours
+	}
+	// 2026-07-08 has practice 1400 + qualify 450 + race 2800 = 4650 s.
+	if got := byDay["2026-07-08"]; math.Abs(got-4650.0/3600.0) > 1e-9 {
+		t.Errorf("2026-07-08 = %v hours, want %v", got, 4650.0/3600.0)
+	}
+	if len(byDay) != 5 {
+		t.Errorf("distinct days = %d, want 5", len(byDay))
+	}
+}
+
+func TestTotals(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	got, err := s.Totals(Filter{})
+	if err != nil {
+		t.Fatalf("Totals: %v", err)
+	}
+	// driving 2000+1400+450+2800+3400+1000 = 11050 s
+	// connected 3600+1800+600+3000+3600+1200 = 13800 s
+	wantDriving := 11050.0 / 3600.0
+	if math.Abs(got.DrivingHours-wantDriving) > 1e-9 {
+		t.Errorf("DrivingHours = %v, want %v", got.DrivingHours, wantDriving)
+	}
+	if math.Abs(got.Utilisation-11050.0/13800.0) > 1e-9 {
+		t.Errorf("Utilisation = %v, want %v", got.Utilisation, 11050.0/13800.0)
+	}
+	if got.Sessions != 6 {
+		t.Errorf("Sessions = %d, want 6", got.Sessions)
+	}
+	if got.Laps != 12 {
+		t.Errorf("Laps = %d, want 12", got.Laps)
+	}
+	// Three races, each with one OnTrack pass and one OnTrack loss.
+	if got.PassesMade != 3 || got.TimesPassed != 3 {
+		t.Errorf("passes=%d passed=%d, want 3 and 3 — attrition must be excluded", got.PassesMade, got.TimesPassed)
+	}
+}
+
+func TestTotalsExcludeAI(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	got, err := s.Totals(Filter{ExcludeAI: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Sessions != 5 {
+		t.Errorf("Sessions = %d, want 5 with AI excluded", got.Sessions)
+	}
+	if got.PassesMade != 2 {
+		t.Errorf("PassesMade = %d, want 2 with the AI race excluded", got.PassesMade)
+	}
+}
+
+// Utilisation must not divide by zero on an empty set.
+func TestTotalsEmptySet(t *testing.T) {
+	s := openTemp(t)
+	got, err := s.Totals(Filter{})
+	if err != nil {
+		t.Fatalf("Totals on an empty database = %v, want nil", err)
+	}
+	if got.Sessions != 0 || got.Utilisation != 0 {
+		t.Errorf("Totals = %+v, want zeroes", got)
+	}
+}
+
+func TestListLapsJoinsSessionContext(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	rows, total, err := s.ListLaps(Filter{TrackID: intp(341)})
+	if err != nil {
+		t.Fatalf("ListLaps: %v", err)
+	}
+	if total != 4 || len(rows) != 4 {
+		t.Errorf("total=%d len=%d, want 4 — two sessions at Spa, two laps each", total, len(rows))
+	}
+	for _, r := range rows {
+		if r.TrackName != "Spa" {
+			t.Errorf("TrackName = %q, want Spa", r.TrackName)
+		}
+		if r.SessionID == 0 || r.StartedAt == "" || r.SessionType == "" {
+			t.Errorf("session context not joined: %+v", r)
+		}
+	}
+}
+
+func TestFacets(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	got, err := s.Facets()
+	if err != nil {
+		t.Fatalf("Facets: %v", err)
+	}
+	if len(got.Tracks) != 2 {
+		t.Errorf("Tracks = %+v, want 2", got.Tracks)
+	}
+	if len(got.Cars) != 2 {
+		t.Errorf("Cars = %+v, want 2", got.Cars)
+	}
+	if len(got.Leagues) != 1 {
+		t.Errorf("Leagues = %+v, want 1", got.Leagues)
+	}
+	if len(got.SessionTypes) != 3 {
+		t.Errorf("SessionTypes = %v, want 3 (Practice, Qualify, Race)", got.SessionTypes)
+	}
+	// Counts let the UI show "Watkins Glen (4)".
+	for _, tr := range got.Tracks {
+		if tr.Name == "Watkins Glen" && tr.Sessions != 4 {
+			t.Errorf("Watkins Glen sessions = %d, want 4", tr.Sessions)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/store/ -run 'ListSessions|Summary|Daily|Totals|ListLaps|Facets' -v`
+Expected: FAIL — `undefined: Filter`, `undefined: (*Store).ListSessions`.
+
+- [ ] **Step 3: Write the filter and queries**
+
+Create `internal/store/queries.go`:
+
+```go
+package store
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+)
+
+// ErrBadGroupBy indicates an unrecognised Summary grouping.
+var ErrBadGroupBy = errors.New("store: unknown group_by")
+
+// sessionColumnsAliased is sessionColumns with every column qualified by
+// the table alias s, for queries that join. It is spelled out rather than
+// derived from sessionColumns by string substitution, because a silent
+// mismatch between the two would surface as a scan error at runtime
+// instead of a compile error. Keep the order identical to sessionColumns —
+// scanSession depends on it.
+const sessionColumnsAliased = `
+	s.id, s.uuid, s.session_key, s.subsession_id, s.session_num, s.session_type, s.event_context,
+	s.league_id, s.series_id, s.season_id, s.official,
+	s.track_id, s.track_name, s.track_config, s.track_length_km,
+	s.car_id, s.car_name, s.car_class_id, s.car_class_name,
+	s.started_at, s.ended_at,
+	s.connected_seconds, s.in_car_seconds, s.driving_seconds,
+	s.laps_completed, s.incidents, s.best_lap_time_s,
+	s.starting_position, s.finish_position, s.finish_class_position,
+	s.qualify_position, s.qualify_class_position, s.qualify_best_time_s, s.field_size,
+	s.ai_opponent_count, s.ai_detection, s.incident_source,
+	s.classify_source_json, s.capture_file,
+	s.created_at, s.updated_at, s.uploaded_at`
+
+// Filter selects a subset of sessions. Every list and aggregate query
+// takes the same filter, which is what lets an export honour exactly what
+// the UI is showing.
+type Filter struct {
+	From string // inclusive RFC3339 lower bound on started_at
+	To   string // inclusive RFC3339 upper bound on started_at
+
+	SessionType  []string
+	EventContext []string
+
+	TrackID  *int
+	CarID    *int
+	LeagueID *int
+
+	// ExcludeAI drops event_context = 'AI'. AI results are not comparable
+	// to human ones, so pace and pass metrics default to excluding them.
+	ExcludeAI bool
+
+	Limit  int
+	Offset int
+}
+
+// where renders the filter as a SQL predicate over a table aliased s,
+// plus its bound arguments. Every value is bound, never interpolated.
+func (f Filter) where() (string, []any) {
+	var conds []string
+	var args []any
+
+	if f.From != "" {
+		conds = append(conds, "s.started_at >= ?")
+		args = append(args, f.From)
+	}
+	if f.To != "" {
+		conds = append(conds, "s.started_at <= ?")
+		args = append(args, f.To)
+	}
+	if len(f.SessionType) > 0 {
+		conds = append(conds, "s.session_type IN ("+placeholders(len(f.SessionType))+")")
+		for _, v := range f.SessionType {
+			args = append(args, v)
+		}
+	}
+	if len(f.EventContext) > 0 {
+		conds = append(conds, "s.event_context IN ("+placeholders(len(f.EventContext))+")")
+		for _, v := range f.EventContext {
+			args = append(args, v)
+		}
+	}
+	if f.TrackID != nil {
+		conds = append(conds, "s.track_id = ?")
+		args = append(args, *f.TrackID)
+	}
+	if f.CarID != nil {
+		conds = append(conds, "s.car_id = ?")
+		args = append(args, *f.CarID)
+	}
+	if f.LeagueID != nil {
+		conds = append(conds, "s.league_id = ?")
+		args = append(args, *f.LeagueID)
+	}
+	if f.ExcludeAI {
+		conds = append(conds, "s.event_context <> 'AI'")
+	}
+	if len(conds) == 0 {
+		return "1=1", nil
+	}
+	return strings.Join(conds, " AND "), args
+}
+
+// placeholders returns "?, ?, ?" for n bound values.
+func placeholders(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strings.Repeat("?, ", n-1) + "?"
+}
+
+// limitClause renders LIMIT/OFFSET, or the empty string when unpaginated.
+func (f Filter) limitClause() (string, []any) {
+	if f.Limit <= 0 {
+		return "", nil
+	}
+	if f.Offset > 0 {
+		return " LIMIT ? OFFSET ?", []any{f.Limit, f.Offset}
+	}
+	return " LIMIT ?", []any{f.Limit}
+}
+
+// ListSessions returns matching sessions newest-first, plus the total
+// number of matches ignoring Limit and Offset so the UI can paginate.
+func (s *Store) ListSessions(f Filter) ([]Session, int, error) {
+	pred, args := f.where()
+
+	var total int
+	if err := s.reader.QueryRow(
+		`SELECT COUNT(*) FROM sessions s WHERE `+pred, args...,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: count sessions: %w", err)
+	}
+
+	lim, limArgs := f.limitClause()
+	q := `SELECT ` + sessionColumnsAliased +
+		` FROM sessions s WHERE ` + pred + ` ORDER BY s.started_at DESC, s.id DESC` + lim
+
+	rows, err := s.reader.Query(q, append(args, limArgs...)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: query sessions: %w", err)
+	}
+	defer rows.Close()
+
+	out := []Session{}
+	for rows.Next() {
+		rec, err := scanSession(rows)
+		if err != nil {
+			return nil, 0, fmt.Errorf("store: scan session: %w", err)
+		}
+		out = append(out, *rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, fmt.Errorf("store: iterate sessions: %w", err)
+	}
+	return out, total, nil
+}
+
+// SummaryRow is one group of aggregated session time.
+type SummaryRow struct {
+	Key            string  `json:"key"`
+	ConnectedHours float64 `json:"connectedHours"`
+	InCarHours     float64 `json:"inCarHours"`
+	DrivingHours   float64 `json:"drivingHours"`
+	Sessions       int     `json:"sessions"`
+	Laps           int     `json:"laps"`
+	Incidents      int     `json:"incidents"`
+}
+
+// groupByExpr maps an allowlisted grouping name to its SQL expression.
+//
+// This is an allowlist rather than interpolation on purpose: group_by
+// arrives from an HTTP query parameter, and interpolating it would be SQL
+// injection.
+var groupByExpr = map[string]string{
+	"type":        "s.session_type",
+	"context":     "s.event_context",
+	"typecontext": "s.session_type || '/' || s.event_context",
+	"track":       "COALESCE(s.track_name, 'Unknown')",
+	"car":         "COALESCE(s.car_name, 'Unknown')",
+	"week":        "strftime('%Y-W%W', s.started_at)",
+	"month":       "strftime('%Y-%m', s.started_at)",
+}
+
+// Summary aggregates session time grouped by one allowlisted dimension.
+func (s *Store) Summary(f Filter, groupBy string) ([]SummaryRow, error) {
+	expr, ok := groupByExpr[groupBy]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrBadGroupBy, groupBy)
+	}
+	pred, args := f.where()
+
+	q := `
+SELECT ` + expr + ` AS k,
+       SUM(s.connected_seconds) / 3600.0,
+       SUM(s.in_car_seconds) / 3600.0,
+       SUM(s.driving_seconds) / 3600.0,
+       COUNT(*),
+       SUM(s.laps_completed),
+       SUM(s.incidents)
+FROM sessions s
+WHERE ` + pred + `
+GROUP BY k
+ORDER BY k`
+
+	rows, err := s.reader.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: summary by %s: %w", groupBy, err)
+	}
+	defer rows.Close()
+
+	out := []SummaryRow{}
+	for rows.Next() {
+		var r SummaryRow
+		if err := rows.Scan(&r.Key, &r.ConnectedHours, &r.InCarHours, &r.DrivingHours,
+			&r.Sessions, &r.Laps, &r.Incidents); err != nil {
+			return nil, fmt.Errorf("store: scan summary row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// DailyRow is one day's driving time, for the calendar heatmap.
+type DailyRow struct {
+	Day          string  `json:"day"`
+	DrivingHours float64 `json:"drivingHours"`
+}
+
+// Daily returns driving hours per calendar day.
+func (s *Store) Daily(f Filter) ([]DailyRow, error) {
+	pred, args := f.where()
+	q := `
+SELECT date(s.started_at) AS day, SUM(s.driving_seconds) / 3600.0
+FROM sessions s
+WHERE ` + pred + `
+GROUP BY day
+ORDER BY day`
+
+	rows, err := s.reader.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: daily: %w", err)
+	}
+	defer rows.Close()
+
+	out := []DailyRow{}
+	for rows.Next() {
+		var r DailyRow
+		if err := rows.Scan(&r.Day, &r.DrivingHours); err != nil {
+			return nil, fmt.Errorf("store: scan daily row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// Totals is the headline figures for the dashboard KPI row.
+type Totals struct {
+	ConnectedHours   float64 `json:"connectedHours"`
+	InCarHours       float64 `json:"inCarHours"`
+	DrivingHours     float64 `json:"drivingHours"`
+	Utilisation      float64 `json:"utilisation"`
+	IncidentsPerHour float64 `json:"incidentsPerHour"`
+	Sessions         int     `json:"sessions"`
+	Laps             int     `json:"laps"`
+	Incidents        int     `json:"incidents"`
+	PassesMade       int     `json:"passesMade"`
+	TimesPassed      int     `json:"timesPassed"`
+}
+
+// Totals computes the dashboard headline figures.
+func (s *Store) Totals(f Filter) (Totals, error) {
+	pred, args := f.where()
+
+	var t Totals
+	// COALESCE guards the empty set: SUM over no rows is NULL, not 0.
+	err := s.reader.QueryRow(`
+SELECT COALESCE(SUM(s.connected_seconds), 0) / 3600.0,
+       COALESCE(SUM(s.in_car_seconds), 0) / 3600.0,
+       COALESCE(SUM(s.driving_seconds), 0) / 3600.0,
+       COUNT(*),
+       COALESCE(SUM(s.laps_completed), 0),
+       COALESCE(SUM(s.incidents), 0)
+FROM sessions s WHERE `+pred, args...,
+	).Scan(&t.ConnectedHours, &t.InCarHours, &t.DrivingHours, &t.Sessions, &t.Laps, &t.Incidents)
+	if err != nil {
+		return Totals{}, fmt.Errorf("store: totals: %w", err)
+	}
+	if t.ConnectedHours > 0 {
+		t.Utilisation = t.DrivingHours / t.ConnectedHours
+	}
+	if t.DrivingHours > 0 {
+		t.IncidentsPerHour = float64(t.Incidents) / t.DrivingHours
+	}
+
+	// Only OnTrack causes count: a position gained because someone else
+	// pitted is not a pass.
+	err = s.reader.QueryRow(`
+SELECT COALESCE(SUM(CASE WHEN pe.to_position < pe.from_position THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN pe.to_position > pe.from_position THEN 1 ELSE 0 END), 0)
+FROM position_events pe JOIN sessions s ON s.id = pe.session_id
+WHERE pe.cause = 'OnTrack' AND `+pred, args...,
+	).Scan(&t.PassesMade, &t.TimesPassed)
+	if err != nil {
+		return Totals{}, fmt.Errorf("store: pass totals: %w", err)
+	}
+	return t, nil
+}
+
+// LapRow is a lap joined to the context of the session it belongs to, so
+// the flat lap table can be read without a second query.
+type LapRow struct {
+	Lap
+	StartedAt    string  `json:"startedAt"`
+	TrackName    string  `json:"trackName"`
+	CarName      string  `json:"carName"`
+	SessionType  string  `json:"sessionType"`
+	EventContext string  `json:"eventContext"`
+}
+
+// ListLaps returns laps across sessions matching the filter, newest first,
+// plus the total match count.
+func (s *Store) ListLaps(f Filter) ([]LapRow, int, error) {
+	pred, args := f.where()
+
+	var total int
+	if err := s.reader.QueryRow(
+		`SELECT COUNT(*) FROM laps l JOIN sessions s ON s.id = l.session_id WHERE `+pred, args...,
+	).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("store: count laps: %w", err)
+	}
+
+	lim, limArgs := f.limitClause()
+	q := `
+SELECT l.id, l.uuid, l.session_id, l.lap_number,
+       l.lap_time_s, l.delta_to_best_s, l.fuel_used_l, l.fuel_level_end_l,
+       l.incidents_on_lap, l.is_pit_lap, l.position, l.class_position,
+       l.recorded_at, l.uploaded_at,
+       s.started_at, COALESCE(s.track_name, ''), COALESCE(s.car_name, ''),
+       s.session_type, s.event_context
+FROM laps l JOIN sessions s ON s.id = l.session_id
+WHERE ` + pred + `
+ORDER BY s.started_at DESC, l.lap_number DESC` + lim
+
+	rows, err := s.reader.Query(q, append(args, limArgs...)...)
+	if err != nil {
+		return nil, 0, fmt.Errorf("store: query laps: %w", err)
+	}
+	defer rows.Close()
+
+	out := []LapRow{}
+	for rows.Next() {
+		var r LapRow
+		if err := rows.Scan(
+			&r.ID, &r.UUID, &r.SessionID, &r.LapNumber,
+			&r.LapTimeS, &r.DeltaToBestS, &r.FuelUsedL, &r.FuelLevelEndL,
+			&r.IncidentsOnLap, &r.IsPitLap, &r.Position, &r.ClassPosition,
+			&r.RecordedAt, &r.UploadedAt,
+			&r.StartedAt, &r.TrackName, &r.CarName, &r.SessionType, &r.EventContext,
+		); err != nil {
+			return nil, 0, fmt.Errorf("store: scan lap row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, total, rows.Err()
+}
+
+// Facet is one filter option with the number of sessions it matches.
+type Facet struct {
+	ID       int    `json:"id"`
+	Name     string `json:"name"`
+	Sessions int    `json:"sessions"`
+}
+
+// Facets is the set of filter options the UI offers.
+type Facets struct {
+	Tracks        []Facet  `json:"tracks"`
+	Cars          []Facet  `json:"cars"`
+	Leagues       []Facet  `json:"leagues"`
+	SessionTypes  []string `json:"sessionTypes"`
+	EventContexts []string `json:"eventContexts"`
+}
+
+// Facets returns the distinct filterable values present in the database.
+func (s *Store) Facets() (Facets, error) {
+	var f Facets
+
+	idNameCount := func(idCol, nameCol string, skipZero bool) ([]Facet, error) {
+		q := `SELECT ` + idCol + `, COALESCE(` + nameCol + `, 'Unknown'), COUNT(*)
+		      FROM sessions WHERE ` + idCol + ` IS NOT NULL`
+		if skipZero {
+			q += ` AND ` + idCol + ` <> 0`
+		}
+		q += ` GROUP BY ` + idCol + ` ORDER BY 2`
+		rows, err := s.reader.Query(q)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := []Facet{}
+		for rows.Next() {
+			var x Facet
+			if err := rows.Scan(&x.ID, &x.Name, &x.Sessions); err != nil {
+				return nil, err
+			}
+			out = append(out, x)
+		}
+		return out, rows.Err()
+	}
+
+	distinct := func(col string) ([]string, error) {
+		rows, err := s.reader.Query(`SELECT DISTINCT ` + col + ` FROM sessions ORDER BY 1`)
+		if err != nil {
+			return nil, err
+		}
+		defer rows.Close()
+		out := []string{}
+		for rows.Next() {
+			var v string
+			if err := rows.Scan(&v); err != nil {
+				return nil, err
+			}
+			out = append(out, v)
+		}
+		return out, rows.Err()
+	}
+
+	var err error
+	if f.Tracks, err = idNameCount("track_id", "track_name", false); err != nil {
+		return Facets{}, fmt.Errorf("store: track facets: %w", err)
+	}
+	if f.Cars, err = idNameCount("car_id", "car_name", false); err != nil {
+		return Facets{}, fmt.Errorf("store: car facets: %w", err)
+	}
+	// League 0 means "not a league session", so it is not a filter option.
+	if f.Leagues, err = idNameCount("league_id", "CAST(league_id AS TEXT)", true); err != nil {
+		return Facets{}, fmt.Errorf("store: league facets: %w", err)
+	}
+	if f.SessionTypes, err = distinct("session_type"); err != nil {
+		return Facets{}, fmt.Errorf("store: session type facets: %w", err)
+	}
+	if f.EventContexts, err = distinct("event_context"); err != nil {
+		return Facets{}, fmt.Errorf("store: event context facets: %w", err)
+	}
+	return f, nil
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/store/ -v`
+Expected: PASS, all tests across the four store test files.
+
+- [ ] **Step 5: Add a guard test for the two column lists**
+
+The two column constants must stay in the same order, since `scanSession` reads positionally. Append to `internal/store/queries_test.go`:
+
+```go
+// sessionColumns and sessionColumnsAliased must list the same columns in
+// the same order, or scanSession reads the wrong field into the wrong
+// struct member and the failure is silent.
+func TestColumnListsAgree(t *testing.T) {
+	split := func(s string) []string {
+		var out []string
+		for _, part := range strings.Split(s, ",") {
+			out = append(out, strings.TrimSpace(part))
+		}
+		return out
+	}
+	plain := split(sessionColumns)
+	aliased := split(sessionColumnsAliased)
+
+	if len(plain) != len(aliased) {
+		t.Fatalf("column counts differ: %d plain, %d aliased", len(plain), len(aliased))
+	}
+	for i := range plain {
+		want := "s." + plain[i]
+		if aliased[i] != want {
+			t.Errorf("column %d: aliased is %q, want %q", i, aliased[i], want)
+		}
+	}
+}
+```
+
+Add `"strings"` to that file's import block.
+
+- [ ] **Step 6: Run the guard test**
+
+Run: `go test ./internal/store/ -run ColumnListsAgree -v`
+Expected: PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/store/
+git commit -m "Add session filters and aggregation queries"
+```
