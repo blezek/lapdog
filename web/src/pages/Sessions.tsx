@@ -5,7 +5,7 @@ import { api, type Lap, type PositionEvent, type Session } from '../api'
 import {
   causeLabel,
   dateTime,
-  dayShort,
+  day,
   delta,
   hm,
   label,
@@ -122,7 +122,13 @@ export function Sessions() {
                 onClick={() => setSelected(s.id)}
               >
                 <div className="when">
-                  {dayShort(s.startedAt)} · {label(s.sessionType, s.eventContext)}
+                  {/*
+                    The year is included here, unlike the dense tables elsewhere. This
+                    list spans whatever the filter covers — two years under "All time" —
+                    so a bare "Aug 4" is ambiguous between several sessions that are a
+                    year apart and look otherwise identical.
+                  */}
+                  {day(s.startedAt)} · {label(s.sessionType, s.eventContext)}
                 </div>
                 <div className="what">
                   {s.trackName ?? 'Unknown track'} · {hm(s.drivingSeconds)} driving
