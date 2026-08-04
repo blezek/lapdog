@@ -1,1 +1,5 @@
 .superpowers/
+
+# Generated datasets: the full two-year set is ~250 MB, regenerate with
+#   go run ./cmd/lapdog-gen -dir .dataset
+.dataset/
