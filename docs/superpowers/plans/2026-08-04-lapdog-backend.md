@@ -10555,3 +10555,874 @@ Expected: PASS with no race reports. `Status` is read from the HTTP goroutine wh
 git add internal/collector/ internal/source/ internal/irsdk/
 git commit -m "Add collector poll loop with flushing and capture integration"
 ```
+
+---
+
+### Task 19: NDJSON codec and the lapdogctl development CLI
+
+**Files:**
+- Create: `internal/capture/ndjson.go`, `internal/store/reclassify.go`, `cmd/lapdogctl/main.go`
+- Test: `internal/capture/ndjson_test.go`, `internal/store/reclassify_test.go`
+
+**Interfaces:**
+- Consumes: Task 5's `capture.Reader`/`Writer`; Task 8's `classify`; Task 11's `store.Session`.
+- Produces:
+  - `func Inspect(path string, w io.Writer) error` — dump a capture as NDJSON
+  - `func Build(r io.Reader, outPath string) error` — compile NDJSON into a capture
+  - `func (s *Store) Reclassify() (updated int, err error)`
+  - `cmd/lapdogctl` with subcommands `inspect`, `build`, `reclassify`
+
+`lapdogctl` is a console binary and is **not** shipped in releases. It exists because `cmd/lapdog` is linked `-H windowsgui` and so has no console.
+
+`Build` is what makes edge cases reachable. A league race, a session ending mid-lap, or a driver disconnecting mid-pass can be hand-authored as NDJSON rather than driven in the sim.
+
+`Reclassify` replays `classify_source_json` through the current classifier and rewrites `session_type`, `event_context`, `ai_opponent_count` and `ai_detection`. It is the mechanism that makes spec §6.5's unverified AI field survivable: drive one AI race, confirm the field name, then fix all history.
+
+- [ ] **Step 1: Write the failing NDJSON test**
+
+Create `internal/capture/ndjson_test.go`:
+
+```go
+package capture
+
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+func TestInspectEmitsOneObjectPerRecord(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.lpd")
+	w, err := NewWriter(path, testMeta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteSession(0, 1, []byte("WeekendInfo:\n TrackID: 18\n"))
+	w.WriteVars(1, 100, []byte{7, 0, 0, 0, 0, 0, 0, 0})
+	w.WriteVars(2, 160, []byte{8, 0, 0, 0, 0, 0, 0, 0})
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if err := Inspect(path, &out); err != nil {
+		t.Fatalf("Inspect: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("lines = %d, want 4 (header, session, two vars)\n%s", len(lines), out.String())
+	}
+
+	var hdr map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &hdr); err != nil {
+		t.Fatalf("line 1 is not JSON: %v", err)
+	}
+	if hdr["type"] != "header" {
+		t.Errorf("line 1 type = %v, want header", hdr["type"])
+	}
+
+	var sess map[string]any
+	json.Unmarshal([]byte(lines[1]), &sess)
+	if sess["type"] != "session" {
+		t.Errorf("line 2 type = %v, want session", sess["type"])
+	}
+	if !strings.Contains(sess["yaml"].(string), "TrackID: 18") {
+		t.Errorf("line 2 yaml = %v", sess["yaml"])
+	}
+
+	// Variable records must be decoded to named values, which is the whole
+	// point of inspect: a fixture becomes readable without running code.
+	var vars map[string]any
+	json.Unmarshal([]byte(lines[2]), &vars)
+	if vars["type"] != "vars" {
+		t.Errorf("line 3 type = %v, want vars", vars["type"])
+	}
+	values, ok := vars["values"].(map[string]any)
+	if !ok {
+		t.Fatalf("line 3 has no values object: %v", vars)
+	}
+	if values["Lap"] != float64(7) {
+		t.Errorf("values.Lap = %v, want 7", values["Lap"])
+	}
+}
+
+// Build then read must reproduce the same raw rows, so hand-authored
+// fixtures behave identically to captured ones.
+func TestBuildRoundTripsThroughInspect(t *testing.T) {
+	orig := filepath.Join(t.TempDir(), "orig.lpd")
+	w, err := NewWriter(orig, testMeta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.WriteSession(0, 1, []byte("WeekendInfo:\n TrackID: 18\n"))
+	w.WriteVars(1, 100, []byte{7, 0, 0, 0, 0, 0, 0, 0})
+	w.Close()
+
+	var dumped bytes.Buffer
+	if err := Inspect(orig, &dumped); err != nil {
+		t.Fatal(err)
+	}
+
+	rebuilt := filepath.Join(t.TempDir(), "rebuilt.lpd")
+	if err := Build(bytes.NewReader(dumped.Bytes()), rebuilt); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	r, err := OpenReader(rebuilt)
+	if err != nil {
+		t.Fatalf("OpenReader on the rebuilt capture: %v", err)
+	}
+	defer r.Close()
+	if r.Meta().BufLen != 8 || len(r.Meta().VarHeaders) != 2 {
+		t.Errorf("rebuilt Meta = %+v", r.Meta())
+	}
+
+	rec, err := r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Kind != KindSession || !strings.Contains(string(rec.YAML), "TrackID: 18") {
+		t.Errorf("rebuilt record 1 = %+v", rec)
+	}
+	rec, err = r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rec.Kind != KindVars || rec.TickCount != 100 {
+		t.Errorf("rebuilt record 2 = %+v", rec)
+	}
+	if len(rec.Vars) != 8 || rec.Vars[0] != 7 {
+		t.Errorf("rebuilt raw row = %v, want the original bytes", rec.Vars)
+	}
+}
+
+// Hand-authored NDJSON must work, which is the reason Build exists.
+func TestBuildFromHandWrittenNDJSON(t *testing.T) {
+	authored := `{"type":"header","t":0,"meta":{"tickRate":60,"numVars":1,"bufLen":4,"varHeaders":[{"Type":2,"Offset":0,"Count":1,"CountAsTime":false,"Name":"Lap","Desc":"Lap count","Unit":""}]}}
+{"type":"session","t":0,"update":1,"yaml":"WeekendInfo:\n LeagueID: 4242\n"}
+{"type":"vars","t":1,"tickCount":60,"values":{"Lap":3}}
+{"type":"vars","t":2,"tickCount":120,"values":{"Lap":4}}
+`
+	out := filepath.Join(t.TempDir(), "authored.lpd")
+	if err := Build(strings.NewReader(authored), out); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	r, err := OpenReader(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	rec, _ := r.Next()
+	if rec.Kind != KindSession || !strings.Contains(string(rec.YAML), "LeagueID: 4242") {
+		t.Errorf("record 1 = %+v", rec)
+	}
+	rec, err = r.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The authored value must be encoded into the raw row at the right offset.
+	row := irsdk.NewRow(r.Meta().VarHeaders, rec.Vars)
+	if lap, ok := row.Int("Lap"); !ok || lap != 3 {
+		t.Errorf("decoded Lap = %d, %v; want 3, true", lap, ok)
+	}
+}
+
+func TestBuildRejectsNDJSONWithoutHeader(t *testing.T) {
+	bad := `{"type":"vars","t":1,"tickCount":60,"values":{"Lap":3}}` + "\n"
+	err := Build(strings.NewReader(bad), filepath.Join(t.TempDir(), "x.lpd"))
+	if err == nil {
+		t.Fatal("Build with no header record = nil, want an error")
+	}
+}
+
+func TestBuildRejectsMalformedLine(t *testing.T) {
+	bad := `{"type":"header","t":0,"meta":{"tickRate":60,"numVars":0,"bufLen":4,"varHeaders":[]}}
+{not json}
+`
+	if err := Build(strings.NewReader(bad), filepath.Join(t.TempDir(), "x.lpd")); err == nil {
+		t.Fatal("Build with a malformed line = nil, want an error")
+	}
+}
+
+func TestInspectRejectsNonCapture(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "nope.lpd")
+	if err := os.WriteFile(p, []byte("not a capture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := Inspect(p, io.Discard); err == nil {
+		t.Fatal("Inspect on a non-capture file = nil, want an error")
+	}
+}
+```
+
+This file's import block is:
+
+```go
+import (
+	"bytes"
+	"encoding/json"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/capture/ -run 'Inspect|Build' -v`
+Expected: FAIL — `undefined: Inspect`, `undefined: Build`.
+
+- [ ] **Step 3: Write the NDJSON codec**
+
+Create `internal/capture/ndjson.go`:
+
+```go
+package capture
+
+import (
+	"bufio"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// ndjsonRecord is the readable form of a capture record.
+//
+// Variable rows are emitted with values already decoded, which is what
+// makes a fixture readable without running code and hand-authorable
+// without an encoder.
+type ndjsonRecord struct {
+	Type      string          `json:"type"`
+	T         float64         `json:"t"`
+	Update    uint32          `json:"update,omitempty"`
+	TickCount uint32          `json:"tickCount,omitempty"`
+	YAML      string          `json:"yaml,omitempty"`
+	Meta      *Meta           `json:"meta,omitempty"`
+	Values    map[string]any  `json:"values,omitempty"`
+}
+
+// Inspect writes a capture to w as newline-delimited JSON, one object per
+// record, with variable rows decoded to named values.
+func Inspect(path string, w io.Writer) error {
+	r, err := OpenReader(path)
+	if err != nil {
+		return err
+	}
+	defer r.Close()
+
+	meta := r.Meta()
+	enc := json.NewEncoder(w)
+
+	if err := enc.Encode(ndjsonRecord{Type: "header", Meta: &meta}); err != nil {
+		return fmt.Errorf("capture: encode header: %w", err)
+	}
+
+	for {
+		rec, err := r.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		out := ndjsonRecord{T: rec.T}
+		switch rec.Kind {
+		case KindSession:
+			out.Type = "session"
+			out.Update = rec.Update
+			out.YAML = string(rec.YAML)
+		case KindVars:
+			out.Type = "vars"
+			out.TickCount = rec.TickCount
+			out.Values = decodeAll(meta.VarHeaders, rec.Vars)
+		default:
+			continue
+		}
+		if err := enc.Encode(out); err != nil {
+			return fmt.Errorf("capture: encode record: %w", err)
+		}
+	}
+}
+
+// decodeAll renders every variable in the row as a JSON-friendly value.
+func decodeAll(vh []irsdk.VarHeader, data []byte) map[string]any {
+	row := irsdk.NewRow(vh, data)
+	out := make(map[string]any, len(vh))
+	for _, v := range vh {
+		if v.Count > 1 {
+			switch v.Type {
+			case irsdk.VarInt, irsdk.VarBitField:
+				if a, ok := row.IntArray(v.Name); ok {
+					out[v.Name] = a
+				}
+			case irsdk.VarBool:
+				if a, ok := row.BoolArray(v.Name); ok {
+					out[v.Name] = a
+				}
+			case irsdk.VarFloat, irsdk.VarDouble:
+				if a, ok := row.FloatArray(v.Name); ok {
+					out[v.Name] = a
+				}
+			}
+			continue
+		}
+		switch v.Type {
+		case irsdk.VarInt:
+			if x, ok := row.Int(v.Name); ok {
+				out[v.Name] = x
+			}
+		case irsdk.VarBitField:
+			if x, ok := row.BitField(v.Name); ok {
+				out[v.Name] = x
+			}
+		case irsdk.VarBool:
+			if x, ok := row.Bool(v.Name); ok {
+				out[v.Name] = x
+			}
+		case irsdk.VarFloat, irsdk.VarDouble:
+			if x, ok := row.Float(v.Name); ok {
+				out[v.Name] = x
+			}
+		}
+	}
+	return out
+}
+
+// Build compiles newline-delimited JSON into a capture file.
+//
+// The first record must be a header carrying the variable layout, since
+// values cannot be encoded into a row without it. This is the path that
+// makes synthetic edge cases authorable by hand.
+func Build(r io.Reader, outPath string) error {
+	sc := bufio.NewScanner(r)
+	sc.Buffer(make([]byte, 0, 1<<20), 16<<20)
+
+	var w *Writer
+	var meta Meta
+	line := 0
+
+	for sc.Scan() {
+		line++
+		text := sc.Bytes()
+		if len(text) == 0 {
+			continue
+		}
+		var rec ndjsonRecord
+		if err := json.Unmarshal(text, &rec); err != nil {
+			if w != nil {
+				w.Close()
+			}
+			return fmt.Errorf("capture: line %d is not valid JSON: %w", line, err)
+		}
+
+		if rec.Type == "header" {
+			if rec.Meta == nil {
+				return fmt.Errorf("capture: line %d is a header with no meta", line)
+			}
+			meta = *rec.Meta
+			var err error
+			if w, err = NewWriter(outPath, meta); err != nil {
+				return err
+			}
+			continue
+		}
+		if w == nil {
+			return errors.New("capture: the first record must be a header")
+		}
+
+		switch rec.Type {
+		case "session":
+			if err := w.WriteSession(rec.T, rec.Update, []byte(rec.YAML)); err != nil {
+				w.Close()
+				return err
+			}
+		case "vars":
+			row, err := encodeAll(meta, rec.Values)
+			if err != nil {
+				w.Close()
+				return fmt.Errorf("capture: line %d: %w", line, err)
+			}
+			if err := w.WriteVars(rec.T, rec.TickCount, row); err != nil {
+				w.Close()
+				return err
+			}
+		default:
+			w.Close()
+			return fmt.Errorf("capture: line %d has unknown type %q", line, rec.Type)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		if w != nil {
+			w.Close()
+		}
+		return fmt.Errorf("capture: read NDJSON: %w", err)
+	}
+	if w == nil {
+		return errors.New("capture: no header record found")
+	}
+	return w.Close()
+}
+
+// encodeAll packs named values back into a raw variable row.
+//
+// Values absent from the map are left zero, so a hand-authored fixture only
+// needs to name the variables the test actually cares about.
+func encodeAll(meta Meta, values map[string]any) ([]byte, error) {
+	buf := make([]byte, meta.BufLen)
+	for _, v := range meta.VarHeaders {
+		raw, ok := values[v.Name]
+		if !ok {
+			continue
+		}
+		if err := encodeOne(buf, v, raw); err != nil {
+			return nil, fmt.Errorf("variable %s: %w", v.Name, err)
+		}
+	}
+	return buf, nil
+}
+
+// encodeOne writes a single variable's value into the row.
+func encodeOne(buf []byte, v irsdk.VarHeader, raw any) error {
+	// JSON numbers arrive as float64 and arrays as []any.
+	if list, ok := raw.([]any); ok {
+		for i, item := range list {
+			if int32(i) >= v.Count {
+				break
+			}
+			if err := writeScalar(buf, v, i, item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return writeScalar(buf, v, 0, raw)
+}
+
+// writeScalar writes element i of a variable.
+func writeScalar(buf []byte, v irsdk.VarHeader, i int, raw any) error {
+	size := v.Type.Size()
+	if size == 0 {
+		return fmt.Errorf("unknown type %d", v.Type)
+	}
+	off := int(v.Offset) + i*size
+	if off < 0 || off+size > len(buf) {
+		return fmt.Errorf("element %d is outside the row", i)
+	}
+
+	switch v.Type {
+	case irsdk.VarBool:
+		b, ok := raw.(bool)
+		if !ok {
+			n, nok := raw.(float64)
+			if !nok {
+				return fmt.Errorf("want a boolean, got %T", raw)
+			}
+			b = n != 0
+		}
+		if b {
+			buf[off] = 1
+		}
+	case irsdk.VarChar:
+		n, ok := raw.(float64)
+		if !ok {
+			return fmt.Errorf("want a number, got %T", raw)
+		}
+		buf[off] = byte(int64(n))
+	case irsdk.VarInt, irsdk.VarBitField:
+		n, ok := raw.(float64)
+		if !ok {
+			return fmt.Errorf("want a number, got %T", raw)
+		}
+		binary.LittleEndian.PutUint32(buf[off:], uint32(int32(n)))
+	case irsdk.VarFloat:
+		n, ok := raw.(float64)
+		if !ok {
+			return fmt.Errorf("want a number, got %T", raw)
+		}
+		binary.LittleEndian.PutUint32(buf[off:], math.Float32bits(float32(n)))
+	case irsdk.VarDouble:
+		n, ok := raw.(float64)
+		if !ok {
+			return fmt.Errorf("want a number, got %T", raw)
+		}
+		binary.LittleEndian.PutUint64(buf[off:], math.Float64bits(n))
+	}
+	return nil
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/capture/ -v`
+Expected: PASS, all capture tests.
+
+- [ ] **Step 5: Write the failing reclassify test**
+
+Create `internal/store/reclassify_test.go`:
+
+```go
+package store
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestReclassifyCorrectsStoredClassification(t *testing.T) {
+	s := openTemp(t)
+
+	raw, err := os.ReadFile(filepath.Join("..", "sessionyaml", "testdata", "race_weekend.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Store the YAML as JSON provenance the way the collector would, but
+	// with a deliberately wrong classification, standing in for a rule that
+	// was wrong when the session was recorded.
+	sourceJSON, err := yamlToJSON(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	rec := &Session{
+		SessionKey:         "55667788/2",
+		SubsessionID:       55667788,
+		SessionNum:         2,
+		SessionType:        "Practice",  // wrong
+		EventContext:       "Hosted",    // wrong
+		StartedAt:          "2026-08-04T19:30:00Z",
+		ClassifySourceJSON: sourceJSON,
+		IncidentSource:     "yaml",
+	}
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	updated, err := s.Reclassify()
+	if err != nil {
+		t.Fatalf("Reclassify: %v", err)
+	}
+	if updated != 1 {
+		t.Errorf("updated = %d, want 1", updated)
+	}
+
+	got, err := s.SessionByKey("55667788/2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SessionType != "Race" {
+		t.Errorf("SessionType = %q, want Race after reclassification", got.SessionType)
+	}
+	if got.EventContext != "OfficialRace" {
+		t.Errorf("EventContext = %q, want OfficialRace", got.EventContext)
+	}
+	if got.AIDetection == nil || *got.AIDetection != "none" {
+		t.Errorf("AIDetection = %v, want none", got.AIDetection)
+	}
+}
+
+// A row whose classification is already correct must not be counted as
+// updated, so the command reports real work.
+func TestReclassifyLeavesCorrectRowsAlone(t *testing.T) {
+	s := openTemp(t)
+	raw, _ := os.ReadFile(filepath.Join("..", "sessionyaml", "testdata", "race_weekend.yaml"))
+	sourceJSON, _ := yamlToJSON(raw)
+
+	rec := &Session{
+		SessionKey: "55667788/2", SubsessionID: 55667788, SessionNum: 2,
+		SessionType: "Race", EventContext: "OfficialRace",
+		StartedAt: "2026-08-04T19:30:00Z", ClassifySourceJSON: sourceJSON,
+		AIDetection: strp("none"), IncidentSource: "yaml",
+	}
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := s.Reclassify()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated != 0 {
+		t.Errorf("updated = %d, want 0 for an already-correct row", updated)
+	}
+}
+
+// A row with unusable provenance must be skipped, not crash the run.
+func TestReclassifySkipsUnusableProvenance(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+	rec.ClassifySourceJSON = "{}"
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Reclassify(); err != nil {
+		t.Fatalf("Reclassify with empty provenance = %v, want nil", err)
+	}
+}
+
+// yamlToJSON converts a session YAML document to the JSON provenance form
+// the collector stores in classify_source_json.
+func yamlToJSON(raw []byte) (string, error) {
+	info, err := sessionyaml.Parse(raw)
+	if err != nil {
+		return "", err
+	}
+	b, err := json.Marshal(info)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+```
+
+This file's import block is:
+
+```go
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/sessionyaml"
+)
+```
+
+- [ ] **Step 6: Write reclassify**
+
+Create `internal/store/reclassify.go`:
+
+```go
+package store
+
+import (
+	"encoding/json"
+	"fmt"
+
+	"github.com/blezek/lapdog/internal/classify"
+	"github.com/blezek/lapdog/internal/sessionyaml"
+)
+
+// Reclassify replays every session's stored provenance through the current
+// classifier and rewrites the classification columns where the answer has
+// changed.
+//
+// This is what makes an incorrect classification rule survivable: history
+// is fixed in place with no re-driving. It is the intended remedy for the
+// unverified AI detection field (spec section 6.5) once a real AI session
+// has confirmed the field name.
+//
+// Rows whose provenance is missing or unusable are skipped rather than
+// failing the run, since a partial fix is better than none.
+func (s *Store) Reclassify() (int, error) {
+	rows, err := s.reader.Query(
+		`SELECT id, session_num, session_type, event_context,
+		        ai_opponent_count, COALESCE(ai_detection, ''), classify_source_json
+		 FROM sessions ORDER BY id`)
+	if err != nil {
+		return 0, fmt.Errorf("store: read sessions for reclassify: %w", err)
+	}
+
+	type pending struct {
+		id      int64
+		st, ctx string
+		aiCount int
+		aiHow   string
+	}
+	var work []pending
+
+	for rows.Next() {
+		var (
+			id        int64
+			num       int
+			st, ctx   string
+			aiCount   int
+			aiHow     string
+			source    string
+		)
+		if err := rows.Scan(&id, &num, &st, &ctx, &aiCount, &aiHow, &source); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("store: scan session for reclassify: %w", err)
+		}
+		if source == "" || source == "{}" {
+			continue
+		}
+		var info sessionyaml.Info
+		if err := json.Unmarshal([]byte(source), &info); err != nil {
+			continue
+		}
+		res := classify.Classify(&info, num)
+		if string(res.SessionType) == st &&
+			string(res.EventContext) == ctx &&
+			res.AIOpponentCount == aiCount &&
+			string(res.AIDetection) == aiHow {
+			continue
+		}
+		work = append(work, pending{
+			id:      id,
+			st:      string(res.SessionType),
+			ctx:     string(res.EventContext),
+			aiCount: res.AIOpponentCount,
+			aiHow:   string(res.AIDetection),
+		})
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("store: iterate sessions for reclassify: %w", err)
+	}
+	rows.Close()
+
+	if len(work) == 0 {
+		return 0, nil
+	}
+
+	tx, err := s.writer.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("store: begin reclassify: %w", err)
+	}
+	for _, p := range work {
+		if _, err := tx.Exec(
+			`UPDATE sessions
+			 SET session_type = ?, event_context = ?, ai_opponent_count = ?,
+			     ai_detection = ?, updated_at = ?
+			 WHERE id = ?`,
+			p.st, p.ctx, p.aiCount, p.aiHow, Now(), p.id,
+		); err != nil {
+			tx.Rollback()
+			return 0, fmt.Errorf("store: reclassify session %d: %w", p.id, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("store: commit reclassify: %w", err)
+	}
+	return len(work), nil
+}
+```
+
+- [ ] **Step 7: Write the CLI**
+
+Create `cmd/lapdogctl/main.go`:
+
+```go
+// Command lapdogctl is a development tool for working with LapDog capture
+// files and databases.
+//
+// It is a separate binary from cmd/lapdog because that one is linked
+// -H windowsgui and therefore has no console. lapdogctl is not shipped in
+// releases.
+package main
+
+import (
+	"fmt"
+	"os"
+
+	"github.com/blezek/lapdog/internal/capture"
+	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/version"
+)
+
+const usage = `lapdogctl — LapDog development tool
+
+Usage:
+  lapdogctl inspect <file.lpd>              dump a capture as NDJSON
+  lapdogctl build <file.ndjson> <out.lpd>   compile NDJSON into a capture
+  lapdogctl reclassify <lapdog.db>          re-derive classification from stored provenance
+  lapdogctl version
+`
+
+func main() {
+	if len(os.Args) < 2 {
+		fmt.Fprint(os.Stderr, usage)
+		os.Exit(2)
+	}
+	if err := run(os.Args[1], os.Args[2:]); err != nil {
+		fmt.Fprintf(os.Stderr, "lapdogctl: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(cmd string, args []string) error {
+	switch cmd {
+	case "inspect":
+		if len(args) != 1 {
+			return fmt.Errorf("inspect takes one capture file")
+		}
+		return capture.Inspect(args[0], os.Stdout)
+
+	case "build":
+		if len(args) != 2 {
+			return fmt.Errorf("build takes an NDJSON file and an output path")
+		}
+		f, err := os.Open(args[0])
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return capture.Build(f, args[1])
+
+	case "reclassify":
+		if len(args) != 1 {
+			return fmt.Errorf("reclassify takes a database path")
+		}
+		s, err := store.Open(args[0])
+		if err != nil {
+			return err
+		}
+		defer s.Close()
+		n, err := s.Reclassify()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("reclassified %d session(s)\n", n)
+		return nil
+
+	case "version":
+		fmt.Println(version.String())
+		return nil
+
+	default:
+		fmt.Fprint(os.Stderr, usage)
+		return fmt.Errorf("unknown command %q", cmd)
+	}
+}
+```
+
+- [ ] **Step 8: Run the tests and build the CLI**
+
+```bash
+go test ./internal/capture/ ./internal/store/ -v
+make build-ctl
+./dist/lapdogctl version
+```
+
+Expected: tests PASS; `lapdogctl version` prints `lapdog 0.1.0`.
+
+- [ ] **Step 9: Verify inspect and build against a real fixture end to end**
+
+```bash
+go test ./internal/collector/ -run TestCollectorWritesCaptureFile
+```
+
+Expected: PASS. That test already asserts the collector's own capture is replayable, which combined with the round-trip tests covers the full loop.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/capture/ internal/store/ cmd/lapdogctl/
+git commit -m "Add NDJSON capture codec and lapdogctl development CLI"
+```
