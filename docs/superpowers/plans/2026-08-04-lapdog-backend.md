@@ -1,0 +1,2240 @@
+# LapDog Backend Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Build the Go backend for LapDog — a Windows tray application that reads the iRacing telemetry shared-memory API, classifies and records sim sessions to SQLite, and serves a JSON API and CSV/JSON export on `localhost:47047`.
+
+**Architecture:** Single process. A collector goroutine polls a `Source` (live Windows shared memory, or a replay of a captured file) at a configurable interval, runs a session state machine that accumulates three time counters and detects laps and position changes, and upserts rows through a single-writer SQLite connection. An HTTP server reads through a separate connection pool. Only `internal/irsdk` is Windows-specific; every package holding non-trivial logic is tested on macOS against captured fixtures.
+
+**Tech Stack:** Go 1.26, `modernc.org/sqlite` (pure Go, no cgo), `fyne.io/systray`, `gopkg.in/yaml.v3`, `golang.org/x/sys/windows`, `github.com/google/uuid`.
+
+**Spec:** `docs/superpowers/specs/2026-08-04-lapdog-design.md`. Section references below (§N) point into it.
+
+**Out of scope for this plan:** The React/ECharts frontend. `internal/web` serves a placeholder page here; Plan 2 replaces it. Central hub upload and `.ibt` import are out of scope entirely (spec §18).
+
+## Global Constraints
+
+Every task's requirements implicitly include this section.
+
+- **Go 1.26.** `go.mod` declares `go 1.26`.
+- **`CGO_ENABLED=0` always.** This is load-bearing — it is why `modernc.org/sqlite` was chosen and what allows cross-compiling to Windows from macOS. No dependency may require cgo.
+- **`go test ./...` must pass on macOS** with no iRacing and no Windows. Windows-only code sits behind build tags and has a non-Windows stub.
+- **Timestamps are RFC3339 UTC strings.** Durations are seconds as `REAL`/`float64`.
+- **HTTP server binds `127.0.0.1:47047` only.** The bind address is not configurable — loopback-only binding *is* the security model, so there is no authentication.
+- **Poll interval range 0.25 s – 30 s, default 1.0 s.**
+- **Capture size cap default 2 GB**, `0` meaning unlimited.
+- **`IsReplayPlaying` suppresses all time accounting.** No setting exists for this.
+- **Offline testing sessions always count.** No setting exists for this.
+- **No anonymisation anywhere.** Opponent names and IDs are stored and exported as-is.
+- **All data under `%LOCALAPPDATA%\lapdog\`** on Windows; `$XDG_DATA_HOME/lapdog` or `~/.local/share/lapdog` elsewhere for development.
+- **Never squash commits.** One commit per task step where the plan says commit.
+- **Godoc comments on every exported identifier.** The repo has a `/doc` convention.
+
+## File Structure
+
+```
+go.mod
+Makefile
+
+internal/irsdk/
+  defines.go            constants, enums, VarType and byte sizes         (Task 2)
+  header.go             Header/VarBuf/VarHeader binary parsing            (Task 3)
+  buffer.go             torn-read-safe buffer selection                   (Task 3)
+  decode.go             typed value extraction from a row                 (Task 4)
+  live_windows.go       MapViewOfFile live reader                        (Task 17)
+  live_stub.go          non-Windows stub returning ErrUnsupported        (Task 17)
+
+internal/capture/
+  format.go             magic, record kinds, record encode/decode         (Task 5)
+  writer.go             gzip file writer, size accounting                 (Task 5)
+  reader.go             gzip file reader                                  (Task 5)
+  ndjson.go             inspect/build codec                              (Task 16)
+  prune.go              size-cap retention                                (Task 6)
+
+internal/source/
+  source.go             Source interface, Frame type                      (Task 6)
+  replay.go             replays a .lpd through the Source interface       (Task 6)
+  live.go               wraps internal/irsdk                             (Task 17)
+
+internal/sessionyaml/
+  types.go              typed subset structs                              (Task 7)
+  parse.go              tolerant parser                                   (Task 7)
+
+internal/classify/
+  classify.go           pure function: YAML subset -> type + context      (Task 8)
+
+internal/store/
+  migrations/0001_init.sql                                                (Task 9)
+  store.go              open, WAL, writer/reader pools, migrations        (Task 9)
+  sessions.go           session upsert, session_key derivation           (Task 10)
+  laps.go               lap insert                                       (Task 11)
+  positions.go          position event insert                            (Task 11)
+  queries.go            aggregation queries                              (Task 12)
+
+internal/collector/
+  clock.go              Clock interface + real and fake implementations   (Task 13)
+  accounting.go         the three counters, poll-gap clamp               (Task 13)
+  segment.go            session segment lifecycle, results extraction    (Task 14)
+  laps.go               lap detection                                    (Task 15)
+  positions.go          position events and cause attribution            (Task 15)
+  collector.go          poll loop wiring                                 (Task 15)
+
+internal/config/
+  config.go             load/save, defaults, validation, paths            (Task 9)
+
+internal/api/
+  server.go             mux, listener, middleware                        (Task 18)
+  handlers.go           read endpoints                                   (Task 18)
+  export.go             streaming CSV/JSON export                        (Task 19)
+
+internal/web/
+  embed.go              embed.FS + placeholder index.html                (Task 18)
+
+cmd/lapdog/main.go      tray app, wires everything                       (Task 20)
+cmd/lapdogctl/main.go   dev CLI: inspect, build, reclassify              (Task 16)
+
+testdata/               .lpd fixtures and hand-authored NDJSON
+```
+
+Rationale for the split: `irsdk` is divided so that only `live_*.go` is OS-specific and everything else tests anywhere. `collector` is split by concern rather than into one file because each concern (accounting, segments, laps, positions) has its own test cycle and a reviewer could reasonably reject one while accepting the others.
+
+---
+
+### Task 1: Project scaffold
+
+**Files:**
+- Create: `go.mod`, `Makefile`, `.gitignore` (append), `internal/version/version.go`
+- Test: `internal/version/version_test.go`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `version.Version string`, `version.String() string`.
+
+- [ ] **Step 1: Initialise the module and add dependencies**
+
+```bash
+cd /Users/MRA9161/Source/lapdog-2
+go mod init github.com/blezek/lapdog
+go get modernc.org/sqlite@latest
+go get gopkg.in/yaml.v3@latest
+go get github.com/google/uuid@latest
+go get golang.org/x/sys@latest
+go get fyne.io/systray@latest
+```
+
+- [ ] **Step 2: Write the failing test**
+
+Create `internal/version/version_test.go`:
+
+```go
+package version
+
+import "testing"
+
+func TestStringIncludesVersion(t *testing.T) {
+	Version = "0.1.0"
+	got := String()
+	if got != "lapdog 0.1.0" {
+		t.Fatalf("String() = %q, want %q", got, "lapdog 0.1.0")
+	}
+}
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `go test ./internal/version/ -v`
+Expected: FAIL — build error, `undefined: Version`, `undefined: String`.
+
+- [ ] **Step 4: Write minimal implementation**
+
+Create `internal/version/version.go`:
+
+```go
+// Package version reports the application version, set at build time.
+package version
+
+import "fmt"
+
+// Version is the application version, overridden at build time with
+// -ldflags "-X github.com/blezek/lapdog/internal/version.Version=x.y.z".
+var Version = "dev"
+
+// String returns a human-readable version string.
+func String() string {
+	return fmt.Sprintf("lapdog %s", Version)
+}
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `go test ./internal/version/ -v`
+Expected: PASS
+
+- [ ] **Step 6: Add the Makefile**
+
+Create `Makefile`. Note the leading tabs are required by make.
+
+```make
+VERSION ?= 0.1.0
+LDFLAGS := -X github.com/blezek/lapdog/internal/version.Version=$(VERSION) -s -w
+
+.PHONY: test build-windows build-ctl clean
+
+test:
+	CGO_ENABLED=0 go test ./...
+
+# The tray app must be linked -H windowsgui so no console window appears.
+build-windows:
+	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 \
+	  go build -ldflags "-H windowsgui $(LDFLAGS)" -o dist/lapdog.exe ./cmd/lapdog
+
+# lapdogctl is a separate binary precisely because a GUI-subsystem
+# executable has no console and is useless as a CLI.
+build-ctl:
+	CGO_ENABLED=0 go build -ldflags "$(LDFLAGS)" -o dist/lapdogctl ./cmd/lapdogctl
+
+clean:
+	rm -rf dist
+```
+
+- [ ] **Step 7: Append build output to .gitignore**
+
+```bash
+printf 'dist/\n*.lpd\n' >> .gitignore
+```
+
+- [ ] **Step 8: Verify the whole tree builds and tests**
+
+Run: `make test`
+Expected: PASS, with `no test files` for packages that have none yet.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add go.mod go.sum Makefile .gitignore internal/version/
+git commit -m "Add Go module scaffold and version package"
+```
+
+---
+
+### Task 2: irsdk constants and enums
+
+**Files:**
+- Create: `internal/irsdk/defines.go`
+- Test: `internal/irsdk/defines_test.go`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces: `VarType` (with `VarChar`, `VarBool`, `VarInt`, `VarBitField`, `VarFloat`, `VarDouble`), `VarType.Size() int`, `VarType.String() string`, `TrkLoc` (with `NotInWorld`, `OffTrack`, `InPitStall`, `ApproachingPits`, `OnTrack`), `SessionState` (with `StateInvalid` … `StateCoolDown`), `StatusConnected`, `MemMapFileName`, `DataValidEventName`, `MaxBufs`, `MaxString`, `MaxDesc`, `ExpectedVer`, `UnlimitedLaps`, `UnlimitedTime`.
+
+Source of truth: `documentation/irsdk_1_20/irsdk_defines.h`.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/irsdk/defines_test.go`:
+
+```go
+package irsdk
+
+import "testing"
+
+func TestVarTypeSize(t *testing.T) {
+	cases := []struct {
+		vt   VarType
+		want int
+	}{
+		{VarChar, 1},
+		{VarBool, 1},
+		{VarInt, 4},
+		{VarBitField, 4},
+		{VarFloat, 4},
+		{VarDouble, 8},
+	}
+	for _, c := range cases {
+		if got := c.vt.Size(); got != c.want {
+			t.Errorf("%v.Size() = %d, want %d", c.vt, got, c.want)
+		}
+	}
+}
+
+func TestVarTypeSizeUnknownIsZero(t *testing.T) {
+	if got := VarType(99).Size(); got != 0 {
+		t.Errorf("VarType(99).Size() = %d, want 0", got)
+	}
+}
+
+// Enum values are wire format read out of shared memory. If these drift,
+// every decoded field silently means something else.
+func TestEnumWireValues(t *testing.T) {
+	if VarChar != 0 || VarBool != 1 || VarInt != 2 || VarBitField != 3 || VarFloat != 4 || VarDouble != 5 {
+		t.Error("VarType wire values do not match irsdk_defines.h")
+	}
+	if NotInWorld != -1 || OffTrack != 0 || InPitStall != 1 || ApproachingPits != 2 || OnTrack != 3 {
+		t.Error("TrkLoc wire values do not match irsdk_defines.h")
+	}
+	if StateInvalid != 0 || StateRacing != 4 || StateCoolDown != 6 {
+		t.Error("SessionState wire values do not match irsdk_defines.h")
+	}
+}
+
+func TestConstants(t *testing.T) {
+	if MaxBufs != 4 || MaxString != 32 || MaxDesc != 64 {
+		t.Error("size constants do not match irsdk_defines.h")
+	}
+	if StatusConnected != 1 {
+		t.Errorf("StatusConnected = %d, want 1", StatusConnected)
+	}
+	if MemMapFileName != `Local\IRSDKMemMapFileName` {
+		t.Errorf("MemMapFileName = %q", MemMapFileName)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/irsdk/ -v`
+Expected: FAIL — build error, undefined identifiers.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `internal/irsdk/defines.go`:
+
+```go
+// Package irsdk reads telemetry from the iRacing simulator's shared
+// memory-mapped file. Constants and layouts mirror
+// documentation/irsdk_1_20/irsdk_defines.h.
+package irsdk
+
+// Shared memory and event object names published by the sim.
+const (
+	MemMapFileName     = `Local\IRSDKMemMapFileName`
+	DataValidEventName = `Local\IRSDKDataValidEvent`
+)
+
+// Layout limits from irsdk_defines.h.
+const (
+	MaxBufs   = 4
+	MaxString = 32
+	MaxDesc   = 64
+
+	// ExpectedVer is IRSDK_VER. A higher value in the header is logged
+	// as a warning but is not fatal, since the layout has been stable.
+	ExpectedVer = 2
+
+	// UnlimitedLaps and UnlimitedTime are the sim's sentinels for a
+	// session with no lap or time limit.
+	UnlimitedLaps = 32767
+	UnlimitedTime = 604800.0
+)
+
+// StatusConnected is the irsdk_stConnected bit in Header.Status.
+const StatusConnected = 1
+
+// VarType is the storage type of a telemetry variable.
+type VarType int32
+
+// VarType values. These are wire format; do not reorder.
+const (
+	VarChar VarType = iota
+	VarBool
+	VarInt
+	VarBitField
+	VarFloat
+	VarDouble
+)
+
+// Size returns the width in bytes of a single element of this type, or 0
+// if the type is unknown.
+func (v VarType) Size() int {
+	switch v {
+	case VarChar, VarBool:
+		return 1
+	case VarInt, VarBitField, VarFloat:
+		return 4
+	case VarDouble:
+		return 8
+	default:
+		return 0
+	}
+}
+
+// String implements fmt.Stringer.
+func (v VarType) String() string {
+	switch v {
+	case VarChar:
+		return "char"
+	case VarBool:
+		return "bool"
+	case VarInt:
+		return "int"
+	case VarBitField:
+		return "bitField"
+	case VarFloat:
+		return "float"
+	case VarDouble:
+		return "double"
+	default:
+		return "unknown"
+	}
+}
+
+// TrkLoc describes where a car is relative to the track surface. It is
+// the element type of the CarIdxTrackSurface array.
+type TrkLoc int32
+
+// TrkLoc values. These are wire format; do not reorder.
+const (
+	NotInWorld      TrkLoc = -1
+	OffTrack        TrkLoc = 0
+	InPitStall      TrkLoc = 1
+	ApproachingPits TrkLoc = 2
+	OnTrack         TrkLoc = 3
+)
+
+// SessionState is the value of the SessionState telemetry variable.
+type SessionState int32
+
+// SessionState values. These are wire format; do not reorder.
+const (
+	StateInvalid SessionState = iota
+	StateGetInCar
+	StateWarmup
+	StateParadeLaps
+	StateRacing
+	StateCheckered
+	StateCoolDown
+)
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/irsdk/ -v`
+Expected: PASS, four tests.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add internal/irsdk/
+git commit -m "Add irsdk constants and enum definitions"
+```
+
+---
+
+### Task 3: irsdk binary layout parsing and buffer selection
+
+**Files:**
+- Create: `internal/irsdk/header.go`, `internal/irsdk/buffer.go`
+- Test: `internal/irsdk/header_test.go`, `internal/irsdk/buffer_test.go`
+
+**Interfaces:**
+- Consumes: Task 2's `VarType`, `MaxBufs`, `MaxString`, `MaxDesc`.
+- Produces:
+  - `HeaderSize = 112`, `VarHeaderSize = 144` (constants)
+  - `type VarBuf struct { TickCount, BufOffset, TickCountBegin int32 }`
+  - `type Header struct { Ver, Status, TickRate, SessionInfoUpdate, SessionInfoLen, SessionInfoOffset, NumVars, VarHeaderOffset, NumBuf, BufLen, CurBufTickCount int32; CurBuf uint8; VarBuf [MaxBufs]VarBuf }`
+  - `func ParseHeader(b []byte) (Header, error)`
+  - `type VarHeader struct { Type VarType; Offset, Count int32; CountAsTime bool; Name, Desc, Unit string }`
+  - `func ParseVarHeaders(b []byte, numVars int) ([]VarHeader, error)`
+  - `func (h Header) Connected() bool`
+  - `func (h Header) LatestBuf() (VarBuf, bool)`
+  - `var ErrShortBuffer error`
+
+Byte offsets, derived from `irsdk_defines.h`. `HeaderSize` is 48 bytes of scalars plus `MaxBufs`×16 = 112. `VarHeaderSize` is 16 + 32 + 64 + 32 = 144.
+
+```
+Header                      VarHeader
+  0  ver            int32     0   type        int32
+  4  status         int32     4   offset      int32
+  8  tickRate       int32     8   count       int32
+ 12  sessionInfoUpdate       12   countAsTime bool
+ 16  sessionInfoLen          13   pad[3]
+ 20  sessionInfoOffset       16   name[32]
+ 24  numVars                 48   desc[64]
+ 28  varHeaderOffset        112   unit[32]
+ 32  numBuf                 144   = VarHeaderSize
+ 36  bufLen
+ 40  curBufTickCount
+ 44  curBuf         uint8
+ 45  pad1[3]
+ 48  varBuf[4] x 16 bytes { tickCount, bufOffset, tickCountBegin, pad }
+112  = HeaderSize
+```
+
+- [ ] **Step 1: Write the failing header test**
+
+Create `internal/irsdk/header_test.go`:
+
+```go
+package irsdk
+
+import (
+	"encoding/binary"
+	"testing"
+)
+
+// buildHeader lays out a synthetic irsdk_header so decoding can be
+// tested on any OS without the sim.
+func buildHeader(t *testing.T) []byte {
+	t.Helper()
+	b := make([]byte, HeaderSize)
+	put := func(off int, v int32) { binary.LittleEndian.PutUint32(b[off:], uint32(v)) }
+	put(0, 2)     // ver
+	put(4, 1)     // status: connected
+	put(8, 60)    // tickRate
+	put(12, 7)    // sessionInfoUpdate
+	put(16, 4096) // sessionInfoLen
+	put(20, 1024) // sessionInfoOffset
+	put(24, 3)    // numVars
+	put(28, 112)  // varHeaderOffset
+	put(32, 3)    // numBuf
+	put(36, 64)   // bufLen
+	put(40, 555)  // curBufTickCount
+	b[44] = 1     // curBuf
+	// varBuf[0..2]: tickCount, bufOffset, tickCountBegin, pad
+	put(48, 100)
+	put(52, 5000)
+	put(56, 100)
+	put(64, 300) // varBuf[1] has the highest tickCount
+	put(68, 6000)
+	put(72, 300)
+	put(80, 200)
+	put(84, 7000)
+	put(88, 200)
+	return b
+}
+
+func TestParseHeader(t *testing.T) {
+	h, err := ParseHeader(buildHeader(t))
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if h.Ver != 2 || h.TickRate != 60 || h.NumVars != 3 || h.BufLen != 64 || h.NumBuf != 3 {
+		t.Errorf("scalars decoded wrong: %+v", h)
+	}
+	if h.SessionInfoLen != 4096 || h.SessionInfoOffset != 1024 || h.SessionInfoUpdate != 7 {
+		t.Errorf("session info fields decoded wrong: %+v", h)
+	}
+	if h.CurBuf != 1 {
+		t.Errorf("CurBuf = %d, want 1", h.CurBuf)
+	}
+	if h.VarBuf[1].TickCount != 300 || h.VarBuf[1].BufOffset != 6000 {
+		t.Errorf("VarBuf[1] = %+v", h.VarBuf[1])
+	}
+	if !h.Connected() {
+		t.Error("Connected() = false, want true with status bit set")
+	}
+}
+
+func TestParseHeaderShortBuffer(t *testing.T) {
+	if _, err := ParseHeader(make([]byte, HeaderSize-1)); err == nil {
+		t.Fatal("ParseHeader on a short buffer: want error, got nil")
+	}
+}
+
+func TestConnectedFalseWhenBitClear(t *testing.T) {
+	b := buildHeader(t)
+	binary.LittleEndian.PutUint32(b[4:], 0)
+	h, err := ParseHeader(b)
+	if err != nil {
+		t.Fatalf("ParseHeader: %v", err)
+	}
+	if h.Connected() {
+		t.Error("Connected() = true, want false with status bit clear")
+	}
+}
+
+func TestParseVarHeaders(t *testing.T) {
+	b := make([]byte, 2*VarHeaderSize)
+	put := func(base, off int, v int32) {
+		binary.LittleEndian.PutUint32(b[base+off:], uint32(v))
+	}
+	// Entry 0: a scalar float named Speed, in m/s.
+	put(0, 0, int32(VarFloat))
+	put(0, 4, 40)
+	put(0, 8, 1)
+	b[12] = 0
+	copy(b[16:], "Speed\x00")
+	copy(b[48:], "GPS vehicle speed\x00")
+	copy(b[112:], "m/s\x00")
+	// Entry 1: a 64-element int array.
+	put(VarHeaderSize, 0, int32(VarInt))
+	put(VarHeaderSize, 4, 200)
+	put(VarHeaderSize, 8, 64)
+	b[VarHeaderSize+12] = 1
+	copy(b[VarHeaderSize+16:], "CarIdxPosition\x00")
+
+	vh, err := ParseVarHeaders(b, 2)
+	if err != nil {
+		t.Fatalf("ParseVarHeaders: %v", err)
+	}
+	if len(vh) != 2 {
+		t.Fatalf("len = %d, want 2", len(vh))
+	}
+	if vh[0].Name != "Speed" || vh[0].Type != VarFloat || vh[0].Offset != 40 || vh[0].Count != 1 {
+		t.Errorf("vh[0] = %+v", vh[0])
+	}
+	if vh[0].Unit != "m/s" || vh[0].Desc != "GPS vehicle speed" {
+		t.Errorf("vh[0] strings = %q / %q", vh[0].Desc, vh[0].Unit)
+	}
+	if vh[0].CountAsTime {
+		t.Error("vh[0].CountAsTime = true, want false")
+	}
+	if vh[1].Name != "CarIdxPosition" || vh[1].Count != 64 || !vh[1].CountAsTime {
+		t.Errorf("vh[1] = %+v", vh[1])
+	}
+}
+
+func TestParseVarHeadersShortBuffer(t *testing.T) {
+	if _, err := ParseVarHeaders(make([]byte, VarHeaderSize), 2); err == nil {
+		t.Fatal("want error for buffer smaller than numVars*VarHeaderSize")
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/irsdk/ -run 'Header' -v`
+Expected: FAIL — build error, `undefined: HeaderSize`, `undefined: ParseHeader`.
+
+- [ ] **Step 3: Write the header implementation**
+
+Create `internal/irsdk/header.go`:
+
+```go
+package irsdk
+
+import (
+	"bytes"
+	"encoding/binary"
+	"errors"
+	"fmt"
+)
+
+// Binary sizes of the shared-memory structures, in bytes. See
+// irsdk_defines.h: HeaderSize is 48 bytes of scalars plus MaxBufs
+// 16-byte varBuf entries; VarHeaderSize is 16 + MaxString + MaxDesc +
+// MaxString.
+const (
+	HeaderSize    = 48 + MaxBufs*16
+	VarHeaderSize = 16 + MaxString + MaxDesc + MaxString
+)
+
+// ErrShortBuffer indicates the supplied bytes are too small for the
+// structure being parsed.
+var ErrShortBuffer = errors.New("irsdk: short buffer")
+
+// VarBuf describes one of the sim's triple-buffered variable rows.
+// TickCountBegin is written before the sim starts writing the row and
+// TickCount after it finishes, which is what makes torn reads
+// detectable.
+type VarBuf struct {
+	TickCount      int32
+	BufOffset      int32
+	TickCountBegin int32
+}
+
+// Header is the irsdk_header at offset 0 of the shared memory region.
+type Header struct {
+	Ver               int32
+	Status            int32
+	TickRate          int32
+	SessionInfoUpdate int32
+	SessionInfoLen    int32
+	SessionInfoOffset int32
+	NumVars           int32
+	VarHeaderOffset   int32
+	NumBuf            int32
+	BufLen            int32
+	CurBufTickCount   int32
+	CurBuf            uint8
+	VarBuf            [MaxBufs]VarBuf
+}
+
+// Connected reports whether the sim has the irsdk_stConnected bit set.
+func (h Header) Connected() bool { return h.Status&StatusConnected != 0 }
+
+// LatestBuf returns the variable buffer with the highest TickCount, and
+// false if the header declares no usable buffers.
+func (h Header) LatestBuf() (VarBuf, bool) {
+	n := int(h.NumBuf)
+	if n <= 0 {
+		return VarBuf{}, false
+	}
+	if n > MaxBufs {
+		n = MaxBufs
+	}
+	best := 0
+	for i := 1; i < n; i++ {
+		if h.VarBuf[i].TickCount > h.VarBuf[best].TickCount {
+			best = i
+		}
+	}
+	return h.VarBuf[best], true
+}
+
+// ParseHeader decodes an irsdk_header from b.
+func ParseHeader(b []byte) (Header, error) {
+	if len(b) < HeaderSize {
+		return Header{}, fmt.Errorf("%w: header needs %d bytes, got %d", ErrShortBuffer, HeaderSize, len(b))
+	}
+	i32 := func(off int) int32 { return int32(binary.LittleEndian.Uint32(b[off:])) }
+	h := Header{
+		Ver:               i32(0),
+		Status:            i32(4),
+		TickRate:          i32(8),
+		SessionInfoUpdate: i32(12),
+		SessionInfoLen:    i32(16),
+		SessionInfoOffset: i32(20),
+		NumVars:           i32(24),
+		VarHeaderOffset:   i32(28),
+		NumBuf:            i32(32),
+		BufLen:            i32(36),
+		CurBufTickCount:   i32(40),
+		CurBuf:            b[44],
+	}
+	for i := 0; i < MaxBufs; i++ {
+		base := 48 + i*16
+		h.VarBuf[i] = VarBuf{
+			TickCount:      i32(base),
+			BufOffset:      i32(base + 4),
+			TickCountBegin: i32(base + 8),
+		}
+	}
+	return h, nil
+}
+
+// VarHeader describes one telemetry variable: its type, where in a
+// variable row it starts, and how many elements it has.
+type VarHeader struct {
+	Type        VarType
+	Offset      int32
+	Count       int32
+	CountAsTime bool
+	Name        string
+	Desc        string
+	Unit        string
+}
+
+// ParseVarHeaders decodes numVars consecutive irsdk_varHeader entries
+// from b.
+func ParseVarHeaders(b []byte, numVars int) ([]VarHeader, error) {
+	need := numVars * VarHeaderSize
+	if numVars < 0 || len(b) < need {
+		return nil, fmt.Errorf("%w: %d var headers need %d bytes, got %d", ErrShortBuffer, numVars, need, len(b))
+	}
+	out := make([]VarHeader, numVars)
+	for i := range out {
+		base := i * VarHeaderSize
+		out[i] = VarHeader{
+			Type:        VarType(int32(binary.LittleEndian.Uint32(b[base:]))),
+			Offset:      int32(binary.LittleEndian.Uint32(b[base+4:])),
+			Count:       int32(binary.LittleEndian.Uint32(b[base+8:])),
+			CountAsTime: b[base+12] != 0,
+			Name:        cstr(b[base+16 : base+16+MaxString]),
+			Desc:        cstr(b[base+48 : base+48+MaxDesc]),
+			Unit:        cstr(b[base+112 : base+112+MaxString]),
+		}
+	}
+	return out, nil
+}
+
+// cstr converts a NUL-padded fixed-width C string to a Go string.
+func cstr(b []byte) string {
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		b = b[:i]
+	}
+	return string(b)
+}
+```
+
+- [ ] **Step 4: Run the header test to verify it passes**
+
+Run: `go test ./internal/irsdk/ -run 'Header|Connected' -v`
+Expected: PASS
+
+- [ ] **Step 5: Write the failing buffer-selection test**
+
+Create `internal/irsdk/buffer_test.go`:
+
+```go
+package irsdk
+
+import "testing"
+
+func TestLatestBufPicksHighestTickCount(t *testing.T) {
+	h := Header{NumBuf: 3}
+	h.VarBuf[0] = VarBuf{TickCount: 100, BufOffset: 1000, TickCountBegin: 100}
+	h.VarBuf[1] = VarBuf{TickCount: 300, BufOffset: 2000, TickCountBegin: 300}
+	h.VarBuf[2] = VarBuf{TickCount: 200, BufOffset: 3000, TickCountBegin: 200}
+	got, ok := h.LatestBuf()
+	if !ok {
+		t.Fatal("LatestBuf ok = false, want true")
+	}
+	if got.BufOffset != 2000 {
+		t.Errorf("BufOffset = %d, want 2000", got.BufOffset)
+	}
+}
+
+func TestLatestBufNoBuffers(t *testing.T) {
+	if _, ok := (Header{NumBuf: 0}).LatestBuf(); ok {
+		t.Error("LatestBuf ok = true with NumBuf 0, want false")
+	}
+}
+
+// NumBuf larger than MaxBufs must not read past the fixed-size array.
+func TestLatestBufClampsToMaxBufs(t *testing.T) {
+	h := Header{NumBuf: 99}
+	h.VarBuf[MaxBufs-1] = VarBuf{TickCount: 5, BufOffset: 42}
+	got, ok := h.LatestBuf()
+	if !ok || got.BufOffset != 42 {
+		t.Errorf("LatestBuf = %+v, ok = %v", got, ok)
+	}
+}
+
+func TestIsTorn(t *testing.T) {
+	before := VarBuf{TickCount: 100, TickCountBegin: 100}
+	if IsTorn(before, VarBuf{TickCount: 100, TickCountBegin: 100}) {
+		t.Error("IsTorn = true for a stable buffer, want false")
+	}
+	if !IsTorn(before, VarBuf{TickCount: 101, TickCountBegin: 101}) {
+		t.Error("IsTorn = false when the sim advanced mid-copy, want true")
+	}
+	// Sim started writing but has not finished.
+	if !IsTorn(before, VarBuf{TickCount: 100, TickCountBegin: 101}) {
+		t.Error("IsTorn = false when TickCountBegin ran ahead, want true")
+	}
+}
+```
+
+- [ ] **Step 6: Run test to verify it fails**
+
+Run: `go test ./internal/irsdk/ -run 'LatestBuf|IsTorn' -v`
+Expected: The `LatestBuf` tests PASS (implemented in Step 3). `TestIsTorn` FAILS with `undefined: IsTorn`.
+
+- [ ] **Step 7: Add the torn-read check**
+
+Create `internal/irsdk/buffer.go`:
+
+```go
+package irsdk
+
+// IsTorn reports whether a variable row copied out between two
+// observations of its VarBuf may have been overwritten mid-copy.
+//
+// The sim writes TickCountBegin before starting a row and TickCount
+// after finishing it. A caller reads the VarBuf, copies BufLen bytes,
+// then re-reads the VarBuf and passes both here. If either counter moved,
+// or if TickCountBegin is ahead of TickCount, the copy is not
+// self-consistent and must be discarded rather than partially applied.
+func IsTorn(before, after VarBuf) bool {
+	if before.TickCount != after.TickCount {
+		return true
+	}
+	if before.TickCountBegin != after.TickCountBegin {
+		return true
+	}
+	return after.TickCountBegin != after.TickCount
+}
+```
+
+- [ ] **Step 8: Run the full package test**
+
+Run: `go test ./internal/irsdk/ -v`
+Expected: PASS, all tests.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/irsdk/
+git commit -m "Add irsdk header parsing and torn-read detection"
+```
+
+---
+
+### Task 4: irsdk typed value decoding
+
+**Files:**
+- Create: `internal/irsdk/decode.go`
+- Test: `internal/irsdk/decode_test.go`
+
+**Interfaces:**
+- Consumes: Task 2's `VarType`; Task 3's `VarHeader`.
+- Produces:
+  - `type Row struct { ... }` with `func NewRow(vars []VarHeader, data []byte) Row`
+  - `func (r Row) Has(name string) bool`
+  - `func (r Row) Int(name string) (int32, bool)`
+  - `func (r Row) Float(name string) (float64, bool)` — accepts `VarFloat` and `VarDouble`
+  - `func (r Row) Bool(name string) (bool, bool)`
+  - `func (r Row) BitField(name string) (uint32, bool)`
+  - `func (r Row) IntArray(name string) ([]int32, bool)`
+  - `func (r Row) FloatArray(name string) ([]float64, bool)`
+  - `func (r Row) BoolArray(name string) ([]bool, bool)`
+  - `func (r Row) Names() []string`
+
+Every accessor returns `(value, ok)`. `ok` is false when the variable is absent, has the wrong type, or its declared extent exceeds the row — never a panic, because a malformed row must not crash the collector.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/irsdk/decode_test.go`:
+
+```go
+package irsdk
+
+import (
+	"encoding/binary"
+	"math"
+	"testing"
+)
+
+// testRow builds a row containing one variable of each supported type
+// plus two arrays, and returns the decoder for it.
+func testRow(t *testing.T) Row {
+	t.Helper()
+	vars := []VarHeader{
+		{Name: "Lap", Type: VarInt, Offset: 0, Count: 1},
+		{Name: "Speed", Type: VarFloat, Offset: 4, Count: 1},
+		{Name: "SessionTime", Type: VarDouble, Offset: 8, Count: 1},
+		{Name: "IsOnTrack", Type: VarBool, Offset: 16, Count: 1},
+		{Name: "EngineWarnings", Type: VarBitField, Offset: 17, Count: 1},
+		{Name: "CarIdxPosition", Type: VarInt, Offset: 21, Count: 3},
+		{Name: "CarIdxOnPitRoad", Type: VarBool, Offset: 33, Count: 3},
+		{Name: "CarIdxLapDistPct", Type: VarFloat, Offset: 36, Count: 2},
+	}
+	data := make([]byte, 44)
+	binary.LittleEndian.PutUint32(data[0:], uint32(37))
+	binary.LittleEndian.PutUint32(data[4:], math.Float32bits(52.5))
+	binary.LittleEndian.PutUint64(data[8:], math.Float64bits(1234.5))
+	data[16] = 1
+	binary.LittleEndian.PutUint32(data[17:], 0x0021)
+	binary.LittleEndian.PutUint32(data[21:], uint32(5))
+	binary.LittleEndian.PutUint32(data[25:], uint32(6))
+	binary.LittleEndian.PutUint32(data[29:], uint32(7))
+	data[33], data[34], data[35] = 0, 1, 0
+	binary.LittleEndian.PutUint32(data[36:], math.Float32bits(0.25))
+	binary.LittleEndian.PutUint32(data[40:], math.Float32bits(0.75))
+	return NewRow(vars, data)
+}
+
+func TestRowScalars(t *testing.T) {
+	r := testRow(t)
+
+	if v, ok := r.Int("Lap"); !ok || v != 37 {
+		t.Errorf("Int(Lap) = %d, %v; want 37, true", v, ok)
+	}
+	if v, ok := r.Float("Speed"); !ok || math.Abs(v-52.5) > 1e-6 {
+		t.Errorf("Float(Speed) = %v, %v; want 52.5, true", v, ok)
+	}
+	// Float must transparently widen a double.
+	if v, ok := r.Float("SessionTime"); !ok || math.Abs(v-1234.5) > 1e-9 {
+		t.Errorf("Float(SessionTime) = %v, %v; want 1234.5, true", v, ok)
+	}
+	if v, ok := r.Bool("IsOnTrack"); !ok || !v {
+		t.Errorf("Bool(IsOnTrack) = %v, %v; want true, true", v, ok)
+	}
+	if v, ok := r.BitField("EngineWarnings"); !ok || v != 0x0021 {
+		t.Errorf("BitField = %#x, %v; want 0x21, true", v, ok)
+	}
+}
+
+func TestRowArrays(t *testing.T) {
+	r := testRow(t)
+
+	got, ok := r.IntArray("CarIdxPosition")
+	if !ok || len(got) != 3 || got[0] != 5 || got[2] != 7 {
+		t.Errorf("IntArray = %v, %v", got, ok)
+	}
+	gotB, ok := r.BoolArray("CarIdxOnPitRoad")
+	if !ok || len(gotB) != 3 || gotB[0] || !gotB[1] || gotB[2] {
+		t.Errorf("BoolArray = %v, %v", gotB, ok)
+	}
+	gotF, ok := r.FloatArray("CarIdxLapDistPct")
+	if !ok || len(gotF) != 2 || math.Abs(gotF[1]-0.75) > 1e-6 {
+		t.Errorf("FloatArray = %v, %v", gotF, ok)
+	}
+}
+
+func TestRowMissingVariable(t *testing.T) {
+	r := testRow(t)
+	if r.Has("PlayerCarMyIncidentCount") {
+		t.Error("Has() = true for an absent variable")
+	}
+	if _, ok := r.Int("PlayerCarMyIncidentCount"); ok {
+		t.Error("Int() ok = true for an absent variable")
+	}
+	if _, ok := r.Float("Nope"); ok {
+		t.Error("Float() ok = true for an absent variable")
+	}
+}
+
+// Asking for the wrong type must fail rather than reinterpret bytes.
+func TestRowWrongType(t *testing.T) {
+	r := testRow(t)
+	if _, ok := r.Int("Speed"); ok {
+		t.Error("Int() on a float variable: ok = true, want false")
+	}
+	if _, ok := r.Bool("Lap"); ok {
+		t.Error("Bool() on an int variable: ok = true, want false")
+	}
+}
+
+// A variable whose declared extent runs past the row must fail, not panic.
+func TestRowOutOfBoundsIsNotPanic(t *testing.T) {
+	vars := []VarHeader{{Name: "Bad", Type: VarInt, Offset: 100, Count: 1}}
+	r := NewRow(vars, make([]byte, 8))
+	if _, ok := r.Int("Bad"); ok {
+		t.Error("Int() ok = true for an out-of-bounds variable, want false")
+	}
+	arr := []VarHeader{{Name: "BadArr", Type: VarInt, Offset: 0, Count: 64}}
+	r2 := NewRow(arr, make([]byte, 8))
+	if _, ok := r2.IntArray("BadArr"); ok {
+		t.Error("IntArray() ok = true for an out-of-bounds array, want false")
+	}
+}
+
+func TestRowNames(t *testing.T) {
+	if got := len(testRow(t).Names()); got != 8 {
+		t.Errorf("len(Names()) = %d, want 8", got)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/irsdk/ -run 'Row' -v`
+Expected: FAIL — build error, `undefined: Row`, `undefined: NewRow`.
+
+- [ ] **Step 3: Write minimal implementation**
+
+Create `internal/irsdk/decode.go`:
+
+```go
+package irsdk
+
+import (
+	"encoding/binary"
+	"math"
+	"sort"
+)
+
+// Row decodes telemetry values out of a single variable buffer row,
+// looked up by variable name.
+//
+// Every accessor returns (value, ok). ok is false when the variable is
+// absent, is of a different type than requested, or when its declared
+// extent runs past the row. A malformed row must never panic, because
+// the variable set the sim publishes depends on the car and session and
+// is not fully known ahead of time.
+type Row struct {
+	vars map[string]VarHeader
+	data []byte
+}
+
+// NewRow builds a decoder over data using vars as the layout. It does
+// not copy data, so callers must not mutate it afterwards.
+func NewRow(vars []VarHeader, data []byte) Row {
+	m := make(map[string]VarHeader, len(vars))
+	for _, v := range vars {
+		m[v.Name] = v
+	}
+	return Row{vars: m, data: data}
+}
+
+// Names returns the sorted names of every variable in the row's layout.
+func (r Row) Names() []string {
+	out := make([]string, 0, len(r.vars))
+	for n := range r.vars {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Has reports whether the named variable is present in the layout.
+func (r Row) Has(name string) bool {
+	_, ok := r.vars[name]
+	return ok
+}
+
+// slice returns the bytes for element i of the named variable, verifying
+// the type matches one of want and that the read is in bounds.
+func (r Row) slice(name string, i int, want ...VarType) ([]byte, bool) {
+	v, ok := r.vars[name]
+	if !ok {
+		return nil, false
+	}
+	matched := false
+	for _, w := range want {
+		if v.Type == w {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return nil, false
+	}
+	sz := v.Type.Size()
+	if sz == 0 || i < 0 || int32(i) >= v.Count {
+		return nil, false
+	}
+	start := int(v.Offset) + i*sz
+	if start < 0 || start+sz > len(r.data) {
+		return nil, false
+	}
+	return r.data[start : start+sz], true
+}
+
+// count returns the declared element count of the named variable, after
+// verifying the type matches and the whole extent is in bounds.
+func (r Row) count(name string, want ...VarType) (VarHeader, bool) {
+	v, ok := r.vars[name]
+	if !ok {
+		return VarHeader{}, false
+	}
+	matched := false
+	for _, w := range want {
+		if v.Type == w {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return VarHeader{}, false
+	}
+	sz := v.Type.Size()
+	if sz == 0 || v.Count <= 0 {
+		return VarHeader{}, false
+	}
+	end := int(v.Offset) + int(v.Count)*sz
+	if int(v.Offset) < 0 || end > len(r.data) {
+		return VarHeader{}, false
+	}
+	return v, true
+}
+
+// Int returns an int variable.
+func (r Row) Int(name string) (int32, bool) {
+	b, ok := r.slice(name, 0, VarInt)
+	if !ok {
+		return 0, false
+	}
+	return int32(binary.LittleEndian.Uint32(b)), true
+}
+
+// BitField returns a bitField variable.
+func (r Row) BitField(name string) (uint32, bool) {
+	b, ok := r.slice(name, 0, VarBitField)
+	if !ok {
+		return 0, false
+	}
+	return binary.LittleEndian.Uint32(b), true
+}
+
+// Bool returns a bool variable.
+func (r Row) Bool(name string) (bool, bool) {
+	b, ok := r.slice(name, 0, VarBool)
+	if !ok {
+		return false, false
+	}
+	return b[0] != 0, true
+}
+
+// Float returns a float or double variable, widened to float64.
+func (r Row) Float(name string) (float64, bool) {
+	if b, ok := r.slice(name, 0, VarFloat); ok {
+		return float64(math.Float32frombits(binary.LittleEndian.Uint32(b))), true
+	}
+	if b, ok := r.slice(name, 0, VarDouble); ok {
+		return math.Float64frombits(binary.LittleEndian.Uint64(b)), true
+	}
+	return 0, false
+}
+
+// IntArray returns every element of an int array variable.
+func (r Row) IntArray(name string) ([]int32, bool) {
+	v, ok := r.count(name, VarInt)
+	if !ok {
+		return nil, false
+	}
+	out := make([]int32, v.Count)
+	for i := range out {
+		b, ok := r.slice(name, i, VarInt)
+		if !ok {
+			return nil, false
+		}
+		out[i] = int32(binary.LittleEndian.Uint32(b))
+	}
+	return out, true
+}
+
+// BoolArray returns every element of a bool array variable.
+func (r Row) BoolArray(name string) ([]bool, bool) {
+	v, ok := r.count(name, VarBool)
+	if !ok {
+		return nil, false
+	}
+	out := make([]bool, v.Count)
+	for i := range out {
+		b, ok := r.slice(name, i, VarBool)
+		if !ok {
+			return nil, false
+		}
+		out[i] = b[0] != 0
+	}
+	return out, true
+}
+
+// FloatArray returns every element of a float or double array variable,
+// widened to float64.
+func (r Row) FloatArray(name string) ([]float64, bool) {
+	v, ok := r.count(name, VarFloat, VarDouble)
+	if !ok {
+		return nil, false
+	}
+	out := make([]float64, v.Count)
+	for i := range out {
+		if v.Type == VarFloat {
+			b, ok := r.slice(name, i, VarFloat)
+			if !ok {
+				return nil, false
+			}
+			out[i] = float64(math.Float32frombits(binary.LittleEndian.Uint32(b)))
+			continue
+		}
+		b, ok := r.slice(name, i, VarDouble)
+		if !ok {
+			return nil, false
+		}
+		out[i] = math.Float64frombits(binary.LittleEndian.Uint64(b))
+	}
+	return out, true
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/irsdk/ -v`
+Expected: PASS, all tests including the earlier ones.
+
+- [ ] **Step 5: Verify no cgo crept in**
+
+Run: `CGO_ENABLED=0 go build ./internal/irsdk/`
+Expected: no output, exit 0.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/irsdk/
+git commit -m "Add typed telemetry value decoding"
+```
+
+---
+
+### Task 5: Capture file format, writer and reader
+
+**Files:**
+- Create: `internal/capture/format.go`, `internal/capture/writer.go`, `internal/capture/reader.go`
+- Test: `internal/capture/capture_test.go`
+
+**Interfaces:**
+- Consumes: Task 3's `irsdk.VarHeader`, `irsdk.Header`.
+- Produces:
+  - `Magic = "LPDCAP\x01\x00"` (8 bytes)
+  - `type Kind uint8` with `KindHeader Kind = 1`, `KindSession Kind = 2`, `KindVars Kind = 3`
+  - `type Meta struct { TickRate, NumVars, BufLen int32; VarHeaders []irsdk.VarHeader }`
+  - `type Record struct { Kind Kind; T float64; Update uint32; TickCount uint32; YAML []byte; Vars []byte; Meta *Meta }`
+  - `type Writer struct{...}` with `func NewWriter(path string, m Meta) (*Writer, error)`, `(*Writer) WriteSession(t float64, update uint32, yaml []byte) error`, `(*Writer) WriteVars(t float64, tick uint32, row []byte) error`, `(*Writer) Close() error`, `(*Writer) Path() string`
+  - `type Reader struct{...}` with `func OpenReader(path string) (*Reader, error)`, `(*Reader) Meta() Meta`, `(*Reader) Next() (Record, error)` returning `io.EOF` at end, `(*Reader) Close() error`
+  - `var ErrBadMagic error`
+
+Format, from spec §10.2. The magic sits **outside** the gzip stream so the file is identifiable without decompressing.
+
+```
+file   = magic(8) || gzip( record* )
+record = kind:uint8 || t:float64LE || len:uint32LE || payload[len]
+
+kind 1  header   payload = JSON-encoded Meta
+kind 2  session  payload = update:uint32LE || raw YAML bytes
+kind 3  vars     payload = tickCount:uint32LE || raw variable row (BufLen bytes)
+```
+
+A `KindHeader` record is always first. Storing the **raw** variable row rather than decoded values is deliberate: replay then feeds bytes through the same decoder as live, so tests cover the binary layout parsing.
+
+- [ ] **Step 1: Write the failing round-trip test**
+
+Create `internal/capture/capture_test.go`:
+
+```go
+package capture
+
+import (
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+func testMeta() Meta {
+	return Meta{
+		TickRate: 60,
+		NumVars:  2,
+		BufLen:   8,
+		VarHeaders: []irsdk.VarHeader{
+			{Name: "Lap", Type: irsdk.VarInt, Offset: 0, Count: 1},
+			{Name: "Speed", Type: irsdk.VarFloat, Offset: 4, Count: 1},
+		},
+	}
+}
+
+func TestWriteReadRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "a.lpd")
+
+	w, err := NewWriter(path, testMeta())
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := w.WriteSession(0, 1, []byte("WeekendInfo:\n TrackID: 18\n")); err != nil {
+		t.Fatalf("WriteSession: %v", err)
+	}
+	if err := w.WriteVars(1.0, 100, []byte{1, 0, 0, 0, 2, 0, 0, 0}); err != nil {
+		t.Fatalf("WriteVars: %v", err)
+	}
+	if err := w.WriteVars(2.0, 160, []byte{3, 0, 0, 0, 4, 0, 0, 0}); err != nil {
+		t.Fatalf("WriteVars: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	r, err := OpenReader(path)
+	if err != nil {
+		t.Fatalf("OpenReader: %v", err)
+	}
+	defer r.Close()
+
+	m := r.Meta()
+	if m.TickRate != 60 || m.BufLen != 8 || len(m.VarHeaders) != 2 {
+		t.Fatalf("Meta = %+v", m)
+	}
+	if m.VarHeaders[1].Name != "Speed" || m.VarHeaders[1].Type != irsdk.VarFloat {
+		t.Errorf("VarHeaders[1] = %+v", m.VarHeaders[1])
+	}
+
+	rec, err := r.Next()
+	if err != nil {
+		t.Fatalf("Next 1: %v", err)
+	}
+	if rec.Kind != KindSession || rec.Update != 1 || string(rec.YAML) != "WeekendInfo:\n TrackID: 18\n" {
+		t.Errorf("record 1 = %+v", rec)
+	}
+
+	rec, err = r.Next()
+	if err != nil {
+		t.Fatalf("Next 2: %v", err)
+	}
+	if rec.Kind != KindVars || rec.T != 1.0 || rec.TickCount != 100 {
+		t.Errorf("record 2 = %+v", rec)
+	}
+	// The raw row must survive byte-for-byte so replay exercises the decoder.
+	if got := rec.Vars; len(got) != 8 || got[0] != 1 || got[4] != 2 {
+		t.Errorf("record 2 Vars = %v", got)
+	}
+
+	rec, err = r.Next()
+	if err != nil {
+		t.Fatalf("Next 3: %v", err)
+	}
+	if rec.T != 2.0 || rec.TickCount != 160 {
+		t.Errorf("record 3 = %+v", rec)
+	}
+
+	if _, err := r.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Next at end = %v, want io.EOF", err)
+	}
+}
+
+func TestOpenReaderRejectsBadMagic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "bad.lpd")
+	if err := os.WriteFile(path, []byte("NOTLAPDOGDATA"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := OpenReader(path)
+	if !errors.Is(err, ErrBadMagic) {
+		t.Fatalf("OpenReader on a non-capture file = %v, want ErrBadMagic", err)
+	}
+}
+
+func TestWriterReportsBytesWritten(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "b.lpd")
+	w, err := NewWriter(path, testMeta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if err := w.WriteVars(float64(i), uint32(i), make([]byte, 8)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Size() < int64(len(Magic)) {
+		t.Errorf("file size %d, want at least the magic length", fi.Size())
+	}
+	if w.Path() != path {
+		t.Errorf("Path() = %q, want %q", w.Path(), path)
+	}
+}
+
+// The magic must be readable without decompressing the body.
+func TestMagicIsOutsideGzip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "c.lpd")
+	w, err := NewWriter(path, testMeta())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.Close()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b[:len(Magic)]) != Magic {
+		t.Errorf("first bytes = %q, want %q", b[:len(Magic)], Magic)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/capture/ -v`
+Expected: FAIL — build error, `undefined: Meta`, `undefined: NewWriter`.
+
+- [ ] **Step 3: Write the format definitions**
+
+Create `internal/capture/format.go`:
+
+```go
+// Package capture reads and writes LapDog capture files, which record
+// the telemetry frames the collector polled so that a session can be
+// replayed later on any operating system.
+package capture
+
+import (
+	"errors"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// Magic identifies a capture file. It is stored uncompressed at offset 0
+// so the file is identifiable without decompressing the body.
+const Magic = "LPDCAP\x01\x00"
+
+// ErrBadMagic indicates the file is not a LapDog capture.
+var ErrBadMagic = errors.New("capture: bad magic")
+
+// Kind identifies a record type within a capture file.
+type Kind uint8
+
+// Record kinds. These are wire format; do not reorder.
+const (
+	// KindHeader carries a JSON-encoded Meta and is always the first record.
+	KindHeader Kind = 1
+	// KindSession carries a session-info YAML blob, written whenever the
+	// sim's sessionInfoUpdate counter changes.
+	KindSession Kind = 2
+	// KindVars carries one raw variable-buffer row, written once per poll.
+	KindVars Kind = 3
+)
+
+// Meta describes the variable layout the capture was recorded against.
+// It is needed to decode any KindVars record.
+type Meta struct {
+	TickRate   int32              `json:"tickRate"`
+	NumVars    int32              `json:"numVars"`
+	BufLen     int32              `json:"bufLen"`
+	VarHeaders []irsdk.VarHeader  `json:"varHeaders"`
+}
+
+// Record is one decoded capture record. Which fields are populated
+// depends on Kind: KindSession sets Update and YAML, KindVars sets
+// TickCount and Vars, KindHeader sets Meta.
+type Record struct {
+	Kind      Kind
+	T         float64
+	Update    uint32
+	TickCount uint32
+	YAML      []byte
+	Vars      []byte
+	Meta      *Meta
+}
+```
+
+- [ ] **Step 4: Write the writer**
+
+Create `internal/capture/writer.go`:
+
+```go
+package capture
+
+import (
+	"bufio"
+	"compress/gzip"
+	"encoding/binary"
+	"encoding/json"
+	"fmt"
+	"math"
+	"os"
+)
+
+// Writer appends records to a capture file. It is not safe for
+// concurrent use; the collector owns one Writer at a time.
+type Writer struct {
+	path string
+	f    *os.File
+	bw   *bufio.Writer
+	gz   *gzip.Writer
+}
+
+// NewWriter creates path and writes the magic and the header record.
+func NewWriter(path string, m Meta) (*Writer, error) {
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, fmt.Errorf("capture: create %s: %w", path, err)
+	}
+	bw := bufio.NewWriterSize(f, 64<<10)
+	if _, err := bw.WriteString(Magic); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("capture: write magic: %w", err)
+	}
+	w := &Writer{path: path, f: f, bw: bw, gz: gzip.NewWriter(bw)}
+
+	payload, err := json.Marshal(m)
+	if err != nil {
+		w.Close()
+		return nil, fmt.Errorf("capture: marshal meta: %w", err)
+	}
+	if err := w.writeRecord(KindHeader, 0, payload); err != nil {
+		w.Close()
+		return nil, err
+	}
+	return w, nil
+}
+
+// Path returns the file the Writer is appending to.
+func (w *Writer) Path() string { return w.path }
+
+// writeRecord emits one length-prefixed record into the gzip stream.
+func (w *Writer) writeRecord(k Kind, t float64, payload []byte) error {
+	var hdr [13]byte
+	hdr[0] = byte(k)
+	binary.LittleEndian.PutUint64(hdr[1:], math.Float64bits(t))
+	binary.LittleEndian.PutUint32(hdr[9:], uint32(len(payload)))
+	if _, err := w.gz.Write(hdr[:]); err != nil {
+		return fmt.Errorf("capture: write record header: %w", err)
+	}
+	if _, err := w.gz.Write(payload); err != nil {
+		return fmt.Errorf("capture: write record payload: %w", err)
+	}
+	return nil
+}
+
+// WriteSession records a session-info YAML blob at time t.
+func (w *Writer) WriteSession(t float64, update uint32, yaml []byte) error {
+	payload := make([]byte, 4+len(yaml))
+	binary.LittleEndian.PutUint32(payload, update)
+	copy(payload[4:], yaml)
+	return w.writeRecord(KindSession, t, payload)
+}
+
+// WriteVars records one raw variable-buffer row at time t.
+func (w *Writer) WriteVars(t float64, tick uint32, row []byte) error {
+	payload := make([]byte, 4+len(row))
+	binary.LittleEndian.PutUint32(payload, tick)
+	copy(payload[4:], row)
+	return w.writeRecord(KindVars, t, payload)
+}
+
+// Close flushes the gzip stream and closes the file.
+func (w *Writer) Close() error {
+	var firstErr error
+	note := func(err error) {
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	if w.gz != nil {
+		note(w.gz.Close())
+	}
+	if w.bw != nil {
+		note(w.bw.Flush())
+	}
+	if w.f != nil {
+		note(w.f.Close())
+	}
+	return firstErr
+}
+```
+
+- [ ] **Step 5: Verify the writer compiles**
+
+Run: `go build ./internal/capture/`
+Expected: no output, exit 0.
+
+- [ ] **Step 6: Write the reader**
+
+Create `internal/capture/reader.go`:
+
+```go
+package capture
+
+import (
+	"bufio"
+	"compress/gzip"
+	"encoding/binary"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"os"
+)
+
+// Reader iterates the records of a capture file in write order.
+type Reader struct {
+	f    *os.File
+	gz   *gzip.Reader
+	br   *bufio.Reader
+	meta Meta
+}
+
+// OpenReader opens path, validates the magic, and reads the header
+// record so Meta is available before the first Next call.
+func OpenReader(path string) (*Reader, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("capture: open %s: %w", path, err)
+	}
+	magic := make([]byte, len(Magic))
+	if _, err := io.ReadFull(f, magic); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("%w: %s: %v", ErrBadMagic, path, err)
+	}
+	if string(magic) != Magic {
+		f.Close()
+		return nil, fmt.Errorf("%w: %s", ErrBadMagic, path)
+	}
+	gz, err := gzip.NewReader(f)
+	if err != nil {
+		f.Close()
+		return nil, fmt.Errorf("capture: gzip %s: %w", path, err)
+	}
+	r := &Reader{f: f, gz: gz, br: bufio.NewReaderSize(gz, 64<<10)}
+
+	rec, err := r.Next()
+	if err != nil {
+		r.Close()
+		return nil, fmt.Errorf("capture: read header record: %w", err)
+	}
+	if rec.Kind != KindHeader || rec.Meta == nil {
+		r.Close()
+		return nil, fmt.Errorf("capture: %s: first record is kind %d, want header", path, rec.Kind)
+	}
+	r.meta = *rec.Meta
+	return r, nil
+}
+
+// Meta returns the variable layout the capture was recorded against.
+func (r *Reader) Meta() Meta { return r.meta }
+
+// Next returns the next record, or io.EOF when the file is exhausted.
+func (r *Reader) Next() (Record, error) {
+	var hdr [13]byte
+	if _, err := io.ReadFull(r.br, hdr[:]); err != nil {
+		if errors.Is(err, io.EOF) {
+			return Record{}, io.EOF
+		}
+		if errors.Is(err, io.ErrUnexpectedEOF) {
+			return Record{}, fmt.Errorf("capture: truncated record header: %w", err)
+		}
+		return Record{}, err
+	}
+	rec := Record{
+		Kind: Kind(hdr[0]),
+		T:    math.Float64frombits(binary.LittleEndian.Uint64(hdr[1:])),
+	}
+	n := binary.LittleEndian.Uint32(hdr[9:])
+	// Guard against a corrupt length allocating unbounded memory.
+	const maxPayload = 64 << 20
+	if n > maxPayload {
+		return Record{}, fmt.Errorf("capture: record payload %d exceeds %d", n, maxPayload)
+	}
+	payload := make([]byte, n)
+	if _, err := io.ReadFull(r.br, payload); err != nil {
+		return Record{}, fmt.Errorf("capture: truncated payload: %w", err)
+	}
+
+	switch rec.Kind {
+	case KindHeader:
+		var m Meta
+		if err := json.Unmarshal(payload, &m); err != nil {
+			return Record{}, fmt.Errorf("capture: unmarshal meta: %w", err)
+		}
+		rec.Meta = &m
+	case KindSession:
+		if len(payload) < 4 {
+			return Record{}, errors.New("capture: session record shorter than 4 bytes")
+		}
+		rec.Update = binary.LittleEndian.Uint32(payload)
+		rec.YAML = payload[4:]
+	case KindVars:
+		if len(payload) < 4 {
+			return Record{}, errors.New("capture: vars record shorter than 4 bytes")
+		}
+		rec.TickCount = binary.LittleEndian.Uint32(payload)
+		rec.Vars = payload[4:]
+	default:
+		return Record{}, fmt.Errorf("capture: unknown record kind %d", rec.Kind)
+	}
+	return rec, nil
+}
+
+// Close releases the gzip stream and the underlying file.
+func (r *Reader) Close() error {
+	var firstErr error
+	if r.gz != nil {
+		if err := r.gz.Close(); err != nil {
+			firstErr = err
+		}
+	}
+	if r.f != nil {
+		if err := r.f.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+```
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `go test ./internal/capture/ -v`
+Expected: PASS, five tests.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/capture/
+git commit -m "Add capture file format, writer and reader"
+```
+
+---
+
+### Task 6: Source interface, replay source, and capture pruning
+
+**Files:**
+- Create: `internal/source/source.go`, `internal/source/replay.go`, `internal/capture/prune.go`
+- Test: `internal/source/replay_test.go`, `internal/capture/prune_test.go`
+
+**Interfaces:**
+- Consumes: Task 3–4's `irsdk.Row`, `irsdk.VarHeader`; Task 5's `capture.Reader`, `capture.Meta`.
+- Produces:
+  - `type Frame struct { T float64; TickCount uint32; Row irsdk.Row; SessionYAML []byte; SessionUpdate uint32; YAMLChanged bool }`
+  - `type Source interface { Next() (Frame, error); Meta() capture.Meta; Close() error }`
+  - `var ErrDisconnected error`
+  - `func NewReplay(path string) (Source, error)`
+  - `capture.PruneDir(dir string, maxBytes int64, keep string) (removed int, freed int64, err error)`
+
+`Frame` carries the session YAML on **every** frame, not only when it changes, so the collector never has to remember the last one. `YAMLChanged` tells the collector when re-parsing is worthwhile. The replay source coalesces a `KindSession` record with the following `KindVars` record, since the collector consumes one frame per poll.
+
+`ErrDisconnected` is returned by the live source when the sim is not running. The collector treats it as an expected state, not a failure.
+
+- [ ] **Step 1: Write the failing replay test**
+
+Create `internal/source/replay_test.go`:
+
+```go
+package source
+
+import (
+	"errors"
+	"io"
+	"path/filepath"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/capture"
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// writeFixture builds a small capture: one YAML blob, then three rows,
+// with a second YAML blob before the third row.
+func writeFixture(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "fix.lpd")
+	m := capture.Meta{
+		TickRate: 60,
+		NumVars:  1,
+		BufLen:   4,
+		VarHeaders: []irsdk.VarHeader{
+			{Name: "Lap", Type: irsdk.VarInt, Offset: 0, Count: 1},
+		},
+	}
+	w, err := capture.NewWriter(path, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSession(0, 1, []byte("WeekendInfo:\n LeagueID: 0\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteVars(1, 60, []byte{1, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteVars(2, 120, []byte{2, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSession(2.5, 2, []byte("WeekendInfo:\n LeagueID: 4242\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteVars(3, 180, []byte{3, 0, 0, 0}); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func TestReplayEmitsOneFramePerVarsRecord(t *testing.T) {
+	s, err := NewReplay(writeFixture(t))
+	if err != nil {
+		t.Fatalf("NewReplay: %v", err)
+	}
+	defer s.Close()
+
+	if got := s.Meta().BufLen; got != 4 {
+		t.Errorf("Meta().BufLen = %d, want 4", got)
+	}
+
+	f1, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next 1: %v", err)
+	}
+	if f1.T != 1 || f1.TickCount != 60 {
+		t.Errorf("frame 1 = %+v", f1)
+	}
+	if lap, ok := f1.Row.Int("Lap"); !ok || lap != 1 {
+		t.Errorf("frame 1 Lap = %d, %v; want 1, true", lap, ok)
+	}
+	// The YAML preceding the first row must be attached, and flagged changed.
+	if !f1.YAMLChanged || f1.SessionUpdate != 1 {
+		t.Errorf("frame 1 YAMLChanged=%v Update=%d; want true, 1", f1.YAMLChanged, f1.SessionUpdate)
+	}
+	if string(f1.SessionYAML) != "WeekendInfo:\n LeagueID: 0\n" {
+		t.Errorf("frame 1 YAML = %q", f1.SessionYAML)
+	}
+
+	f2, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next 2: %v", err)
+	}
+	// YAML is still carried, but not flagged as changed.
+	if f2.YAMLChanged {
+		t.Error("frame 2 YAMLChanged = true, want false")
+	}
+	if string(f2.SessionYAML) != "WeekendInfo:\n LeagueID: 0\n" {
+		t.Errorf("frame 2 must carry the last YAML, got %q", f2.SessionYAML)
+	}
+
+	f3, err := s.Next()
+	if err != nil {
+		t.Fatalf("Next 3: %v", err)
+	}
+	if !f3.YAMLChanged || f3.SessionUpdate != 2 {
+		t.Errorf("frame 3 YAMLChanged=%v Update=%d; want true, 2", f3.YAMLChanged, f3.SessionUpdate)
+	}
+	if string(f3.SessionYAML) != "WeekendInfo:\n LeagueID: 4242\n" {
+		t.Errorf("frame 3 YAML = %q", f3.SessionYAML)
+	}
+	if lap, ok := f3.Row.Int("Lap"); !ok || lap != 3 {
+		t.Errorf("frame 3 Lap = %d, %v", lap, ok)
+	}
+
+	if _, err := s.Next(); !errors.Is(err, io.EOF) {
+		t.Fatalf("Next at end = %v, want io.EOF", err)
+	}
+}
+
+func TestReplayMissingFile(t *testing.T) {
+	if _, err := NewReplay(filepath.Join(t.TempDir(), "nope.lpd")); err == nil {
+		t.Fatal("NewReplay on a missing file: want error, got nil")
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/source/ -v`
+Expected: FAIL — build error, `undefined: NewReplay`.
+
+- [ ] **Step 3: Write the Source interface**
+
+Create `internal/source/source.go`:
+
+```go
+// Package source supplies telemetry frames to the collector, either
+// live from the running simulator or replayed from a capture file.
+package source
+
+import (
+	"errors"
+
+	"github.com/blezek/lapdog/internal/capture"
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// ErrDisconnected reports that the simulator is not currently running.
+// The collector treats this as an expected state rather than a failure:
+// iRacing not running is the normal case.
+var ErrDisconnected = errors.New("source: sim not connected")
+
+// Frame is one poll's worth of telemetry.
+//
+// SessionYAML is populated on every frame, not only when it changes, so
+// the collector never has to cache the previous value. YAMLChanged
+// reports whether it differs from the preceding frame, which is the
+// signal to re-parse and re-classify.
+type Frame struct {
+	T             float64
+	TickCount     uint32
+	Row           irsdk.Row
+	SessionYAML   []byte
+	SessionUpdate uint32
+	YAMLChanged   bool
+}
+
+// Source produces frames in time order. Next returns io.EOF when a
+// finite source is exhausted, and ErrDisconnected when a live source
+// has no simulator to read.
+type Source interface {
+	Next() (Frame, error)
+	Meta() capture.Meta
+	Close() error
+}
+```
+
+- [ ] **Step 4: Write the replay source**
+
+Create `internal/source/replay.go`:
+
+```go
+package source
+
+import (
+	"github.com/blezek/lapdog/internal/capture"
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// replay plays a capture file back through the Source interface.
+//
+// Time advances from the frame timestamps in the file, never from the
+// wall clock, so tests can run a ninety-minute race through the
+// collector in milliseconds.
+type replay struct {
+	r        *capture.Reader
+	meta     capture.Meta
+	yaml     []byte
+	update   uint32
+	pendYAML bool
+}
+
+// NewReplay opens a capture file as a Source.
+func NewReplay(path string) (Source, error) {
+	r, err := capture.OpenReader(path)
+	if err != nil {
+		return nil, err
+	}
+	return &replay{r: r, meta: r.Meta()}, nil
+}
+
+// Meta returns the variable layout the capture was recorded against.
+func (s *replay) Meta() capture.Meta { return s.meta }
+
+// Next returns the next frame. Session records are folded into the
+// following variable record, since the collector consumes one frame per
+// poll.
+func (s *replay) Next() (Frame, error) {
+	for {
+		rec, err := s.r.Next()
+		if err != nil {
+			return Frame{}, err
+		}
+		switch rec.Kind {
+		case capture.KindSession:
+			s.yaml = rec.YAML
+			s.update = rec.Update
+			s.pendYAML = true
+		case capture.KindVars:
+			f := Frame{
+				T:             rec.T,
+				TickCount:     rec.TickCount,
+				Row:           irsdk.NewRow(s.meta.VarHeaders, rec.Vars),
+				SessionYAML:   s.yaml,
+				SessionUpdate: s.update,
+				YAMLChanged:   s.pendYAML,
+			}
+			s.pendYAML = false
+			return f, nil
+		default:
+			// A stray header record mid-file is ignored rather than fatal.
+			continue
+		}
+	}
+}
+
+// Close releases the underlying capture file.
+func (s *replay) Close() error { return s.r.Close() }
+
+// compile-time assertion that replay satisfies Source.
+var _ Source = (*replay)(nil)
+```
+
+- [ ] **Step 5: Run test to verify it passes**
+
+Run: `go test ./internal/source/ -v`
+Expected: PASS, two tests.
+
+- [ ] **Step 6: Write the failing prune test**
+
+Create `internal/capture/prune_test.go`:
+
+```go
+package capture
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+)
+
+// writeSized creates a file of n bytes with a specific modification time.
+func writeSized(t *testing.T, dir, name string, n int, age time.Duration) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, make([]byte, n), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mt := time.Now().Add(-age)
+	if err := os.Chtimes(p, mt, mt); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestPruneDirRemovesOldestFirst(t *testing.T) {
+	dir := t.TempDir()
+	oldest := writeSized(t, dir, "a.lpd", 1000, 3*time.Hour)
+	middle := writeSized(t, dir, "b.lpd", 1000, 2*time.Hour)
+	newest := writeSized(t, dir, "c.lpd", 1000, 1*time.Hour)
+
+	// Cap of 2500 over 3000 bytes: one file must go, and it must be the oldest.
+	removed, freed, err := PruneDir(dir, 2500, "")
+	if err != nil {
+		t.Fatalf("PruneDir: %v", err)
+	}
+	if removed != 1 || freed != 1000 {
+		t.Errorf("removed=%d freed=%d; want 1, 1000", removed, freed)
+	}
+	if _, err := os.Stat(oldest); !os.IsNotExist(err) {
+		t.Error("oldest file survived, want removed")
+	}
+	for _, p := range []string{middle, newest} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("%s was removed, want kept", filepath.Base(p))
+		}
+	}
+}
+
+// The file currently being written must never be deleted.
+func TestPruneDirNeverRemovesKeep(t *testing.T) {
+	dir := t.TempDir()
+	active := writeSized(t, dir, "active.lpd", 5000, 10*time.Hour)
+	other := writeSized(t, dir, "other.lpd", 1000, 1*time.Hour)
+
+	removed, _, err := PruneDir(dir, 100, active)
+	if err != nil {
+		t.Fatalf("PruneDir: %v", err)
+	}
+	if _, err := os.Stat(active); err != nil {
+		t.Error("the active file was removed, want kept")
+	}
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Error("the non-active file survived, want removed")
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1", removed)
+	}
+}
+
+func TestPruneDirZeroMeansUnlimited(t *testing.T) {
+	dir := t.TempDir()
+	writeSized(t, dir, "a.lpd", 10_000, time.Hour)
+	removed, freed, err := PruneDir(dir, 0, "")
+	if err != nil {
+		t.Fatalf("PruneDir: %v", err)
+	}
+	if removed != 0 || freed != 0 {
+		t.Errorf("removed=%d freed=%d; want 0, 0 with an unlimited cap", removed, freed)
+	}
+}
+
+func TestPruneDirUnderCapIsNoOp(t *testing.T) {
+	dir := t.TempDir()
+	writeSized(t, dir, "a.lpd", 100, time.Hour)
+	removed, _, err := PruneDir(dir, 1<<20, "")
+	if err != nil {
+		t.Fatalf("PruneDir: %v", err)
+	}
+	if removed != 0 {
+		t.Errorf("removed = %d, want 0", removed)
+	}
+}
+
+func TestPruneDirIgnoresNonCaptureFiles(t *testing.T) {
+	dir := t.TempDir()
+	writeSized(t, dir, "notes.txt", 10_000, 5*time.Hour)
+	writeSized(t, dir, "a.lpd", 1000, time.Hour)
+	removed, _, err := PruneDir(dir, 500, "")
+	if err != nil {
+		t.Fatalf("PruneDir: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "notes.txt")); err != nil {
+		t.Error("a non-.lpd file was removed; prune must only touch captures")
+	}
+	if removed != 1 {
+		t.Errorf("removed = %d, want 1", removed)
+	}
+}
+
+func TestPruneDirMissingDirIsNotAnError(t *testing.T) {
+	removed, _, err := PruneDir(filepath.Join(t.TempDir(), "absent"), 100, "")
+	if err != nil {
+		t.Fatalf("PruneDir on a missing directory = %v, want nil", err)
+	}
+	if removed != 0 {
+		t.Errorf("removed = %d, want 0", removed)
+	}
+}
+```
+
+- [ ] **Step 7: Run test to verify it fails**
+
+Run: `go test ./internal/capture/ -run Prune -v`
+Expected: FAIL — `undefined: PruneDir`.
+
+- [ ] **Step 8: Write the prune implementation**
+
+Create `internal/capture/prune.go`:
+
+```go
+package capture
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
+)
+
+// Ext is the capture file extension. PruneDir only considers files with
+// this suffix, so unrelated files in the directory are never deleted.
+const Ext = ".lpd"
+
+// PruneDir enforces a total size cap over the capture files in dir by
+// deleting oldest-first until the total is at or below maxBytes.
+//
+// maxBytes of 0 means unlimited and makes this a no-op. The file named
+// by keep is never deleted, which is how the in-progress capture is
+// protected. A missing directory is not an error.
+//
+// It returns the number of files removed and the bytes freed.
+func PruneDir(dir string, maxBytes int64, keep string) (int, int64, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, 0, nil
+		}
+		return 0, 0, fmt.Errorf("capture: read dir %s: %w", dir, err)
+	}
+	if maxBytes <= 0 {
+		return 0, 0, nil
+	}
+
+	type entry struct {
+		path  string
+		size  int64
+		mtime int64
+	}
+	var files []entry
+	var total int64
+	keepAbs, _ := filepath.Abs(keep)
+
+	for _, e := range entries {
+		if e.IsDir() || !strings.EqualFold(filepath.Ext(e.Name()), Ext) {
+			continue
+		}
+		fi, err := e.Info()
+		if err != nil {
+			continue // vanished between ReadDir and Info; nothing to prune
+		}
+		p := filepath.Join(dir, e.Name())
+		total += fi.Size()
+		abs, _ := filepath.Abs(p)
+		if keep != "" && abs == keepAbs {
+			continue // counts toward the total but is not a deletion candidate
+		}
+		files = append(files, entry{path: p, size: fi.Size(), mtime: fi.ModTime().UnixNano()})
+	}
+
+	if total <= maxBytes {
+		return 0, 0, nil
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].mtime < files[j].mtime })
+
+	var removed int
+	var freed int64
+	for _, f := range files {
+		if total <= maxBytes {
+			break
+		}
+		if err := os.Remove(f.path); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return removed, freed, fmt.Errorf("capture: remove %s: %w", f.path, err)
+		}
+		total -= f.size
+		freed += f.size
+		removed++
+	}
+	return removed, freed, nil
+}
+```
+
+- [ ] **Step 9: Run the full test suite**
+
+Run: `go test ./... -v`
+Expected: PASS for `internal/irsdk`, `internal/capture`, `internal/source`, `internal/version`.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/source/ internal/capture/
+git commit -m "Add Source interface, replay source and capture pruning"
+```
