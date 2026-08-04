@@ -41,62 +41,83 @@ internal/irsdk/
   header.go             Header/VarBuf/VarHeader binary parsing            (Task 3)
   buffer.go             torn-read-safe buffer selection                   (Task 3)
   decode.go             typed value extraction from a row                 (Task 4)
-  live_windows.go       MapViewOfFile live reader                        (Task 17)
-  live_stub.go          non-Windows stub returning ErrUnsupported        (Task 17)
+  live.go               snapshotFrom: platform-independent read path      (Task 22)
+  live_windows.go       MapViewOfFile mapping                             (Task 22)
+  live_stub.go          non-Windows stub returning ErrUnsupported         (Task 22)
 
 internal/capture/
-  format.go             magic, record kinds, record encode/decode         (Task 5)
-  writer.go             gzip file writer, size accounting                 (Task 5)
+  format.go             magic, record kinds, Meta, Record                 (Task 5)
+  writer.go             gzip file writer                                  (Task 5)
   reader.go             gzip file reader                                  (Task 5)
-  ndjson.go             inspect/build codec                              (Task 16)
   prune.go              size-cap retention                                (Task 6)
+  ndjson.go             Inspect and Build codec                          (Task 19)
 
 internal/source/
-  source.go             Source interface, Frame type                      (Task 6)
-  replay.go             replays a .lpd through the Source interface       (Task 6)
-  live.go               wraps internal/irsdk                             (Task 17)
+  source.go             Source interface, Frame; Paced added in Task 18    (Task 6)
+  replay.go             replays a .lpd through the Source interface        (Task 6)
+  live.go               wraps internal/irsdk, owns poll pacing            (Task 22)
 
 internal/sessionyaml/
-  types.go              typed subset structs                              (Task 7)
-  parse.go              tolerant parser                                   (Task 7)
+  types.go              typed subset structs; JSON tags added in Task 15   (Task 7)
+  parse.go              tolerant parser and accessors                     (Task 7)
 
 internal/classify/
-  classify.go           pure function: YAML subset -> type + context      (Task 8)
-
-internal/store/
-  migrations/0001_init.sql                                                (Task 9)
-  store.go              open, WAL, writer/reader pools, migrations        (Task 9)
-  sessions.go           session upsert, session_key derivation           (Task 10)
-  laps.go               lap insert                                       (Task 11)
-  positions.go          position event insert                            (Task 11)
-  queries.go            aggregation queries                              (Task 12)
-
-internal/collector/
-  clock.go              Clock interface + real and fake implementations   (Task 13)
-  accounting.go         the three counters, poll-gap clamp               (Task 13)
-  segment.go            session segment lifecycle, results extraction    (Task 14)
-  laps.go               lap detection                                    (Task 15)
-  positions.go          position events and cause attribution            (Task 15)
-  collector.go          poll loop wiring                                 (Task 15)
+  classify.go           pure function: YAML subset -> type + context       (Task 8)
 
 internal/config/
-  config.go             load/save, defaults, validation, paths            (Task 9)
+  config.go             Config, defaults, validation, load and save        (Task 9)
+  paths.go              data dir, file paths, network-path refusal         (Task 9)
+  drive_windows.go      mapped-network-drive probe                         (Task 9)
+  drive_other.go        no-op probe off Windows                            (Task 9)
+  store.go              live Store with change subscribers                (Task 23)
+  autostart_windows.go  HKCU Run key entry                                (Task 23)
+  autostart_other.go    no-op off Windows                                 (Task 23)
+
+internal/store/
+  migrations/0001_init.sql  full schema                                   (Task 10)
+  store.go              open, WAL, migrations, writer/reader split        (Task 10)
+  sessions.go           Session, SessionKey, upsert, readers              (Task 11)
+  laps.go               Lap insert and read                               (Task 12)
+  positions.go          PositionEvent insert and read, Cause              (Task 12)
+  queries.go            Filter and aggregations; FilterPredicate in T21   (Task 13)
+  reclassify.go         re-derive classification from provenance          (Task 19)
+
+internal/collector/
+  clock.go              Clock, RealClock, FakeClock                       (Task 14)
+  vars.go               required variable contract, MissingVars           (Task 14)
+  accounting.go         Sample, Accountant, the three counters            (Task 14)
+  segment.go            segment lifecycle, results extraction             (Task 15)
+  laps.go               LapDetector                                       (Task 16)
+  positions.go          PositionDetector and cause attribution            (Task 17)
+  collector.go          poll loop, flushing, capture integration          (Task 18)
+
+internal/applog/
+  applog.go             rotating file logger                             (Task 23)
 
 internal/api/
-  server.go             mux, listener, middleware                        (Task 18)
-  handlers.go           read endpoints                                   (Task 18)
-  export.go             streaming CSV/JSON export                        (Task 19)
+  filter.go             query-parameter to store.Filter                   (Task 20)
+  server.go             routing, loopback listener                        (Task 20)
+  handlers.go           read endpoints and settings                       (Task 20)
+  export.go             streaming CSV and JSON export                    (Task 21)
 
 internal/web/
-  embed.go              embed.FS + placeholder index.html                (Task 18)
+  embed.go              embed.FS over dist                                (Task 20)
+  dist/index.html       placeholder, replaced by Plan 2                   (Task 20)
 
-cmd/lapdog/main.go      tray app, wires everything                       (Task 20)
-cmd/lapdogctl/main.go   dev CLI: inspect, build, reclassify              (Task 16)
+internal/tray/
+  tray.go               systray menu, icon state, refresh loop            (Task 23)
+  icon.go               generated 16x16 state icons                       (Task 23)
+
+internal/version/
+  version.go            build-stamped version string                       (Task 1)
+
+cmd/lapdog/main.go      tray app, wires everything                        (Task 23)
+cmd/lapdogctl/main.go   dev CLI: inspect, build, reclassify               (Task 19)
 
 testdata/               .lpd fixtures and hand-authored NDJSON
 ```
 
-Rationale for the split: `irsdk` is divided so that only `live_*.go` is OS-specific and everything else tests anywhere. `collector` is split by concern rather than into one file because each concern (accounting, segments, laps, positions) has its own test cycle and a reviewer could reasonably reject one while accepting the others.
+Rationale for the split. `irsdk` is divided so only `live_windows.go` is OS-specific: `snapshotFrom` in the untagged `live.go` holds all the byte-level reasoning and is tested on every platform, which keeps the untestable-on-macOS surface to roughly sixty lines. `collector` is split by concern rather than gathered into one file because accounting, segments, laps and positions each have their own test cycle, and a reviewer could reasonably reject one while accepting its neighbours. `config` carries both the value type and the live store because the store is meaningless without the validation rules beside it, but autostart is separate since it is the only part touching the registry.
 
 ---
 
@@ -13815,3 +13836,917 @@ Expected: PASS with no race reports.
 git add internal/irsdk/ internal/source/
 git commit -m "Add Windows shared-memory reader and live telemetry source"
 ```
+
+---
+
+### Task 23: Tray, autostart, logging and application wiring
+
+**Files:**
+- Create: `internal/config/store.go`, `internal/config/autostart_windows.go`, `internal/config/autostart_other.go`, `internal/applog/applog.go`, `internal/tray/tray.go`, `internal/tray/icon.go`, `cmd/lapdog/main.go`
+- Test: `internal/config/store_test.go`, `internal/applog/applog_test.go`
+
+**Interfaces:**
+- Consumes: everything.
+- Produces:
+  - `type Store struct { ... }` in `config`, with `func NewStore(path string) (*Store, error)`, `Get() config.Config`, `Set(config.Config) error`, `OnChange(func(config.Config))`
+  - `func SetAutostart(enabled bool, exePath string) error` — Windows registry; a no-op elsewhere
+  - `func applog.Open(path string) (*slog.Logger, io.Closer, error)` — rotating file plus stderr
+  - `type tray.Options struct { ... }`, `func tray.Run(opts tray.Options)`
+  - `cmd/lapdog/main.go`
+
+`config.Store` satisfies the `api.ConfigStore` interface from Task 20 and notifies subscribers so a poll-interval change takes effect live without a restart.
+
+The tray owns process lifetime. `systray.Run` must be called on the main goroutine, so `main` starts the collector and HTTP server as goroutines and hands the main thread to the tray.
+
+Port already in use is **not** fatal, per spec §16: the collector keeps recording and the tray reports the conflict. Losing the UI must not lose session data.
+
+- [ ] **Step 1: Write the failing config store test**
+
+Create `internal/config/store_test.go`:
+
+```go
+package config
+
+import (
+	"path/filepath"
+	"sync"
+	"testing"
+)
+
+func TestStoreRoundTripsThroughDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	s, err := NewStore(path)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if s.Get() != Default() {
+		t.Errorf("a fresh store = %+v, want Default()", s.Get())
+	}
+
+	next := Default()
+	next.PollIntervalSeconds = 2.5
+	next.Theme = "dark"
+	if err := s.Set(next); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+
+	// Reopening must observe the persisted values.
+	s2, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := s2.Get(); got.PollIntervalSeconds != 2.5 || got.Theme != "dark" {
+		t.Errorf("reopened store = %+v", got)
+	}
+}
+
+func TestStoreRejectsInvalid(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := s.Get()
+	bad := Default()
+	bad.PollIntervalSeconds = 999
+	if err := s.Set(bad); err == nil {
+		t.Error("Set with an out-of-range interval = nil, want an error")
+	}
+	if s.Get() != before {
+		t.Error("a rejected Set mutated the in-memory config")
+	}
+}
+
+// Subscribers let a poll-interval change take effect without a restart.
+func TestStoreNotifiesSubscribers(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	var seen []float64
+	s.OnChange(func(c Config) {
+		mu.Lock()
+		seen = append(seen, c.PollIntervalSeconds)
+		mu.Unlock()
+	})
+
+	next := Default()
+	next.PollIntervalSeconds = 5
+	if err := s.Set(next); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 1 || seen[0] != 5 {
+		t.Errorf("subscriber saw %v, want [5]", seen)
+	}
+}
+
+func TestStoreDoesNotNotifyOnRejectedSet(t *testing.T) {
+	s, _ := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	called := false
+	s.OnChange(func(Config) { called = true })
+
+	bad := Default()
+	bad.Port = 0
+	s.Set(bad)
+	if called {
+		t.Error("a rejected Set notified subscribers")
+	}
+}
+
+func TestStoreConcurrentAccess(t *testing.T) {
+	s, _ := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			c := Default()
+			c.PollIntervalSeconds = 1 + float64(n%5)
+			s.Set(c)
+			_ = s.Get()
+		}(i)
+	}
+	wg.Wait()
+	if err := s.Get().Validate(); err != nil {
+		t.Errorf("config is invalid after concurrent writes: %v", err)
+	}
+}
+
+// Autostart is a no-op off Windows and must not error.
+func TestSetAutostartOffWindowsIsHarmless(t *testing.T) {
+	if err := SetAutostart(true, "/nonexistent/lapdog.exe"); err != nil {
+		t.Errorf("SetAutostart = %v, want nil on a non-Windows host", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/config/ -run 'Store|Autostart' -v`
+Expected: FAIL — `undefined: NewStore`, `undefined: SetAutostart`.
+
+- [ ] **Step 3: Write the config store**
+
+Create `internal/config/store.go`:
+
+```go
+package config
+
+import "sync"
+
+// Store holds the live configuration and persists changes.
+//
+// It notifies subscribers on every accepted change, which is how a
+// poll-interval adjustment takes effect without restarting the process.
+type Store struct {
+	mu   sync.RWMutex
+	path string
+	cur  Config
+	subs []func(Config)
+}
+
+// NewStore loads the config at path, falling back to defaults when the file
+// does not exist.
+func NewStore(path string) (*Store, error) {
+	c, err := Load(path)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{path: path, cur: c}, nil
+}
+
+// Get returns the current configuration.
+func (s *Store) Get() Config {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cur
+}
+
+// Set validates, persists and applies a new configuration.
+//
+// An invalid configuration is rejected without changing anything and
+// without notifying subscribers, so a bad update cannot leave the process
+// in a half-applied state.
+func (s *Store) Set(c Config) error {
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	if err := Save(s.path, c); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	s.cur = c
+	subs := append([]func(Config)(nil), s.subs...)
+	s.mu.Unlock()
+
+	// Notify outside the lock so a subscriber may call Get without deadlock.
+	for _, fn := range subs {
+		fn(c)
+	}
+	return nil
+}
+
+// OnChange registers a callback invoked after each accepted change.
+func (s *Store) OnChange(fn func(Config)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.subs = append(s.subs, fn)
+}
+
+// Path returns the file the store persists to.
+func (s *Store) Path() string { return s.path }
+```
+
+- [ ] **Step 4: Write autostart for both platforms**
+
+Create `internal/config/autostart_windows.go`:
+
+```go
+//go:build windows
+
+package config
+
+import (
+	"fmt"
+
+	"golang.org/x/sys/registry"
+)
+
+// runKeyPath is the per-user startup key. HKCU rather than HKLM so no
+// elevation is needed.
+const runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
+
+// runValueName is the entry LapDog owns under the Run key.
+const runValueName = "LapDog"
+
+// SetAutostart adds or removes the per-user startup entry.
+func SetAutostart(enabled bool, exePath string) error {
+	k, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.SET_VALUE)
+	if err != nil {
+		return fmt.Errorf("config: open Run key: %w", err)
+	}
+	defer k.Close()
+
+	if !enabled {
+		err := k.DeleteValue(runValueName)
+		// Absent is the desired end state, so a missing value is success.
+		if err != nil && err != registry.ErrNotExist {
+			return fmt.Errorf("config: remove startup entry: %w", err)
+		}
+		return nil
+	}
+	// Quote the path so a space in Program Files does not split the command.
+	if err := k.SetStringValue(runValueName, `"`+exePath+`"`); err != nil {
+		return fmt.Errorf("config: write startup entry: %w", err)
+	}
+	return nil
+}
+```
+
+Create `internal/config/autostart_other.go`:
+
+```go
+//go:build !windows
+
+package config
+
+// SetAutostart is a no-op off Windows, where there is no Run key. It
+// returns nil rather than an error so the settings handler needs no
+// platform branch.
+func SetAutostart(bool, string) error { return nil }
+```
+
+- [ ] **Step 5: Add the registry dependency and run the tests**
+
+```bash
+go get golang.org/x/sys/windows/registry
+go test ./internal/config/ -v
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./internal/config/
+```
+
+Expected: tests PASS; the Windows build succeeds.
+
+- [ ] **Step 6: Write the logger**
+
+Create `internal/applog/applog.go`:
+
+```go
+// Package applog opens LapDog's application log.
+package applog
+
+import (
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+)
+
+// maxLogBytes is the size at which the log is rotated to a .1 file.
+//
+// Steady-state operation is nearly silent, so this only fills up when
+// something is genuinely wrong, and one generation of history is enough to
+// diagnose it.
+const maxLogBytes = 4 << 20
+
+// Open returns a logger writing to both the log file and stderr, plus a
+// Closer for the file.
+//
+// Writing to stderr as well costs nothing in the tray build, where stderr
+// is discarded, and makes `go run` during development readable.
+func Open(path string) (*slog.Logger, io.Closer, error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, nil, fmt.Errorf("applog: create directory: %w", err)
+	}
+	if err := rotateIfLarge(path); err != nil {
+		return nil, nil, err
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, nil, fmt.Errorf("applog: open %s: %w", path, err)
+	}
+	h := slog.NewTextHandler(io.MultiWriter(f, os.Stderr), &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})
+	return slog.New(h), f, nil
+}
+
+// rotateIfLarge moves an oversized log aside, keeping one generation.
+func rotateIfLarge(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("applog: stat %s: %w", path, err)
+	}
+	if fi.Size() < maxLogBytes {
+		return nil
+	}
+	// Rename over any existing .1, keeping exactly one previous generation.
+	if err := os.Rename(path, path+".1"); err != nil {
+		return fmt.Errorf("applog: rotate %s: %w", path, err)
+	}
+	return nil
+}
+```
+
+Create `internal/applog/applog_test.go`:
+
+```go
+package applog
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+func TestOpenCreatesAndWrites(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sub", "lapdog.log")
+	log, closer, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	log.Info("hello", "key", "value")
+	if err := closer.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("log file was not created: %v", err)
+	}
+	if !strings.Contains(string(b), "hello") || !strings.Contains(string(b), "key=value") {
+		t.Errorf("log contents = %q", b)
+	}
+}
+
+func TestOpenAppendsRatherThanTruncating(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapdog.log")
+	log, c, _ := Open(path)
+	log.Info("first")
+	c.Close()
+
+	log, c, _ = Open(path)
+	log.Info("second")
+	c.Close()
+
+	b, _ := os.ReadFile(path)
+	if !strings.Contains(string(b), "first") {
+		t.Error("reopening truncated the log; earlier entries must survive")
+	}
+	if !strings.Contains(string(b), "second") {
+		t.Error("the second entry is missing")
+	}
+}
+
+func TestRotatesWhenLarge(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "lapdog.log")
+	if err := os.WriteFile(path, make([]byte, maxLogBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log, c, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info("after rotation")
+	c.Close()
+
+	if _, err := os.Stat(path + ".1"); err != nil {
+		t.Errorf("no .1 generation after rotation: %v", err)
+	}
+	b, _ := os.ReadFile(path)
+	if len(b) > 1024 {
+		t.Errorf("the new log is %d bytes; it should start fresh", len(b))
+	}
+}
+```
+
+- [ ] **Step 7: Write the tray icon and menu**
+
+Create `internal/tray/icon.go`. The icons are tiny generated PNGs rather
+than binary blobs pasted into source, so they are reviewable.
+
+```go
+package tray
+
+import (
+	"bytes"
+	"image"
+	"image/color"
+	"image/png"
+)
+
+// iconState is the connection state the tray icon reflects.
+type iconState int
+
+// Icon states.
+const (
+	stateDisconnected iconState = iota
+	stateConnected
+	statePaused
+)
+
+// icon renders a 16x16 PNG for the given state.
+//
+// Icons are generated rather than embedded as binary blobs so a reviewer
+// can see what they look like from the code. The shape is a filled circle;
+// only the colour distinguishes the states, which is acceptable here
+// because the tray tooltip and menu header always carry the state as text.
+func icon(s iconState) []byte {
+	var fill color.RGBA
+	switch s {
+	case stateConnected:
+		fill = color.RGBA{R: 0x0c, G: 0xa3, B: 0x0c, A: 0xff} // status good
+	case statePaused:
+		fill = color.RGBA{R: 0xfa, G: 0xb2, B: 0x19, A: 0xff} // status warning
+	default:
+		fill = color.RGBA{R: 0x89, G: 0x87, B: 0x81, A: 0xff} // muted
+	}
+
+	const size = 16
+	img := image.NewRGBA(image.Rect(0, 0, size, size))
+	const c, r2 = 7.5, 6.5 * 6.5
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			dx, dy := float64(x)-c, float64(y)-c
+			if dx*dx+dy*dy <= r2 {
+				img.Set(x, y, fill)
+			}
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		// Encoding a synthetic in-memory image cannot fail in practice.
+		return nil
+	}
+	return buf.Bytes()
+}
+```
+
+Create `internal/tray/tray.go`:
+
+```go
+// Package tray runs LapDog's system tray icon and menu.
+package tray
+
+import (
+	"fmt"
+	"log/slog"
+	"os/exec"
+	"runtime"
+	"time"
+
+	"fyne.io/systray"
+
+	"github.com/blezek/lapdog/internal/collector"
+)
+
+// Options configures the tray.
+type Options struct {
+	// Status reports what the collector is doing.
+	Status func() collector.Status
+	// SetPaused pauses or resumes recording.
+	SetPaused func(bool)
+	// URL is the address the UI is served at.
+	URL string
+	// DataDir is opened by the "Open data folder" item.
+	DataDir string
+	// PortConflict is non-empty when the UI could not bind its port; the
+	// tray surfaces it instead of pretending the UI is available.
+	PortConflict string
+	// Quit is called when the user chooses Quit.
+	Quit func()
+	// Log receives errors from menu actions.
+	Log *slog.Logger
+}
+
+// Run takes over the calling goroutine and runs the tray until Quit.
+//
+// systray requires the main goroutine, so the caller must have started the
+// collector and HTTP server as goroutines first.
+func Run(opts Options) {
+	systray.Run(func() { onReady(opts) }, func() {})
+}
+
+func onReady(opts Options) {
+	systray.SetIcon(icon(stateDisconnected))
+	systray.SetTitle("LapDog")
+	systray.SetTooltip("LapDog — waiting for iRacing")
+
+	header := systray.AddMenuItem("LapDog", "")
+	header.Disable()
+	detail := systray.AddMenuItem("Not connected", "")
+	detail.Disable()
+
+	systray.AddSeparator()
+	open := systray.AddMenuItem("Open LapDog", "Open the user interface in a browser")
+	pause := systray.AddMenuItemCheckbox("Pause recording", "Stop recording without exiting", false)
+
+	systray.AddSeparator()
+	folder := systray.AddMenuItem("Open data folder", "Show the database and captures")
+
+	systray.AddSeparator()
+	quit := systray.AddMenuItem("Quit", "Exit LapDog")
+
+	if opts.PortConflict != "" {
+		open.Disable()
+		detail.SetTitle("UI unavailable: " + opts.PortConflict)
+	}
+
+	go refresh(opts, header, detail)
+
+	for {
+		select {
+		case <-open.ClickedCh:
+			if err := openURL(opts.URL); err != nil {
+				opts.Log.Error("could not open the browser", "url", opts.URL, "err", err)
+			}
+		case <-pause.ClickedCh:
+			if pause.Checked() {
+				pause.Uncheck()
+				opts.SetPaused(false)
+			} else {
+				pause.Check()
+				opts.SetPaused(true)
+			}
+		case <-folder.ClickedCh:
+			if err := openPath(opts.DataDir); err != nil {
+				opts.Log.Error("could not open the data folder", "path", opts.DataDir, "err", err)
+			}
+		case <-quit.ClickedCh:
+			systray.Quit()
+			if opts.Quit != nil {
+				opts.Quit()
+			}
+			return
+		}
+	}
+}
+
+// refresh keeps the icon, tooltip and menu header in step with the
+// collector.
+func refresh(opts Options, header, detail *systray.MenuItem) {
+	tick := time.NewTicker(2 * time.Second)
+	defer tick.Stop()
+
+	for range tick.C {
+		s := opts.Status()
+
+		switch {
+		case s.Paused:
+			systray.SetIcon(icon(statePaused))
+		case s.Connected:
+			systray.SetIcon(icon(stateConnected))
+		default:
+			systray.SetIcon(icon(stateDisconnected))
+		}
+
+		state := "Not connected"
+		if s.Paused {
+			state = "Paused"
+		} else if s.Connected {
+			state = "Connected"
+		}
+		header.SetTitle("LapDog · " + state)
+
+		if opts.PortConflict != "" {
+			continue
+		}
+		if s.SessionLabel == "" {
+			detail.SetTitle("No active session")
+			systray.SetTooltip("LapDog — " + state)
+			continue
+		}
+		line := fmt.Sprintf("%s · %s", s.SessionLabel, s.TrackName)
+		detail.SetTitle(line)
+		systray.SetTooltip(fmt.Sprintf("LapDog — %s\nDriving %s · %d laps",
+			line, formatDuration(s.DrivingSeconds), s.Laps))
+	}
+}
+
+// formatDuration renders seconds as h:mm.
+func formatDuration(sec float64) string {
+	d := time.Duration(sec) * time.Second
+	return fmt.Sprintf("%d:%02d", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// openURL opens a URL in the default browser.
+func openURL(url string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("rundll32", "url.dll,FileProtocolHandler", url).Start()
+	case "darwin":
+		return exec.Command("open", url).Start()
+	default:
+		return exec.Command("xdg-open", url).Start()
+	}
+}
+
+// openPath opens a directory in the system file manager.
+func openPath(path string) error {
+	switch runtime.GOOS {
+	case "windows":
+		return exec.Command("explorer", path).Start()
+	case "darwin":
+		return exec.Command("open", path).Start()
+	default:
+		return exec.Command("xdg-open", path).Start()
+	}
+}
+```
+
+- [ ] **Step 8: Write main**
+
+Create `cmd/lapdog/main.go`:
+
+```go
+// Command lapdog is the LapDog tray application. It records iRacing
+// session time to a local database and serves a web UI on localhost.
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
+	"time"
+
+	"github.com/blezek/lapdog/internal/api"
+	"github.com/blezek/lapdog/internal/applog"
+	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/source"
+	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/tray"
+	"github.com/blezek/lapdog/internal/version"
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintf(os.Stderr, "lapdog: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	dataDir, err := config.DataDir()
+	if err != nil {
+		return err
+	}
+	// WAL is unsafe on a network filesystem, so refuse loudly rather than
+	// risking intermittent corruption.
+	if err := config.CheckLocalFilesystem(dataDir); err != nil {
+		return err
+	}
+
+	log, logCloser, err := applog.Open(config.LogPath(dataDir))
+	if err != nil {
+		return err
+	}
+	defer logCloser.Close()
+	log.Info("starting", "version", version.Version, "dataDir", dataDir)
+
+	cfgStore, err := config.NewStore(config.ConfigPath(dataDir))
+	if err != nil {
+		return err
+	}
+	cfg := cfgStore.Get()
+
+	if exe, err := os.Executable(); err == nil {
+		if err := config.SetAutostart(cfg.StartWithWindows, exe); err != nil {
+			// Not being able to write the Run key is not worth refusing to start.
+			log.Warn("could not update the startup entry", "err", err)
+		}
+	}
+
+	st, err := store.Open(config.DBPath(dataDir))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	src, err := source.NewLive()
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	coll, err := collector.New(collector.Options{
+		Source:          src,
+		Store:           st,
+		Clock:           collector.RealClock{},
+		Interval:        cfg.PollInterval(),
+		MinSession:      time.Duration(cfg.MinSessionSeconds) * time.Second,
+		CaptureEnabled:  cfg.CaptureEnabled,
+		CaptureDir:      config.CapturesDir(dataDir),
+		CaptureMaxBytes: cfg.CaptureMaxBytes,
+		Logger:          log,
+	})
+	if err != nil {
+		return err
+	}
+
+	// A poll-interval change takes effect live; a port change does not,
+	// which the settings API reports to the user.
+	cfgStore.OnChange(func(c config.Config) {
+		coll.SetInterval(c.PollInterval())
+		log.Info("configuration updated", "pollIntervalSeconds", c.PollIntervalSeconds)
+	})
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	collDone := make(chan struct{})
+	go func() {
+		defer close(collDone)
+		if err := coll.Run(ctx); err != nil {
+			log.Error("collector stopped", "err", err)
+		}
+	}()
+
+	// Port in use is not fatal: losing the UI must not lose session data.
+	//
+	// portConflict is written by the server goroutine and read by the tray
+	// on the main goroutine, so it must be atomic rather than a plain string.
+	srv := api.New(st, coll, cfgStore, log)
+	var portConflict atomic.Value
+	portConflict.Store("")
+	go func() {
+		err := srv.ListenAndServe(cfg.Port)
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("user interface unavailable", "port", cfg.Port, "err", err)
+			portConflict.Store(fmt.Sprintf("port %d is in use", cfg.Port))
+		}
+	}()
+
+	// Give the listener a moment to fail before the tray reads the result,
+	// so a port conflict shows in the menu from the start rather than only
+	// after the first refresh tick.
+	time.Sleep(250 * time.Millisecond)
+
+	url := fmt.Sprintf("http://127.0.0.1:%d", cfg.Port)
+	tray.Run(tray.Options{
+		Status:       coll.Status,
+		SetPaused:    coll.SetPaused,
+		URL:          url,
+		DataDir:      dataDir,
+		PortConflict: portConflict.Load().(string),
+		Quit:         stop,
+		Log:          log,
+	})
+
+	// The tray returned, so the user chose Quit. Give the collector a
+	// moment to flush the active session before exiting.
+	stop()
+	select {
+	case <-collDone:
+	case <-time.After(3 * time.Second):
+		log.Warn("collector did not stop within three seconds")
+	}
+	log.Info("stopped")
+	return nil
+}
+```
+
+- [ ] **Step 9: Run everything**
+
+```bash
+go test -race ./...
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
+make build-windows
+make build-ctl
+```
+
+Expected: all tests PASS; both binaries build. `dist/lapdog.exe` and
+`dist/lapdogctl` exist.
+
+- [ ] **Step 10: Verify the placeholder UI serves on a development host**
+
+`cmd/lapdog` needs a tray, so it cannot run headless on macOS. Verify the
+HTTP layer instead with a short throwaway program:
+
+```bash
+cat > /tmp/serve_check.go <<'EOF'
+package main
+
+import (
+	"log/slog"
+	"os"
+	"path/filepath"
+
+	"github.com/blezek/lapdog/internal/api"
+	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+type noStatus struct{}
+
+func (noStatus) Status() collector.Status { return collector.Status{} }
+
+func main() {
+	dir, _ := os.MkdirTemp("", "lapdog-check")
+	st, err := store.Open(filepath.Join(dir, "lapdog.db"))
+	if err != nil {
+		panic(err)
+	}
+	defer st.Close()
+	cs, err := config.NewStore(filepath.Join(dir, "config.json"))
+	if err != nil {
+		panic(err)
+	}
+	srv := api.New(st, noStatus{}, cs, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+	panic(srv.ListenAndServe(47047))
+}
+EOF
+go run /tmp/serve_check.go &
+sleep 2
+curl -s http://127.0.0.1:47047/api/status
+curl -s http://127.0.0.1:47047/ | head -5
+kill %1
+rm /tmp/serve_check.go
+```
+
+Expected: `/api/status` returns JSON including a version and database path;
+`/` returns the placeholder HTML containing "LapDog is running".
+
+- [ ] **Step 11: Commit**
+
+```bash
+git add internal/config/ internal/applog/ internal/tray/ cmd/lapdog/ go.mod go.sum
+git commit -m "Add tray, autostart, logging and application wiring"
+```
+
+---
+
+## Definition of done
+
+Plan 1 is complete when all of the following hold.
+
+- [ ] `go test -race ./...` passes on macOS with no simulator present.
+- [ ] `CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...` succeeds from macOS.
+- [ ] `make build-windows` produces `dist/lapdog.exe` with no console window on launch.
+- [ ] `make build-ctl` produces a working `lapdogctl` with `inspect`, `build` and `reclassify`.
+- [ ] On a Windows machine with iRacing: driving a session produces a session row with all three time counters non-zero, lap rows for each completed lap, and a replayable capture file.
+- [ ] `curl localhost:47047/api/status` reports the active session while driving.
+- [ ] `curl "localhost:47047/api/export?scope=sessions&format=csv"` returns a CSV honouring the supplied filters.
+- [ ] The tray icon reflects connected, disconnected and paused states, and left-clicking opens the browser.
+
+## Follow-up work, deliberately excluded
+
+- **Plan 2: the React/ECharts frontend.** `internal/web/dist/index.html` is a placeholder that Plan 2 replaces with the Vite build.
+- **Confirming the `CarIsAI` field** (spec §6.5). The first task once a Windows machine is available: drive one AI race, run `lapdogctl inspect` on the capture, read what the YAML actually contains, correct the field name, then run `lapdogctl reclassify`.
+- **Central hub upload** (spec §18.1). The schema affordances exist; no client, server or auth is built.
+- **`.ibt` import** (spec §18.2), sector times, true overtake detection from `CarIdxLapDistPct`, and setup tracking.
