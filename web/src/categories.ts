@@ -8,6 +8,7 @@
  */
 
 import type { BreakdownRow, SummaryRow } from './api'
+import { OtherCategoryKey } from './format'
 
 /**
  * MaxSlots is the categorical ceiling.
@@ -18,8 +19,8 @@ import type { BreakdownRow, SummaryRow } from './api'
  */
 export const MaxSlots = 8
 
-/** OtherKey is the fold-in bucket. */
-export const OtherKey = 'Other/Other'
+/** OtherKey is the fold-in bucket. Re-exported so callers need one import. */
+export const OtherKey = OtherCategoryKey
 
 /**
  * categoryOrder returns the canonical category order for a dataset, folded to the
@@ -29,9 +30,20 @@ export const OtherKey = 'Other/Other'
  * spends time in take the leading — and most distinguishable — colours.
  */
 export function categoryOrder(totals: Map<string, number>): string[] {
-  const keys = [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+  const keys = categoryOrderAll(totals)
   if (keys.length <= MaxSlots) return keys
   return [...keys.slice(0, MaxSlots - 1), OtherKey]
+}
+
+/**
+ * categoryOrderAll returns every category, largest first, with nothing folded.
+ *
+ * Table views use this so the fold is a property of the chart alone. Folding the
+ * table too would mean the small categories appeared nowhere at all, which is a
+ * silent cap — the reader would have no way to find out what "Other" contained.
+ */
+export function categoryOrderAll(totals: Map<string, number>): string[] {
+  return [...totals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
 }
 
 /** foldKey maps a category onto its slot key, folding the tail into "Other". */
@@ -39,10 +51,27 @@ export function foldKey(order: string[], key: string): string {
   return order.includes(key) ? key : OtherKey
 }
 
-/** slotOf returns a category's fixed colour slot, or the last slot for "Other". */
+/** slotOf returns a category's fixed colour slot. */
 export function slotOf(order: string[], key: string): number {
   const i = order.indexOf(key)
   return i < 0 ? MaxSlots - 1 : i % MaxSlots
+}
+
+/**
+ * categoryColour returns the colour for a category.
+ *
+ * The fold bucket takes the de-emphasis grey rather than a categorical hue. It landed
+ * on the last slot before, which is red — so the residual was the loudest thing on
+ * the chart, and red is close enough to the critical status colour to imply something
+ * was wrong. A residual should recede.
+ */
+export function categoryColour(
+  theme: { series: string[]; deEmphasis: string },
+  order: string[],
+  key: string,
+): string {
+  if (key === OtherKey) return theme.deEmphasis
+  return theme.series[slotOf(order, key)] ?? theme.deEmphasis
 }
 
 /** totalsFromSummary sums driving hours per category from a summary response. */

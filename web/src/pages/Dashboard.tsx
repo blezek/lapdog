@@ -4,7 +4,8 @@ import { useQuery } from '@tanstack/react-query'
 import { api, type DailyRow, type SummaryRow } from '../api'
 import { hours, labelForKey, num, pct, position, dayShort, lapTime } from '../format'
 import { useFilter } from '../useFilter'
-import { seriesColour, useTheme, type Theme } from '../theme'
+import { useTheme, type Theme } from '../theme'
+import { categoryColour, categoryOrderAll, totalsFromSummary } from '../categories'
 import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from '../components/Chart'
 import { Card, Empty, ErrorNote, Legend, Loading, Stat } from '../components/ui'
 import { Filters } from '../components/Filters'
@@ -173,9 +174,19 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
   const option = useMemo(() => {
     const data = rows.map((r) => [r.day, Number(r.drivingHours.toFixed(2))])
     const max = Math.max(1, ...rows.map((r) => r.drivingHours))
-    const years = [...new Set(rows.map((r) => r.day.slice(0, 4)))].sort()
-    // One calendar band per year keeps a two-year range readable.
-    const range = years.length > 1 ? [years[0]!, years[years.length - 1]!] : years[0]!
+
+    // The range follows the data, not the calendar year.
+    //
+    // Passing a year drew all twelve months regardless of what was in them, so a
+    // ninety-day filter rendered three months of squares against nine months of
+    // emptiness — which reads as nine months of not driving rather than as a
+    // ninety-day window. Padding the ends to whole weeks keeps the grid from
+    // starting or finishing mid-column.
+    const days = rows.map((r) => r.day).sort()
+    const first = days[0] ?? '2020-01-01'
+    const last = days[days.length - 1] ?? first
+    const range = [weekStart(first), weekEnd(last)]
+    const years = [...new Set(days.map((d) => d.slice(0, 4)))]
 
     return {
       tooltip: {
@@ -188,8 +199,11 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
         max,
         type: 'continuous',
         orient: 'horizontal',
-        left: 'center',
-        bottom: 0,
+        left: 40,
+        bottom: 2,
+        // For a continuous visual map ECharts treats itemHeight as the bar's length
+        // and itemWidth as its thickness, and swaps them for horizontal orientation.
+        // Setting them the intuitive way round produces a thin vertical sliver.
         itemWidth: 11,
         itemHeight: 90,
         text: [`${max.toFixed(1)} h`, '0'],
@@ -198,11 +212,15 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
       },
       calendar: {
         top: 26,
-        bottom: 46,
-        left: 34,
-        right: 12,
+        left: 40,
         range,
-        cellSize: ['auto', 13],
+        // Square cells.
+        //
+        // Only the left edge is pinned. Giving both left and right fixes the box
+        // width, and ECharts then ignores the cell width entirely — which is why
+        // 'auto' and an explicit size both produced cells stretched wider than a
+        // month label. With one edge pinned the grid grows from cell size instead.
+        cellSize: [14, 14],
         splitLine: { show: false },
         itemStyle: {
           color: 'transparent',
@@ -267,6 +285,9 @@ function DailyTable({ rows }: { rows: DailyRow[] }) {
  */
 function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
   const folded = useMemo(() => foldTail(rows, 8), [rows])
+  // Colour is keyed to the category itself via the canonical order, so a filter that
+  // reorders the bars never repaints the survivors.
+  const canonical = useMemo(() => categoryOrderAll(totalsFromSummary(rows)), [rows])
 
   const option = useMemo(() => {
     const sorted = [...folded].sort((a, b) => a.drivingHours - b.drivingHours)
@@ -299,7 +320,7 @@ function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
             value: Number(r.drivingHours.toFixed(2)),
             groupId: r.key,
             itemStyle: {
-              color: seriesColour(theme, colourIndex(folded, r.key)),
+              color: categoryColour(theme, canonical, r.key),
               // 4px rounded data-ends, anchored to the baseline.
               borderRadius: [0, 4, 4, 0],
             },
@@ -329,24 +350,13 @@ function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
       <Legend
         items={folded.map((r) => ({
           label: labelForKey(r.key),
-          colour: seriesColour(theme, colourIndex(folded, r.key)),
+          colour: categoryColour(theme, canonical, r.key),
         }))}
       />
     </>
   )
 }
 
-/**
- * colourIndex returns a category's fixed categorical slot.
- *
- * Keyed to the category rather than to its position in a sorted view, so a category
- * keeps its hue when the ordering changes. Colour follows the entity, never its
- * rank: a filter that reorders the bars must not repaint the survivors.
- */
-function colourIndex(all: SummaryRow[], key: string): number {
-  const i = all.findIndex((r) => r.key === key)
-  return i < 0 ? 0 : i % 8
-}
 
 function CategoryTable({ rows }: { rows: SummaryRow[] }) {
   const sorted = [...rows].sort((a, b) => b.drivingHours - a.drivingHours)
@@ -616,6 +626,25 @@ function GridTable({ rows }: { rows: import('../api').Session[] }) {
 }
 
 /* ------------------------------------------------------------------ helpers */
+
+/**
+ * weekStart returns the Sunday on or before an ISO date.
+ *
+ * Sunday because the heatmap starts its week there, so the grid begins on a full
+ * column rather than part way down one.
+ */
+function weekStart(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() - d.getUTCDay())
+  return d.toISOString().slice(0, 10)
+}
+
+/** weekEnd returns the Saturday on or after an ISO date. */
+function weekEnd(iso: string): string {
+  const d = new Date(`${iso}T00:00:00Z`)
+  d.setUTCDate(d.getUTCDate() + (6 - d.getUTCDay()))
+  return d.toISOString().slice(0, 10)
+}
 
 /**
  * foldTail keeps the largest categories and folds the remainder into "Other".

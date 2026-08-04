@@ -11,11 +11,12 @@ import { useQuery } from '@tanstack/react-query'
 
 import { api, type Filter } from '../api'
 import { hours, labelForKey, num } from '../format'
-import { seriesColour, useTheme, type Theme } from '../theme'
+import { useTheme, type Theme } from '../theme'
 import {
+  categoryColour,
   categoryOrder,
+  categoryOrderAll,
   pivot,
-  slotOf,
   totalsFromBreakdown,
   type GroupTotals,
 } from '../categories'
@@ -44,11 +45,18 @@ export function StackedByCategory({
   })
 
   const rows = query.data ?? []
-  const order = useMemo(() => categoryOrder(totalsFromBreakdown(rows)), [rows])
+  const totals = useMemo(() => totalsFromBreakdown(rows), [rows])
+
+  // The chart folds to the palette ceiling; the table keeps every category, so
+  // nothing the chart combines into "Other" becomes unreachable.
+  const order = useMemo(() => categoryOrder(totals), [totals])
+  const fullOrder = useMemo(() => categoryOrderAll(totals), [totals])
+
   const groups = useMemo(() => foldGroups(pivot(rows, order), maxGroups), [rows, order, maxGroups])
+  const fullGroups = useMemo(() => pivot(rows, fullOrder), [rows, fullOrder])
 
   return (
-    <Card title={title} table={<StackTable groups={groups} order={order} />}>
+    <Card title={title} table={<StackTable groups={fullGroups} order={fullOrder} />}>
       {query.isError ? (
         <ErrorNote error={query.error} />
       ) : query.isLoading ? (
@@ -61,7 +69,7 @@ export function StackedByCategory({
           <Legend
             items={order.map((k) => ({
               label: labelForKey(k),
-              colour: seriesColour(theme, slotOf(order, k)),
+              colour: categoryColour(theme, order, k),
             }))}
           />
         </>
@@ -80,8 +88,9 @@ function StackChart({
   theme: Theme
 }) {
   const option = useMemo(() => {
-    // Least at the top so the longest bar sits at the bottom, which reads as a
-    // ranking rather than an arbitrary list on an inverted category axis.
+    // A category axis draws its first entry at the bottom, so reversing the
+    // descending order puts the largest bar at the top — the conventional direction
+    // for a ranking.
     const ordered = [...groups].reverse()
 
     return {
@@ -100,7 +109,7 @@ function StackChart({
             if (v <= 0) continue
             lines.push(
               `<span style="display:inline-block;width:8px;height:8px;border-radius:2px;` +
-                `background:${seriesColour(theme, slotOf(order, k))};margin-right:5px"></span>` +
+                `background:${categoryColour(theme, order, k)};margin-right:5px"></span>` +
                 `${labelForKey(k)} ${v.toFixed(1)} h`,
             )
           }
@@ -108,10 +117,10 @@ function StackChart({
           return lines.join('<br/>')
         },
       },
+      // No axis name: the card title already says these are driving hours, and the
+      // name was overflowing the plot area and being clipped mid-word.
       xAxis: {
         type: 'value',
-        name: 'driving hours',
-        nameTextStyle: { color: theme.textMuted, fontSize: 10 },
         ...valueAxisStyle(theme.textMuted, theme.line),
       },
       yAxis: {
@@ -129,7 +138,7 @@ function StackChart({
           // touch — which is what keeps a boundary readable when two categories sit
           // close together in the palette.
           itemStyle: {
-            color: seriesColour(theme, slotOf(order, key)),
+            color: categoryColour(theme, order, key),
             borderColor: theme.surface,
             borderWidth: 2,
           },

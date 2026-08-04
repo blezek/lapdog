@@ -128,12 +128,29 @@ export function label(sessionType: string, eventContext: string): string {
   }
 }
 
-/** labelForKey renders a "Type/Context" summary key as its display label. */
+/**
+ * labelForKey renders a "Type/Context" summary key as its display label.
+ *
+ * The fold bucket is named explicitly. Without that it fell through label()'s
+ * unrecognised-type branch and rendered as "Unknown", which read as a data problem —
+ * sessions that had failed to classify — when it was really several small categories
+ * combined. "Unknown" is a real classification outcome, so it must not be borrowed
+ * for anything else.
+ */
 export function labelForKey(key: string): string {
+  if (key === OtherCategoryKey) return 'Other'
   const [type, context] = key.split('/')
   if (!type || !context) return key
   return label(type, context)
 }
+
+/**
+ * OtherCategoryKey is the bucket small categories fold into.
+ *
+ * Defined here rather than only in the categories module so labelForKey can name it
+ * without importing, and so the two cannot disagree about the spelling.
+ */
+export const OtherCategoryKey = 'Other/Other'
 
 /** causeLabel renders a position-change cause in plain words. */
 export function causeLabel(cause: string): string {

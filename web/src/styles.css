@@ -439,7 +439,9 @@ h1 {
 }
 
 .chart.calendar {
-  height: 190px;
+  /* Seven 14px rows plus the month and weekday labels and the scale beneath. Sized
+     to the content so a short range does not sit in a tall empty panel. */
+  height: 158px;
 }
 
 .legend {
