@@ -6,7 +6,14 @@ import { hours, labelForKey, num, pct, position, dayShort, lapTime } from '../fo
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { categoryColour, categoryOrderAll, totalsFromSummary } from '../categories'
-import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from '../components/Chart'
+import {
+  Chart,
+  baseGrid,
+  axisStyle,
+  valueAxisStyle,
+  tooltipStyle,
+  useElementWidth,
+} from '../components/Chart'
 import { Card, Empty, ErrorNote, Legend, Loading, Stat } from '../components/ui'
 import { Filters } from '../components/Filters'
 import { StackedByCategory } from '../components/StackedByCategory'
@@ -181,7 +188,21 @@ function CarAndTrackBreakdown() {
  * The lightest step means near zero and is allowed to recede toward the surface;
  * the table view is what makes the values readable regardless.
  */
+/** CellMax is the preferred cell size; the grid only goes below it to avoid clipping. */
+const CellMax = 14
+
+/**
+ * LabelGutter is the room kept either side for the weekday and year labels.
+ *
+ * Reserved on both sides rather than one, because the grid is centred: the labels sit
+ * outside the calendar's own box, so without symmetric room a centred grid pushes them
+ * against the card edge.
+ */
+const LabelGutter = 42
+
 function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
+  const [wrap, width] = useElementWidth<HTMLDivElement>()
+
   const option = useMemo(() => {
     const data = rows.map((r) => [r.day, Number(r.drivingHours.toFixed(2))])
     const max = Math.max(1, ...rows.map((r) => r.drivingHours))
@@ -199,6 +220,20 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
     const range = [weekStart(first), weekEnd(last)]
     const years = [...new Set(days.map((d) => d.slice(0, 4)))]
 
+    // Cell size is capped, not fixed.
+    //
+    // The grid is one column per week, so its width grows with the range. Two years
+    // of whole weeks wants more than the card has, and because ECharts derives the
+    // calendar's box from the cell size it does not shrink to fit — it overflows and
+    // is clipped, silently dropping days from the ends. So the cells shrink instead,
+    // down to whatever makes the range fit, and stay at the preferred size whenever
+    // there is room. The gutter is reserved on both sides so centring cannot push
+    // the weekday labels off the edge.
+    const spanDays = (Date.parse(range[1]) - Date.parse(range[0])) / 86_400_000 + 1
+    const weeks = Math.max(1, Math.round(spanDays / 7))
+    const usable = Math.max(0, width - LabelGutter * 2)
+    const cell = width > 0 ? Math.max(3, Math.min(CellMax, Math.floor(usable / weeks))) : CellMax
+
     return {
       tooltip: {
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
@@ -210,7 +245,8 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
         max,
         type: 'continuous',
         orient: 'horizontal',
-        left: 40,
+        // Follows the grid, so the scale stays visually attached to what it explains.
+        left: 'center',
         bottom: 2,
         // For a continuous visual map ECharts treats itemHeight as the bar's length
         // and itemWidth as its thickness, and swaps them for horizontal orientation.
@@ -223,15 +259,19 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
       },
       calendar: {
         top: 26,
-        left: 40,
+        // Centred, because the grid's width follows how many weeks are in range: a
+        // 90-day filter fills a third of the card, and left-aligning left it hanging
+        // off one side under a full-width title.
+        left: 'center',
         range,
-        // Square cells.
+        // Square cells, sized above.
         //
-        // Only the left edge is pinned. Giving both left and right fixes the box
-        // width, and ECharts then ignores the cell width entirely — which is why
+        // Only one horizontal position is set. Giving both left and right fixes the
+        // box width, and ECharts then ignores the cell width entirely — which is why
         // 'auto' and an explicit size both produced cells stretched wider than a
-        // month label. With one edge pinned the grid grows from cell size instead.
-        cellSize: [14, 14],
+        // month label. With the width unconstrained the grid grows from cell size,
+        // and 'center' then places that measured box rather than resizing it.
+        cellSize: [cell, cell],
         splitLine: { show: false },
         itemStyle: {
           color: 'transparent',
@@ -247,14 +287,16 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
       },
       series: [{ type: 'heatmap', coordinateSystem: 'calendar', data }],
     }
-  }, [rows, theme])
+  }, [rows, theme, width])
 
   return (
-    <Chart
-      option={option}
-      className="chart calendar"
-      ariaLabel="Calendar heatmap of driving hours per day"
-    />
+    <div ref={wrap}>
+      <Chart
+        option={option}
+        className="chart calendar"
+        ariaLabel="Calendar heatmap of driving hours per day"
+      />
+    </div>
   )
 }
 

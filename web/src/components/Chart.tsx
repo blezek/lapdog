@@ -10,6 +10,7 @@
  */
 
 import { useEffect, useRef, useState } from 'react'
+import type { RefObject } from 'react'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart, HeatmapChart, CustomChart } from 'echarts/charts'
 import {
@@ -128,6 +129,30 @@ export function Chart({ option, className = 'chart', onEvent, ariaLabel }: Chart
   }, [onEvent])
 
   return <div ref={host} className={className} role="img" aria-label={ariaLabel} />
+}
+
+/**
+ * useElementWidth reports an element's content width and follows resizes.
+ *
+ * The calendar needs it. That chart's natural width is a function of how many weeks
+ * are in range, so whether the grid fits — and therefore whether its cells can stay
+ * square — can only be decided against the width actually available. Assuming a width
+ * clipped two years of data off both ends of the card.
+ */
+export function useElementWidth<T extends HTMLElement>(): [RefObject<T | null>, number] {
+  const ref = useRef<T | null>(null)
+  const [width, setWidth] = useState(0)
+
+  useEffect(() => {
+    const el = ref.current
+    if (!el) return
+    setWidth(el.getBoundingClientRect().width)
+    const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width))
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [])
+
+  return [ref, width]
 }
 
 /**

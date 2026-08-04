@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "test": "vitest run",
-    "verify-animation": "node tools/verify-animation.mjs"
+    "verify-animation": "node tools/verify-animation.mjs",
+    "verify-layout": "node tools/shoot.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",
