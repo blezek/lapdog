@@ -279,7 +279,9 @@ The implementation therefore probes rather than assumes:
 
 Storing which method was used matters: it makes it possible to find every heuristically-classified session later and re-classify only those.
 
-**First implementation task for this feature is empirical.** Drive one AI race, capture it, and run `lapdogctl inspect` on the resulting `.lpd` to read what the YAML actually contains. Then fix the field name, and run `reclassify`. The heuristic exists so the feature is useful before that happens, not as a permanent substitute.
+**First implementation task for this feature is empirical.** Drive one AI race, capture it, and read what the YAML in the resulting `.lpd` actually contains. Then fix the field name, and run `reclassify`. The heuristic exists so the feature is useful before that happens, not as a permanent substitute.
+
+> **Correction, 2026-08-04.** This step named `lapdogctl inspect`, and that subcommand was not built — the delivered CLI has `ingest`, `summary`, `reclassify`, `serve` and `version`. `inspect` has to be added before this procedure can be followed at all.
 
 Note that the heuristic cannot distinguish an AI race from an offline hosted race with no AI, and will misclassify AI practice sessions as `Offline` because it requires `session_type = Race`. Both errors are corrected by `reclassify` once the field is confirmed.
 
@@ -408,7 +410,7 @@ Total size of the captures directory is capped, default 2 GB, configurable, `0` 
 
 | Command | Purpose |
 |---|---|
-| `lapdogctl inspect <file.lpd>` | Dump the capture as readable NDJSON, one object per frame, variables decoded |
+| `lapdogctl inspect <file.lpd>` | Dump the capture as readable NDJSON, one object per frame, variables decoded. **Not built as of 2026-08-04.** |
 | `lapdogctl build <file.ndjson> -o <file.lpd>` | Compile hand-written NDJSON into a capture, for authoring synthetic edge cases |
 | `lapdogctl reclassify --db <path>` | Replay `classify_source_json` through the current classifier |
 
