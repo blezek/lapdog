@@ -82,14 +82,12 @@ jobs:
       # icon set. A build that silently dropped either fails here rather than on a
       # user's machine.
       #
-      # It checks lapdogctl, not the tray app: cmd/lapdog has no Go files yet
-      # (backend plan, task 23). Both embed internal/web, so either proves the
-      # property. Point this at dist/lapdog.exe once the tray entry point exists.
+      # It checks dist/lapdog.exe, the artefact users actually receive.
       - name: Check the interface really is inside a Windows executable
         run: make verify-embed
 
       - uses: actions/upload-artifact@v4
         with:
-          name: lapdogctl-windows-amd64
-          path: dist/lapdogctl.exe
+          name: lapdog-windows-amd64
+          path: dist/lapdog.exe
           if-no-files-found: error

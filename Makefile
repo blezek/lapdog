@@ -98,8 +98,15 @@ ui-dev:
 	cd web && npm run dev
 
 # The tray app must be linked -H windowsgui so no console window appears.
+#
+# GOOS and GOARCH are set explicitly, and leaving them out was not a harmless
+# omission. -H windowsgui only asks the linker for a PE header, so without them
+# this produced a darwin/arm64 binary wearing a Windows header: `file` called it a
+# Windows executable, it was named .exe, and it could not run on Windows at all.
+# GOARCH matters too — windows/amd64 is the shipped target, and iRacing does not
+# run on Windows on ARM, so an arm64 build would be useless even though it links.
 build-windows: $(BUNDLE)
-	go build -ldflags "-H windowsgui $(LDFLAGS)" -o dist/lapdog.exe ./cmd/lapdog
+	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui $(LDFLAGS)" -o $(EXE) ./cmd/lapdog
 
 # lapdogctl is a separate binary precisely because a GUI-subsystem executable has
 # no console and is therefore useless as a CLI. It is not shipped in releases.
@@ -171,16 +178,21 @@ release: test-ci vet build-windows portable installer sign
 # Proves the interface really is inside a Windows executable rather than read from
 # disk at runtime, by finding strings that only exist in the bundle and icon set.
 #
-# It builds lapdogctl rather than the tray app because the tray entry point is not
-# written yet (backend plan, task 23). Both embed internal/web, so either one
-# demonstrates the property; switch this to $(EXE) once cmd/lapdog exists.
-verify-embed: $(BUNDLE)
-	@mkdir -p $(DIST)
-	GOOS=windows GOARCH=amd64 go build -o $(DIST)/lapdogctl.exe ./cmd/lapdogctl
+# It checks the shipped tray binary, which is the artefact users receive.
+#
+# The target is asserted rather than assumed. Greping for strings says nothing
+# about what the binary was compiled for, and it passed happily on a darwin build
+# that merely had a PE header attached. Go records the real values in the binary,
+# so they are read back out of it.
+verify-embed: build-windows
+	@go version -m $(EXE) | grep -q "GOOS=windows" || { \
+	  echo "verify-embed: $(EXE) was not built for Windows:"; go version -m $(EXE) | grep GOOS; exit 1; }
+	@go version -m $(EXE) | grep -q "GOARCH=amd64" || { \
+	  echo "verify-embed: $(EXE) is not amd64, the shipped target:"; go version -m $(EXE) | grep GOARCH; exit 1; }
 	@for n in LapDog mdi-racing-helmet; do \
-	  grep -qa "$$n" $(DIST)/lapdogctl.exe || { echo "verify-embed: $$n is missing from the binary"; exit 1; }; \
+	  grep -qa "$$n" $(EXE) || { echo "verify-embed: $$n is missing from the binary"; exit 1; }; \
 	done
-	@echo "verify-embed: interface and icons are inside $(DIST)/lapdogctl.exe"
+	@echo "verify-embed: $(EXE) is windows/amd64 with the interface and icons inside"
 
 # Mirrors .github/workflows/ci.yml so the same checks can be run before pushing.
 ci: vet test-ci verify-embed
