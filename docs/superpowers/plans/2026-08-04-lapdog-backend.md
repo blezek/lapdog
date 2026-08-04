@@ -2238,3 +2238,1325 @@ Expected: PASS for `internal/irsdk`, `internal/capture`, `internal/source`, `int
 git add internal/source/ internal/capture/
 git commit -m "Add Source interface, replay source and capture pruning"
 ```
+
+---
+
+### Task 7: Session YAML subset parser
+
+**Files:**
+- Create: `internal/sessionyaml/types.go`, `internal/sessionyaml/parse.go`
+- Test: `internal/sessionyaml/parse_test.go`, `internal/sessionyaml/testdata/practice_only.yaml`, `internal/sessionyaml/testdata/race_weekend.yaml`
+
+**Interfaces:**
+- Consumes: nothing.
+- Produces:
+  - `type Info struct { WeekendInfo Weekend; SessionInfo Sessions; QualifyResultsInfo QualifyResults; DriverInfo Drivers }`
+  - `type Weekend struct { TrackID int; TrackDisplayName, TrackDisplayShortName, TrackConfigName, TrackName string; TrackLength string; SeriesID, SeasonID, SessionID, SubSessionID, LeagueID, Official int; EventType, Category, SimMode string; TeamRacing int }`
+  - `type Sessions struct { NumSessions int; Sessions []Session }`
+  - `type Session struct { SessionNum int; SessionType string; SessionLaps string; SessionTime string; ResultsOfficial, ResultsLapsComplete int; ResultsPositions []ResultPosition }`
+  - `type ResultPosition struct { Position, ClassPosition, CarIdx, Lap, LapsComplete, Incidents, ReasonOutId int; Time, FastestTime float64; FastestLap int }`
+  - `type QualifyResults struct { Results []QualifyResult }`
+  - `type QualifyResult struct { Position, ClassPosition, CarIdx, FastestLap int; FastestTime float64 }`
+  - `type Drivers struct { DriverCarIdx int; DriverCarEstLapTime float64; Drivers []Driver }`
+  - `type Driver struct { CarIdx, UserID, CarID, CarClassID, IRating, IsSpectator int; UserName, CarPath, CarScreenName, CarScreenNameShort, CarClassShortName, LicString string; CarIsAI int }`
+  - `func Parse(b []byte) (*Info, error)`
+  - `func (i *Info) Me() (Driver, bool)`
+  - `func (i *Info) SessionByNum(n int) (Session, bool)`
+  - `func (i *Info) HasRaceSession() bool`
+  - `func (i *Info) TrackLengthKm() float64`
+  - `func (i *Info) AIOpponentCount() (count int, fieldPresent bool)`
+  - `func (i *Info) MyResult(sessionNum int) (ResultPosition, bool)`
+  - `func (i *Info) MyQualifyResult() (QualifyResult, bool)`
+  - `func (i *Info) FieldSize(sessionNum int) int`
+
+`SessionLaps`, `SessionTime` and `TrackLength` are strings because the sim emits `"unlimited"` and `"7.20 km"` in those fields, not numbers. Parsing them as `int`/`float64` fails on real data.
+
+The parser must **tolerate unknown and missing keys**. `yaml.v3` does this by default with struct tags; the tests pin that behaviour so a future change to strict mode is caught.
+
+`CarIsAI` is unverified against the bundled documentation — see spec §6.5. `AIOpponentCount` reports `fieldPresent=false` when no driver carries the key, which is the signal for the classifier to use its heuristic.
+
+- [ ] **Step 1: Create the practice-only fixture**
+
+Create `internal/sessionyaml/testdata/practice_only.yaml`:
+
+```yaml
+---
+WeekendInfo:
+ TrackName: watkinsglen
+ TrackID: 18
+ TrackLength: 5.43 km
+ TrackDisplayName: Watkins Glen International
+ TrackDisplayShortName: Watkins Glen
+ TrackConfigName: Boot
+ SeriesID: 0
+ SeasonID: 0
+ SessionID: 0
+ SubSessionID: 0
+ LeagueID: 0
+ Official: 1
+ RaceWeek: 3
+ EventType: Practice
+ Category: Road
+ SimMode: full
+ TeamRacing: 0
+ SomeFutureKeyWeDoNotKnow: 42
+SessionInfo:
+ NumSessions: 1
+ Sessions:
+ - SessionNum: 0
+   SessionLaps: unlimited
+   SessionTime: unlimited
+   SessionType: Open Practice
+   ResultsOfficial: 0
+   ResultsLapsComplete: -1
+   ResultsPositions:
+DriverInfo:
+ DriverCarIdx: 7
+ DriverCarEstLapTime: 102.418
+ Drivers:
+ - CarIdx: 7
+   UserName: Test Driver
+   UserID: 123456
+   CarID: 173
+   CarPath: porsche991rgt3
+   CarScreenName: Porsche 911 GT3 R
+   CarScreenNameShort: Porsche 911 GT3 R
+   CarClassID: 2523
+   CarClassShortName: GT3
+   IRating: 2100
+   LicString: A 3.55
+   IsSpectator: 0
+ - CarIdx: 9
+   UserName: Other Driver
+   UserID: 654321
+   CarID: 173
+   CarScreenName: Porsche 911 GT3 R
+   CarClassID: 2523
+   IRating: 1800
+   IsSpectator: 0
+...
+```
+
+- [ ] **Step 2: Create the race-weekend fixture**
+
+Create `internal/sessionyaml/testdata/race_weekend.yaml`:
+
+```yaml
+---
+WeekendInfo:
+ TrackName: spa
+ TrackID: 341
+ TrackLength: 7.00 km
+ TrackDisplayName: Circuit de Spa-Francorchamps
+ TrackDisplayShortName: Spa
+ TrackConfigName: Grand Prix Pits
+ SeriesID: 411
+ SeasonID: 4703
+ SessionID: 221144
+ SubSessionID: 55667788
+ LeagueID: 0
+ Official: 1
+ EventType: Race
+ Category: Road
+ SimMode: full
+ TeamRacing: 0
+SessionInfo:
+ NumSessions: 3
+ Sessions:
+ - SessionNum: 0
+   SessionType: Practice
+   SessionLaps: unlimited
+   SessionTime: 900.0000 sec
+   ResultsOfficial: 0
+   ResultsLapsComplete: -1
+ - SessionNum: 1
+   SessionType: Open Qualify
+   SessionLaps: unlimited
+   SessionTime: 600.0000 sec
+   ResultsOfficial: 1
+   ResultsLapsComplete: 2
+ - SessionNum: 2
+   SessionType: Race
+   SessionLaps: 25
+   SessionTime: unlimited
+   ResultsOfficial: 1
+   ResultsLapsComplete: 25
+   ResultsPositions:
+   - Position: 4
+     ClassPosition: 3
+     CarIdx: 7
+     Lap: 25
+     Time: 2841.220
+     FastestLap: 12
+     FastestTime: 141.882
+     LapsComplete: 25
+     Incidents: 6
+     ReasonOutId: 0
+   - Position: 5
+     ClassPosition: 4
+     CarIdx: 9
+     Lap: 25
+     LapsComplete: 25
+     Incidents: 2
+     ReasonOutId: 0
+QualifyResultsInfo:
+ Results:
+ - Position: 6
+   ClassPosition: 5
+   CarIdx: 7
+   FastestLap: 2
+   FastestTime: 140.912
+ - Position: 7
+   ClassPosition: 6
+   CarIdx: 9
+   FastestLap: 2
+   FastestTime: 141.400
+DriverInfo:
+ DriverCarIdx: 7
+ DriverCarEstLapTime: 141.203
+ Drivers:
+ - CarIdx: 7
+   UserName: Test Driver
+   UserID: 123456
+   CarID: 173
+   CarPath: porsche991rgt3
+   CarScreenName: Porsche 911 GT3 R
+   CarScreenNameShort: Porsche 911 GT3 R
+   CarClassID: 2523
+   CarClassShortName: GT3
+   IRating: 2100
+   LicString: A 3.55
+   IsSpectator: 0
+ - CarIdx: 9
+   UserName: Other Driver
+   UserID: 654321
+   CarID: 173
+   CarScreenName: Porsche 911 GT3 R
+   CarClassID: 2523
+   IsSpectator: 0
+...
+```
+
+- [ ] **Step 3: Write the failing test**
+
+Create `internal/sessionyaml/parse_test.go`:
+
+```go
+package sessionyaml
+
+import (
+	"math"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func load(t *testing.T, name string) *Info {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := Parse(b)
+	if err != nil {
+		t.Fatalf("Parse(%s): %v", name, err)
+	}
+	return info
+}
+
+func TestParseWeekendInfo(t *testing.T) {
+	i := load(t, "race_weekend.yaml")
+	w := i.WeekendInfo
+	if w.TrackID != 341 || w.TrackDisplayName != "Circuit de Spa-Francorchamps" {
+		t.Errorf("track = %d / %q", w.TrackID, w.TrackDisplayName)
+	}
+	if w.TrackConfigName != "Grand Prix Pits" {
+		t.Errorf("TrackConfigName = %q", w.TrackConfigName)
+	}
+	if w.SubSessionID != 55667788 || w.SeriesID != 411 || w.SeasonID != 4703 {
+		t.Errorf("ids = %+v", w)
+	}
+	if w.LeagueID != 0 || w.Official != 1 || w.SimMode != "full" {
+		t.Errorf("context fields = %+v", w)
+	}
+}
+
+// TrackLength is "7.00 km" in real data, so it must be a string and
+// TrackLengthKm must extract the number.
+func TestTrackLengthKm(t *testing.T) {
+	if got := load(t, "race_weekend.yaml").TrackLengthKm(); math.Abs(got-7.0) > 1e-6 {
+		t.Errorf("TrackLengthKm() = %v, want 7.0", got)
+	}
+	if got := load(t, "practice_only.yaml").TrackLengthKm(); math.Abs(got-5.43) > 1e-6 {
+		t.Errorf("TrackLengthKm() = %v, want 5.43", got)
+	}
+}
+
+// SessionLaps and SessionTime carry "unlimited", so they must be strings.
+func TestUnlimitedFieldsParseAsStrings(t *testing.T) {
+	i := load(t, "practice_only.yaml")
+	s, ok := i.SessionByNum(0)
+	if !ok {
+		t.Fatal("SessionByNum(0) not found")
+	}
+	if s.SessionLaps != "unlimited" || s.SessionTime != "unlimited" {
+		t.Errorf("laps=%q time=%q", s.SessionLaps, s.SessionTime)
+	}
+}
+
+// Unknown keys must be ignored, not rejected. iRacing adds fields over time.
+func TestUnknownKeysAreIgnored(t *testing.T) {
+	if load(t, "practice_only.yaml").WeekendInfo.TrackID != 18 {
+		t.Error("a file containing an unknown key failed to parse correctly")
+	}
+}
+
+func TestSessionByNum(t *testing.T) {
+	i := load(t, "race_weekend.yaml")
+	s, ok := i.SessionByNum(2)
+	if !ok {
+		t.Fatal("SessionByNum(2) not found")
+	}
+	if s.SessionType != "Race" || s.ResultsLapsComplete != 25 {
+		t.Errorf("session 2 = %+v", s)
+	}
+	if _, ok := i.SessionByNum(99); ok {
+		t.Error("SessionByNum(99) ok = true, want false")
+	}
+}
+
+func TestHasRaceSession(t *testing.T) {
+	if !load(t, "race_weekend.yaml").HasRaceSession() {
+		t.Error("race weekend HasRaceSession() = false, want true")
+	}
+	if load(t, "practice_only.yaml").HasRaceSession() {
+		t.Error("practice-only HasRaceSession() = true, want false")
+	}
+}
+
+func TestMe(t *testing.T) {
+	me, ok := load(t, "race_weekend.yaml").Me()
+	if !ok {
+		t.Fatal("Me() not found")
+	}
+	if me.CarIdx != 7 || me.CarScreenName != "Porsche 911 GT3 R" {
+		t.Errorf("Me() = %+v", me)
+	}
+	if me.CarClassShortName != "GT3" || me.CarID != 173 || me.CarClassID != 2523 {
+		t.Errorf("Me() car identity = %+v", me)
+	}
+}
+
+func TestMyResult(t *testing.T) {
+	i := load(t, "race_weekend.yaml")
+	r, ok := i.MyResult(2)
+	if !ok {
+		t.Fatal("MyResult(2) not found")
+	}
+	if r.Position != 4 || r.ClassPosition != 3 || r.Incidents != 6 || r.LapsComplete != 25 {
+		t.Errorf("MyResult(2) = %+v", r)
+	}
+	// A session with no results yet must report absent, not zero values.
+	if _, ok := i.MyResult(0); ok {
+		t.Error("MyResult(0) ok = true for a session with no ResultsPositions")
+	}
+}
+
+func TestMyQualifyResult(t *testing.T) {
+	q, ok := load(t, "race_weekend.yaml").MyQualifyResult()
+	if !ok {
+		t.Fatal("MyQualifyResult() not found")
+	}
+	if q.Position != 6 || q.ClassPosition != 5 {
+		t.Errorf("MyQualifyResult() = %+v", q)
+	}
+	if math.Abs(q.FastestTime-140.912) > 1e-6 {
+		t.Errorf("FastestTime = %v, want 140.912", q.FastestTime)
+	}
+	if _, ok := load(t, "practice_only.yaml").MyQualifyResult(); ok {
+		t.Error("MyQualifyResult() ok = true with no qualifying section")
+	}
+}
+
+func TestFieldSize(t *testing.T) {
+	i := load(t, "race_weekend.yaml")
+	if got := i.FieldSize(2); got != 2 {
+		t.Errorf("FieldSize(2) = %d, want 2 from ResultsPositions", got)
+	}
+	// With no results, fall back to counting non-spectator drivers.
+	if got := i.FieldSize(0); got != 2 {
+		t.Errorf("FieldSize(0) = %d, want 2 from the driver list", got)
+	}
+}
+
+// CarIsAI is absent from both fixtures, so fieldPresent must be false.
+// That is the signal for the classifier to fall back to its heuristic.
+func TestAIOpponentCountFieldAbsent(t *testing.T) {
+	count, present := load(t, "race_weekend.yaml").AIOpponentCount()
+	if present {
+		t.Error("fieldPresent = true, but no fixture driver carries CarIsAI")
+	}
+	if count != 0 {
+		t.Errorf("count = %d, want 0", count)
+	}
+}
+
+func TestAIOpponentCountFieldPresent(t *testing.T) {
+	y := []byte(`---
+WeekendInfo:
+ SubSessionID: 0
+ LeagueID: 0
+ Official: 0
+ SimMode: full
+SessionInfo:
+ NumSessions: 1
+ Sessions:
+ - SessionNum: 0
+   SessionType: Race
+DriverInfo:
+ DriverCarIdx: 0
+ Drivers:
+ - CarIdx: 0
+   UserName: Test Driver
+   CarIsAI: 0
+ - CarIdx: 1
+   UserName: Bot One
+   CarIsAI: 1
+ - CarIdx: 2
+   UserName: Bot Two
+   CarIsAI: 1
+...
+`)
+	i, err := Parse(y)
+	if err != nil {
+		t.Fatal(err)
+	}
+	count, present := i.AIOpponentCount()
+	if !present {
+		t.Fatal("fieldPresent = false, want true when CarIsAI appears")
+	}
+	// The player must not be counted even if flagged.
+	if count != 2 {
+		t.Errorf("count = %d, want 2", count)
+	}
+}
+
+func TestParseGarbageIsAnError(t *testing.T) {
+	if _, err := Parse([]byte("\tthis: is: not: yaml\n  ][")); err == nil {
+		t.Fatal("Parse on malformed YAML: want error, got nil")
+	}
+}
+
+func TestParseEmptyIsAnError(t *testing.T) {
+	if _, err := Parse(nil); err == nil {
+		t.Fatal("Parse(nil): want error, got nil")
+	}
+}
+```
+
+- [ ] **Step 4: Run test to verify it fails**
+
+Run: `go test ./internal/sessionyaml/ -v`
+Expected: FAIL — build error, `undefined: Parse`, `undefined: Info`.
+
+- [ ] **Step 5: Write the type definitions**
+
+Create `internal/sessionyaml/types.go`:
+
+```go
+// Package sessionyaml parses the subset of iRacing's session-info YAML
+// string that LapDog needs. Unknown and missing keys are tolerated,
+// because the sim adds fields over time and the set present depends on
+// the session.
+package sessionyaml
+
+// Info is the parsed session-info document.
+type Info struct {
+	WeekendInfo        Weekend        `yaml:"WeekendInfo"`
+	SessionInfo        Sessions       `yaml:"SessionInfo"`
+	QualifyResultsInfo QualifyResults `yaml:"QualifyResultsInfo"`
+	DriverInfo         Drivers        `yaml:"DriverInfo"`
+}
+
+// Weekend holds the WeekendInfo section, which carries the identity and
+// context fields the classifier depends on.
+type Weekend struct {
+	TrackName             string `yaml:"TrackName"`
+	TrackID               int    `yaml:"TrackID"`
+	TrackDisplayName      string `yaml:"TrackDisplayName"`
+	TrackDisplayShortName string `yaml:"TrackDisplayShortName"`
+	TrackConfigName       string `yaml:"TrackConfigName"`
+
+	// TrackLength is a string because the sim emits "7.00 km".
+	TrackLength string `yaml:"TrackLength"`
+
+	SeriesID     int `yaml:"SeriesID"`
+	SeasonID     int `yaml:"SeasonID"`
+	SessionID    int `yaml:"SessionID"`
+	SubSessionID int `yaml:"SubSessionID"`
+	LeagueID     int `yaml:"LeagueID"`
+	Official     int `yaml:"Official"`
+
+	EventType  string `yaml:"EventType"`
+	Category   string `yaml:"Category"`
+	SimMode    string `yaml:"SimMode"`
+	TeamRacing int    `yaml:"TeamRacing"`
+}
+
+// Sessions holds the SessionInfo section.
+type Sessions struct {
+	NumSessions int       `yaml:"NumSessions"`
+	Sessions    []Session `yaml:"Sessions"`
+}
+
+// Session is one entry in SessionInfo.Sessions.
+type Session struct {
+	SessionNum  int    `yaml:"SessionNum"`
+	SessionType string `yaml:"SessionType"`
+
+	// SessionLaps and SessionTime are strings because the sim emits
+	// "unlimited" and "900.0000 sec".
+	SessionLaps string `yaml:"SessionLaps"`
+	SessionTime string `yaml:"SessionTime"`
+
+	ResultsOfficial     int              `yaml:"ResultsOfficial"`
+	ResultsLapsComplete int              `yaml:"ResultsLapsComplete"`
+	ResultsPositions    []ResultPosition `yaml:"ResultsPositions"`
+}
+
+// ResultPosition is one car's classified result in a session. These
+// fields only populate as the session concludes.
+type ResultPosition struct {
+	Position      int     `yaml:"Position"`
+	ClassPosition int     `yaml:"ClassPosition"`
+	CarIdx        int     `yaml:"CarIdx"`
+	Lap           int     `yaml:"Lap"`
+	Time          float64 `yaml:"Time"`
+	FastestLap    int     `yaml:"FastestLap"`
+	FastestTime   float64 `yaml:"FastestTime"`
+	LapsComplete  int     `yaml:"LapsComplete"`
+	Incidents     int     `yaml:"Incidents"`
+	ReasonOutId   int     `yaml:"ReasonOutId"`
+}
+
+// QualifyResults holds the QualifyResultsInfo section, which is the
+// authoritative qualifying result and only populates once qualifying
+// has run.
+type QualifyResults struct {
+	Results []QualifyResult `yaml:"Results"`
+}
+
+// QualifyResult is one car's qualifying result.
+type QualifyResult struct {
+	Position      int     `yaml:"Position"`
+	ClassPosition int     `yaml:"ClassPosition"`
+	CarIdx        int     `yaml:"CarIdx"`
+	FastestLap    int     `yaml:"FastestLap"`
+	FastestTime   float64 `yaml:"FastestTime"`
+}
+
+// Drivers holds the DriverInfo section.
+type Drivers struct {
+	DriverCarIdx        int      `yaml:"DriverCarIdx"`
+	DriverCarEstLapTime float64  `yaml:"DriverCarEstLapTime"`
+	Drivers             []Driver `yaml:"Drivers"`
+}
+
+// Driver is one entry in DriverInfo.Drivers.
+//
+// CarIsAI is a pointer so that "absent" is distinguishable from
+// "present and zero". The field is unverified against the bundled SDK
+// documentation — see spec section 6.5 — and that distinction is what
+// lets the classifier know whether to trust it or fall back.
+type Driver struct {
+	CarIdx             int    `yaml:"CarIdx"`
+	UserName           string `yaml:"UserName"`
+	UserID             int    `yaml:"UserID"`
+	CarID              int    `yaml:"CarID"`
+	CarPath            string `yaml:"CarPath"`
+	CarScreenName      string `yaml:"CarScreenName"`
+	CarScreenNameShort string `yaml:"CarScreenNameShort"`
+	CarClassID         int    `yaml:"CarClassID"`
+	CarClassShortName  string `yaml:"CarClassShortName"`
+	IRating            int    `yaml:"IRating"`
+	LicString          string `yaml:"LicString"`
+	IsSpectator        int    `yaml:"IsSpectator"`
+	CarIsAI            *int   `yaml:"CarIsAI"`
+}
+```
+
+- [ ] **Step 6: Write the parser and accessors**
+
+Create `internal/sessionyaml/parse.go`:
+
+```go
+package sessionyaml
+
+import (
+	"errors"
+	"fmt"
+	"strconv"
+	"strings"
+
+	"gopkg.in/yaml.v3"
+)
+
+// Parse decodes a session-info YAML document. Unknown keys are ignored.
+func Parse(b []byte) (*Info, error) {
+	if len(strings.TrimSpace(string(b))) == 0 {
+		return nil, errors.New("sessionyaml: empty document")
+	}
+	var i Info
+	if err := yaml.Unmarshal(b, &i); err != nil {
+		return nil, fmt.Errorf("sessionyaml: unmarshal: %w", err)
+	}
+	return &i, nil
+}
+
+// Me returns the local driver's entry, matched on DriverCarIdx.
+func (i *Info) Me() (Driver, bool) {
+	for _, d := range i.DriverInfo.Drivers {
+		if d.CarIdx == i.DriverInfo.DriverCarIdx {
+			return d, true
+		}
+	}
+	return Driver{}, false
+}
+
+// SessionByNum returns the session with the given SessionNum.
+func (i *Info) SessionByNum(n int) (Session, bool) {
+	for _, s := range i.SessionInfo.Sessions {
+		if s.SessionNum == n {
+			return s, true
+		}
+	}
+	return Session{}, false
+}
+
+// HasRaceSession reports whether any session in the weekend is a race.
+// This is what separates race practice from public practice: a practice
+// session inside a weekend that also has a race is race practice.
+func (i *Info) HasRaceSession() bool {
+	for _, s := range i.SessionInfo.Sessions {
+		if IsRaceType(s.SessionType) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsRaceType reports whether a raw SessionType string denotes a race.
+// Heats and consolation races count, since they are raced wheel to wheel.
+func IsRaceType(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "race", "heat", "consolation":
+		return true
+	}
+	return false
+}
+
+// TrackLengthKm extracts the numeric kilometre value from the
+// "7.00 km" form the sim emits, returning 0 if it cannot be parsed.
+func (i *Info) TrackLengthKm() float64 {
+	f := strings.Fields(i.WeekendInfo.TrackLength)
+	if len(f) == 0 {
+		return 0
+	}
+	v, err := strconv.ParseFloat(f[0], 64)
+	if err != nil {
+		return 0
+	}
+	return v
+}
+
+// AIOpponentCount returns the number of AI opponents excluding the local
+// driver, and whether the CarIsAI field was present at all.
+//
+// fieldPresent false means the field is absent from every driver entry,
+// which is the classifier's signal to use its documented heuristic
+// instead. See spec section 6.5.
+func (i *Info) AIOpponentCount() (int, bool) {
+	present := false
+	count := 0
+	for _, d := range i.DriverInfo.Drivers {
+		if d.CarIsAI == nil {
+			continue
+		}
+		present = true
+		if *d.CarIsAI != 0 && d.CarIdx != i.DriverInfo.DriverCarIdx {
+			count++
+		}
+	}
+	return count, present
+}
+
+// MyResult returns the local driver's classified result for a session.
+func (i *Info) MyResult(sessionNum int) (ResultPosition, bool) {
+	s, ok := i.SessionByNum(sessionNum)
+	if !ok {
+		return ResultPosition{}, false
+	}
+	for _, r := range s.ResultsPositions {
+		if r.CarIdx == i.DriverInfo.DriverCarIdx {
+			return r, true
+		}
+	}
+	return ResultPosition{}, false
+}
+
+// MyQualifyResult returns the local driver's qualifying result.
+func (i *Info) MyQualifyResult() (QualifyResult, bool) {
+	for _, q := range i.QualifyResultsInfo.Results {
+		if q.CarIdx == i.DriverInfo.DriverCarIdx {
+			return q, true
+		}
+	}
+	return QualifyResult{}, false
+}
+
+// FieldSize returns how many cars were classified in a session, falling
+// back to the count of non-spectator drivers before results exist.
+// Position without field size is misleading: P5 of 6 is not P5 of 40.
+func (i *Info) FieldSize(sessionNum int) int {
+	if s, ok := i.SessionByNum(sessionNum); ok && len(s.ResultsPositions) > 0 {
+		return len(s.ResultsPositions)
+	}
+	n := 0
+	for _, d := range i.DriverInfo.Drivers {
+		if d.IsSpectator == 0 {
+			n++
+		}
+	}
+	return n
+}
+```
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `go test ./internal/sessionyaml/ -v`
+Expected: PASS, thirteen tests.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/sessionyaml/
+git commit -m "Add session YAML subset parser"
+```
+
+---
+
+### Task 8: Session classifier
+
+**Files:**
+- Create: `internal/classify/classify.go`
+- Test: `internal/classify/classify_test.go`
+
+**Interfaces:**
+- Consumes: Task 7's `sessionyaml.Info`, `sessionyaml.IsRaceType`.
+- Produces:
+  - `type SessionType string` with `TypePractice`, `TypeQualify`, `TypeRace`, `TypeWarmup`, `TypeTimeTrial`, `TypeOfflineTest`, `TypeUnknown`
+  - `type EventContext string` with `ContextOfficialRace`, `ContextOfficialPractice`, `ContextLeague`, `ContextHosted`, `ContextOffline`, `ContextTimeTrial`, `ContextAI`, `ContextUnknown`
+  - `type AIDetection string` with `AIDetectField`, `AIDetectHeuristic`, `AIDetectNone`
+  - `type Result struct { SessionType SessionType; EventContext EventContext; AIOpponentCount int; AIDetection AIDetection; RawSessionType string }`
+  - `func Classify(info *sessionyaml.Info, sessionNum int) Result`
+  - `func NormaliseSessionType(raw string) SessionType`
+  - `func Label(t SessionType, c EventContext) string`
+
+This is the highest-risk logic in the application and gets the densest coverage. Rules are spec §6.1, §6.2, §6.3 and §6.5, reproduced here so the implementer needs no second document.
+
+`session_type` normalisation:
+
+| Raw YAML value (case-insensitive) | SessionType |
+|---|---|
+| `Practice`, `Open Practice`, `Lone Practice` | `Practice` |
+| `Qualify`, `Open Qualify`, `Lone Qualify` | `Qualify` |
+| `Race`, `Heat`, `Consolation` | `Race` |
+| `Warmup` | `Warmup` |
+| `Offline Testing`, `Testing` | `OfflineTest` |
+| `Time Trial` | `TimeTrial` |
+| anything else | `Unknown` |
+
+`event_context`, first match wins:
+
+1. `LeagueID != 0` → `League`
+2. AI opponents present → `AI`
+3. `SimMode != "full"` or `session_type == OfflineTest` → `Offline`
+4. `session_type == TimeTrial` → `TimeTrial`
+5. `Official == 1` and the weekend has a race session → `OfficialRace`
+6. `Official == 1` → `OfficialPractice`
+7. otherwise → `Hosted`
+
+AI detection, per §6.5. The `CarIsAI` field is **unverified**, so:
+
+- Field present on any driver → count flagged opponents, `AIDetection = "field"`.
+- Field absent → heuristic: `session_type == Race` **and** `SubSessionID == 0` **and** `Official == 0` **and** `LeagueID == 0` **and** more than one driver. If it matches, set `AIOpponentCount` to `len(Drivers) - 1` and `AIDetection = "heuristic"`.
+- Neither → `AIDetection = "none"`, count 0.
+
+- [ ] **Step 1: Write the failing normalisation test**
+
+Create `internal/classify/classify_test.go`:
+
+```go
+package classify
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/sessionyaml"
+)
+
+func TestNormaliseSessionType(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want SessionType
+	}{
+		{"Practice", TypePractice},
+		{"Open Practice", TypePractice},
+		{"Lone Practice", TypePractice},
+		{"Qualify", TypeQualify},
+		{"Open Qualify", TypeQualify},
+		{"Lone Qualify", TypeQualify},
+		{"Race", TypeRace},
+		{"Heat", TypeRace},
+		{"Consolation", TypeRace},
+		{"Warmup", TypeWarmup},
+		{"Offline Testing", TypeOfflineTest},
+		{"Testing", TypeOfflineTest},
+		{"Time Trial", TypeTimeTrial},
+		// Case and whitespace must not matter.
+		{"  open qualify  ", TypeQualify},
+		{"RACE", TypeRace},
+		// An unrecognised value must be Unknown, not silently a Practice.
+		{"Sausage Festival", TypeUnknown},
+		{"", TypeUnknown},
+	}
+	for _, c := range cases {
+		if got := NormaliseSessionType(c.raw); got != c.want {
+			t.Errorf("NormaliseSessionType(%q) = %q, want %q", c.raw, got, c.want)
+		}
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/classify/ -v`
+Expected: FAIL — build error, `undefined: NormaliseSessionType`.
+
+- [ ] **Step 3: Write the classifier**
+
+Create `internal/classify/classify.go`:
+
+```go
+// Package classify decides what kind of session the sim is running.
+//
+// Classify is a pure function with no I/O and no state, which is
+// deliberate: it is the highest-risk logic in the application, and
+// purity makes it exhaustively table-testable.
+package classify
+
+import (
+	"strings"
+
+	"github.com/blezek/lapdog/internal/sessionyaml"
+)
+
+// SessionType is what the driver is doing: practising, qualifying, racing.
+type SessionType string
+
+// SessionType values.
+const (
+	TypePractice    SessionType = "Practice"
+	TypeQualify     SessionType = "Qualify"
+	TypeRace        SessionType = "Race"
+	TypeWarmup      SessionType = "Warmup"
+	TypeTimeTrial   SessionType = "TimeTrial"
+	TypeOfflineTest SessionType = "OfflineTest"
+	TypeUnknown     SessionType = "Unknown"
+)
+
+// EventContext is what kind of event the session belongs to. It is
+// orthogonal to SessionType, which is what lets "race practice" and
+// "public practice" be derived rather than stored as labels.
+type EventContext string
+
+// EventContext values.
+const (
+	ContextOfficialRace     EventContext = "OfficialRace"
+	ContextOfficialPractice EventContext = "OfficialPractice"
+	ContextLeague           EventContext = "League"
+	ContextHosted           EventContext = "Hosted"
+	ContextOffline          EventContext = "Offline"
+	ContextTimeTrial        EventContext = "TimeTrial"
+	ContextAI               EventContext = "AI"
+	ContextUnknown          EventContext = "Unknown"
+)
+
+// AIDetection records how AI opponents were identified, so that
+// heuristically-classified sessions can be found and re-classified once
+// the real field is confirmed. See spec section 6.5.
+type AIDetection string
+
+// AIDetection values.
+const (
+	AIDetectField     AIDetection = "field"
+	AIDetectHeuristic AIDetection = "heuristic"
+	AIDetectNone      AIDetection = "none"
+)
+
+// Result is the outcome of classifying one session.
+type Result struct {
+	SessionType     SessionType
+	EventContext    EventContext
+	AIOpponentCount int
+	AIDetection     AIDetection
+
+	// RawSessionType is the unnormalised YAML string, retained so an
+	// Unknown classification can be diagnosed.
+	RawSessionType string
+}
+
+// NormaliseSessionType maps a raw SessionType string from the session
+// YAML onto a SessionType, returning TypeUnknown for anything
+// unrecognised rather than guessing.
+func NormaliseSessionType(raw string) SessionType {
+	switch strings.ToLower(strings.Join(strings.Fields(raw), " ")) {
+	case "practice", "open practice", "lone practice":
+		return TypePractice
+	case "qualify", "open qualify", "lone qualify":
+		return TypeQualify
+	case "race", "heat", "consolation":
+		return TypeRace
+	case "warmup":
+		return TypeWarmup
+	case "offline testing", "testing":
+		return TypeOfflineTest
+	case "time trial":
+		return TypeTimeTrial
+	default:
+		return TypeUnknown
+	}
+}
+
+// detectAI reports the AI opponent count and how it was determined.
+func detectAI(info *sessionyaml.Info, st SessionType) (int, AIDetection) {
+	if count, present := info.AIOpponentCount(); present {
+		return count, AIDetectField
+	}
+	// Heuristic fallback, used only while the CarIsAI field is
+	// unverified. It cannot tell an AI race from an offline hosted race
+	// with no AI, and it deliberately misses AI practice sessions.
+	// Both errors are corrected by reclassify once the field is known.
+	w := info.WeekendInfo
+	if st == TypeRace &&
+		w.SubSessionID == 0 &&
+		w.Official == 0 &&
+		w.LeagueID == 0 &&
+		len(info.DriverInfo.Drivers) > 1 {
+		return len(info.DriverInfo.Drivers) - 1, AIDetectHeuristic
+	}
+	return 0, AIDetectNone
+}
+
+// Classify determines the session type and event context for the session
+// with the given SessionNum.
+func Classify(info *sessionyaml.Info, sessionNum int) Result {
+	if info == nil {
+		return Result{SessionType: TypeUnknown, EventContext: ContextUnknown, AIDetection: AIDetectNone}
+	}
+
+	raw := ""
+	if s, ok := info.SessionByNum(sessionNum); ok {
+		raw = s.SessionType
+	}
+	st := NormaliseSessionType(raw)
+
+	aiCount, aiHow := detectAI(info, st)
+
+	res := Result{
+		SessionType:     st,
+		AIOpponentCount: aiCount,
+		AIDetection:     aiHow,
+		RawSessionType:  raw,
+	}
+	res.EventContext = context(info, st, aiCount)
+	return res
+}
+
+// context applies the ordered event-context rules. First match wins.
+func context(info *sessionyaml.Info, st SessionType, aiCount int) EventContext {
+	w := info.WeekendInfo
+
+	// A league session never contains AI, so League winning is harmless
+	// and keeps league accounting intact.
+	if w.LeagueID != 0 {
+		return ContextLeague
+	}
+	// AI is checked before Offline because an AI event is always
+	// offline, and "raced against AI" is the more specific fact.
+	if aiCount > 0 {
+		return ContextAI
+	}
+	if (w.SimMode != "" && w.SimMode != "full") || st == TypeOfflineTest {
+		return ContextOffline
+	}
+	if st == TypeTimeTrial {
+		return ContextTimeTrial
+	}
+	if w.Official == 1 {
+		if info.HasRaceSession() {
+			return ContextOfficialRace
+		}
+		return ContextOfficialPractice
+	}
+	return ContextHosted
+}
+
+// Label renders the pair as the string the UI shows. Labels are computed,
+// never stored, so the rules can change without a data migration.
+func Label(t SessionType, c EventContext) string {
+	if c == ContextOffline {
+		return "Offline Testing"
+	}
+	if t == TypeTimeTrial {
+		return "Time Trial"
+	}
+
+	var base string
+	switch t {
+	case TypePractice:
+		base = "Practice"
+	case TypeQualify:
+		base = "Qualifying"
+	case TypeRace:
+		base = "Race"
+	case TypeWarmup:
+		base = "Warmup"
+	default:
+		base = "Unknown"
+	}
+
+	switch c {
+	case ContextLeague:
+		return "League " + base
+	case ContextAI:
+		return "AI " + base
+	case ContextHosted:
+		return "Hosted " + base
+	case ContextOfficialPractice:
+		if t == TypePractice {
+			return "Public Practice"
+		}
+		return base
+	case ContextOfficialRace:
+		if t == TypePractice {
+			return "Race Practice"
+		}
+		return base
+	default:
+		return base
+	}
+}
+```
+
+- [ ] **Step 4: Run the normalisation test to verify it passes**
+
+Run: `go test ./internal/classify/ -run Normalise -v`
+Expected: PASS
+
+- [ ] **Step 5: Add the context and label tests**
+
+Append to `internal/classify/classify_test.go`:
+
+```go
+// build assembles a minimal Info for context testing.
+func build(sessionTypes []string, mutate func(*sessionyaml.Info)) *sessionyaml.Info {
+	i := &sessionyaml.Info{}
+	i.WeekendInfo.SimMode = "full"
+	i.WeekendInfo.SubSessionID = 1234
+	i.DriverInfo.DriverCarIdx = 0
+	i.DriverInfo.Drivers = []sessionyaml.Driver{{CarIdx: 0, UserName: "Me"}}
+	for n, st := range sessionTypes {
+		i.SessionInfo.Sessions = append(i.SessionInfo.Sessions, sessionyaml.Session{
+			SessionNum: n, SessionType: st,
+		})
+	}
+	i.SessionInfo.NumSessions = len(sessionTypes)
+	if mutate != nil {
+		mutate(i)
+	}
+	return i
+}
+
+func aiFlag(v int) *int { return &v }
+
+func TestClassifyEventContext(t *testing.T) {
+	cases := []struct {
+		name       string
+		types      []string
+		sessionNum int
+		mutate     func(*sessionyaml.Info)
+		wantType   SessionType
+		wantCtx    EventContext
+		wantLabel  string
+	}{
+		{
+			name: "practice-only official weekend is public practice",
+			types: []string{"Open Practice"}, sessionNum: 0,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.Official = 1 },
+			wantType: TypePractice, wantCtx: ContextOfficialPractice,
+			wantLabel: "Public Practice",
+		},
+		{
+			name: "practice inside a race weekend is race practice",
+			types: []string{"Practice", "Open Qualify", "Race"}, sessionNum: 0,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.Official = 1 },
+			wantType: TypePractice, wantCtx: ContextOfficialRace,
+			wantLabel: "Race Practice",
+		},
+		{
+			name: "qualifying in a race weekend",
+			types: []string{"Practice", "Open Qualify", "Race"}, sessionNum: 1,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.Official = 1 },
+			wantType: TypeQualify, wantCtx: ContextOfficialRace,
+			wantLabel: "Qualifying",
+		},
+		{
+			name: "the race itself",
+			types: []string{"Practice", "Open Qualify", "Race"}, sessionNum: 2,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.Official = 1 },
+			wantType: TypeRace, wantCtx: ContextOfficialRace,
+			wantLabel: "Race",
+		},
+		{
+			name: "league race beats everything else",
+			types: []string{"Race"}, sessionNum: 0,
+			mutate: func(i *sessionyaml.Info) {
+				i.WeekendInfo.LeagueID = 4242
+				i.WeekendInfo.Official = 1
+			},
+			wantType: TypeRace, wantCtx: ContextLeague,
+			wantLabel: "League Race",
+		},
+		{
+			name: "league practice",
+			types: []string{"Practice", "Race"}, sessionNum: 0,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.LeagueID = 4242 },
+			wantType: TypePractice, wantCtx: ContextLeague,
+			wantLabel: "League Practice",
+		},
+		{
+			name: "offline testing",
+			types: []string{"Offline Testing"}, sessionNum: 0,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.SubSessionID = 0 },
+			wantType: TypeOfflineTest, wantCtx: ContextOffline,
+			wantLabel: "Offline Testing",
+		},
+		{
+			name: "unofficial non-league is hosted",
+			types: []string{"Race"}, sessionNum: 0,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.Official = 0 },
+			wantType: TypeRace, wantCtx: ContextHosted,
+			wantLabel: "Hosted Race",
+		},
+		{
+			name: "time trial",
+			types: []string{"Time Trial"}, sessionNum: 0,
+			wantType: TypeTimeTrial, wantCtx: ContextTimeTrial,
+			wantLabel: "Time Trial",
+		},
+		{
+			name: "AI race detected by field",
+			types: []string{"Race"}, sessionNum: 0,
+			mutate: func(i *sessionyaml.Info) {
+				i.WeekendInfo.Official = 0
+				i.DriverInfo.Drivers = []sessionyaml.Driver{
+					{CarIdx: 0, UserName: "Me", CarIsAI: aiFlag(0)},
+					{CarIdx: 1, UserName: "Bot", CarIsAI: aiFlag(1)},
+				}
+			},
+			wantType: TypeRace, wantCtx: ContextAI,
+			wantLabel: "AI Race",
+		},
+		{
+			name: "AI practice detected by field",
+			types: []string{"Practice", "Race"}, sessionNum: 0,
+			mutate: func(i *sessionyaml.Info) {
+				i.DriverInfo.Drivers = []sessionyaml.Driver{
+					{CarIdx: 0, CarIsAI: aiFlag(0)},
+					{CarIdx: 1, CarIsAI: aiFlag(1)},
+				}
+			},
+			wantType: TypePractice, wantCtx: ContextAI,
+			wantLabel: "AI Practice",
+		},
+		{
+			name: "league wins over AI when both would match",
+			types: []string{"Race"}, sessionNum: 0,
+			mutate: func(i *sessionyaml.Info) {
+				i.WeekendInfo.LeagueID = 99
+				i.DriverInfo.Drivers = []sessionyaml.Driver{
+					{CarIdx: 0, CarIsAI: aiFlag(0)},
+					{CarIdx: 1, CarIsAI: aiFlag(1)},
+				}
+			},
+			wantType: TypeRace, wantCtx: ContextLeague,
+			wantLabel: "League Race",
+		},
+		{
+			name: "unknown session type does not crash or guess",
+			types: []string{"Sausage Festival"}, sessionNum: 0,
+			mutate:   func(i *sessionyaml.Info) { i.WeekendInfo.Official = 1 },
+			wantType: TypeUnknown, wantCtx: ContextOfficialPractice,
+			wantLabel: "Unknown",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := Classify(build(c.types, c.mutate), c.sessionNum)
+			if got.SessionType != c.wantType {
+				t.Errorf("SessionType = %q, want %q", got.SessionType, c.wantType)
+			}
+			if got.EventContext != c.wantCtx {
+				t.Errorf("EventContext = %q, want %q", got.EventContext, c.wantCtx)
+			}
+			if label := Label(got.SessionType, got.EventContext); label != c.wantLabel {
+				t.Errorf("Label = %q, want %q", label, c.wantLabel)
+			}
+		})
+	}
+}
+
+func TestClassifyAIDetectionHeuristic(t *testing.T) {
+	// Offline race, unofficial, no league, several drivers, CarIsAI absent.
+	i := build([]string{"Race"}, func(i *sessionyaml.Info) {
+		i.WeekendInfo.SubSessionID = 0
+		i.WeekendInfo.Official = 0
+		i.DriverInfo.Drivers = []sessionyaml.Driver{
+			{CarIdx: 0, UserName: "Me"},
+			{CarIdx: 1, UserName: "Bot One"},
+			{CarIdx: 2, UserName: "Bot Two"},
+		}
+	})
+	got := Classify(i, 0)
+	if got.AIDetection != AIDetectHeuristic {
+		t.Errorf("AIDetection = %q, want %q", got.AIDetection, AIDetectHeuristic)
+	}
+	if got.AIOpponentCount != 2 {
+		t.Errorf("AIOpponentCount = %d, want 2", got.AIOpponentCount)
+	}
+	if got.EventContext != ContextAI {
+		t.Errorf("EventContext = %q, want %q", got.EventContext, ContextAI)
+	}
+}
+
+func TestClassifyAIDetectionFieldWins(t *testing.T) {
+	// The field is present and says no AI; the heuristic conditions would
+	// otherwise fire. The field must win.
+	i := build([]string{"Race"}, func(i *sessionyaml.Info) {
+		i.WeekendInfo.SubSessionID = 0
+		i.WeekendInfo.Official = 0
+		i.DriverInfo.Drivers = []sessionyaml.Driver{
+			{CarIdx: 0, CarIsAI: aiFlag(0)},
+			{CarIdx: 1, CarIsAI: aiFlag(0)},
+		}
+	})
+	got := Classify(i, 0)
+	if got.AIDetection != AIDetectField {
+		t.Errorf("AIDetection = %q, want %q", got.AIDetection, AIDetectField)
+	}
+	if got.AIOpponentCount != 0 {
+		t.Errorf("AIOpponentCount = %d, want 0", got.AIOpponentCount)
+	}
+	if got.EventContext != ContextHosted {
+		t.Errorf("EventContext = %q, want %q", got.EventContext, ContextHosted)
+	}
+}
+
+func TestClassifyAIDetectionNoneForOnlineRace(t *testing.T) {
+	i := build([]string{"Race"}, func(i *sessionyaml.Info) {
+		i.WeekendInfo.SubSessionID = 998877
+		i.WeekendInfo.Official = 1
+		i.DriverInfo.Drivers = []sessionyaml.Driver{{CarIdx: 0}, {CarIdx: 1}}
+	})
+	got := Classify(i, 0)
+	if got.AIDetection != AIDetectNone {
+		t.Errorf("AIDetection = %q, want %q", got.AIDetection, AIDetectNone)
+	}
+	if got.EventContext != ContextOfficialRace {
+		t.Errorf("EventContext = %q, want %q", got.EventContext, ContextOfficialRace)
+	}
+}
+
+func TestClassifyNilInfo(t *testing.T) {
+	got := Classify(nil, 0)
+	if got.SessionType != TypeUnknown || got.EventContext != ContextUnknown {
+		t.Errorf("Classify(nil) = %+v, want Unknown/Unknown", got)
+	}
+}
+
+// A session number with no matching entry must not panic.
+func TestClassifyMissingSessionNum(t *testing.T) {
+	got := Classify(build([]string{"Race"}, nil), 99)
+	if got.SessionType != TypeUnknown {
+		t.Errorf("SessionType = %q, want Unknown", got.SessionType)
+	}
+}
+
+// Classification must work against the real fixtures too, not only
+// synthetic Info values.
+func TestClassifyAgainstFixtures(t *testing.T) {
+	read := func(name string) *sessionyaml.Info {
+		b, err := os.ReadFile(filepath.Join("..", "sessionyaml", "testdata", name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		i, err := sessionyaml.Parse(b)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return i
+	}
+
+	got := Classify(read("practice_only.yaml"), 0)
+	if got.SessionType != TypePractice || got.EventContext != ContextOfficialPractice {
+		t.Errorf("practice_only = %+v, want Practice/OfficialPractice", got)
+	}
+	if l := Label(got.SessionType, got.EventContext); l != "Public Practice" {
+		t.Errorf("label = %q, want Public Practice", l)
+	}
+
+	got = Classify(read("race_weekend.yaml"), 0)
+	if got.EventContext != ContextOfficialRace {
+		t.Errorf("race_weekend session 0 context = %q, want OfficialRace", got.EventContext)
+	}
+	if l := Label(got.SessionType, got.EventContext); l != "Race Practice" {
+		t.Errorf("label = %q, want Race Practice", l)
+	}
+
+	got = Classify(read("race_weekend.yaml"), 2)
+	if got.SessionType != TypeRace || got.EventContext != ContextOfficialRace {
+		t.Errorf("race_weekend session 2 = %+v", got)
+	}
+}
+```
+
+- [ ] **Step 6: Run the full classify test suite**
+
+Run: `go test ./internal/classify/ -v`
+Expected: PASS. The `TestClassifyEventContext` subtests should each report individually.
+
+- [ ] **Step 7: Verify the whole tree still passes**
+
+Run: `make test`
+Expected: PASS for all packages.
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add internal/classify/
+git commit -m "Add session classifier with AI detection"
+```
