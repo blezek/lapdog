@@ -87,7 +87,7 @@ func Handler() (http.Handler, error) {
 			http.NotFound(w, r)
 			return
 		}
-		// Serve the file when it exists, otherwise hand the route to the SPA.
+		// Serve the file when it exists.
 		if clean != "/" {
 			if f, err := sub.Open(strings.TrimPrefix(clean, "/")); err == nil {
 				f.Close()
@@ -95,11 +95,31 @@ func Handler() (http.Handler, error) {
 				return
 			}
 		}
+		// A missing asset must be a 404, not the app shell.
+		//
+		// Falling back for everything meant a browser holding a stale hashed asset
+		// reference — after an upgrade replaced the bundle — received index.html
+		// with a 200 and then failed to parse HTML as JavaScript. The resulting
+		// console error says nothing about the real cause. Only client-side routes,
+		// which carry no file extension, get the shell.
+		if looksLikeFile(clean) {
+			http.NotFound(w, r)
+			return
+		}
 		r2 := r.Clone(r.Context())
 		r2.URL.Path = "/"
 		ui.ServeHTTP(w, r2)
 	})
 	return mux, nil
+}
+
+// looksLikeFile reports whether a path is asking for an asset rather than a
+// client-side route.
+//
+// Routes are path segments without an extension ("/sessions", "/sessions/1042");
+// assets carry one ("/assets/index-abc123.js", "/favicon.ico").
+func looksLikeFile(clean string) bool {
+	return path.Ext(clean) != ""
 }
 
 // cacheImmutable marks a response as safe to cache indefinitely.

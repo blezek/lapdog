@@ -6,6 +6,34 @@ import { bytes, num } from '../format'
 import { applyTheme } from '../theme'
 import { Banner, Card, ErrorNote, Loading } from '../components/ui'
 
+/*
+ * Slider stops.
+ *
+ * The sliders step through a fixed list of values rather than sweeping the raw
+ * range. Poll interval spans 0.25 to 30 seconds, and on a linear track everything
+ * anyone actually uses — a quarter of a second to a few seconds — would be squeezed
+ * into the first sixth of the travel, with two thirds of the track given over to
+ * intervals so coarse that lap attribution stops working. Discrete stops give every
+ * position a value worth landing on.
+ *
+ * The number field beside each slider stays, so any legal value can still be typed
+ * exactly, including ones that are not stops.
+ */
+
+/** POLL_STOPS covers the useful poll rates within the server's legal bounds. */
+const POLL_STOPS = [0.25, 0.5, 1, 2, 3, 5, 10, 15, 30]
+
+/** MIN_SESSION_STOPS runs from recording everything to a ten-minute floor. */
+const MIN_SESSION_STOPS = [0, 10, 30, 60, 120, 300, 600]
+
+/** formatSeconds renders a duration as seconds or whole minutes. */
+function formatSeconds(v: number): string {
+  if (v === 0) return 'off'
+  if (v < 60) return `${v} s`
+  const m = v / 60
+  return `${Number.isInteger(m) ? m : m.toFixed(1)} min`
+}
+
 /**
  * Settings edits the server's configuration.
  *
@@ -72,10 +100,17 @@ export function Settings() {
             Poll interval
             <span className="setting-hint">
               How often the simulator is read. Lower is finer time accounting and more
-              CPU. Takes effect immediately.
+              CPU. Takes effect immediately, with no restart.
             </span>
           </div>
           <div className="setting-control">
+            <StopsSlider
+              value={c.pollIntervalSeconds}
+              stops={POLL_STOPS}
+              format={(v) => `${v} s`}
+              ariaLabel="Poll interval"
+              onCommit={(v) => set({ pollIntervalSeconds: v })}
+            />
             <NumberField
               value={c.pollIntervalSeconds}
               min={0.25}
@@ -92,9 +127,17 @@ export function Settings() {
             Minimum session length
             <span className="setting-hint">
               Sessions shorter than this are discarded, which drops accidental joins.
+              Zero records everything.
             </span>
           </div>
           <div className="setting-control">
+            <StopsSlider
+              value={c.minSessionSeconds}
+              stops={MIN_SESSION_STOPS}
+              format={formatSeconds}
+              ariaLabel="Minimum session length"
+              onCommit={(v) => set({ minSessionSeconds: v })}
+            />
             <NumberField
               value={c.minSessionSeconds}
               min={0}
@@ -310,6 +353,93 @@ function NumberField({
       {suffix && <span style={{ color: 'var(--text-muted)', fontSize: 12 }}>{suffix}</span>}
     </>
   )
+}
+
+/**
+ * StopsSlider steps through a fixed list of values.
+ *
+ * The slider's own position is an index into stops, not the value itself, which is
+ * what makes every position a sensible setting.
+ *
+ * Dragging updates the displayed value continuously but only commits when the
+ * gesture ends. A range input fires onChange for every step it passes through, so
+ * committing per change would send a PUT for each intermediate value on the way to
+ * the one the user wanted.
+ *
+ * If the stored value is not one of the stops — because it was typed into the number
+ * field, or set before the stop list changed — the nearest stop is highlighted and
+ * the exact value is still shown, so the slider never misrepresents the setting.
+ */
+function StopsSlider({
+  value,
+  stops,
+  format,
+  ariaLabel,
+  onCommit,
+}: {
+  value: number
+  stops: number[]
+  format: (v: number) => string
+  ariaLabel: string
+  onCommit: (v: number) => void
+}) {
+  const nearest = nearestIndex(stops, value)
+  const [index, setIndex] = useState(nearest)
+  const [dragging, setDragging] = useState(false)
+
+  // Follow the server's value unless the user is mid-drag, which would otherwise
+  // yank the handle back while they are still moving it.
+  useEffect(() => {
+    if (!dragging) setIndex(nearest)
+  }, [nearest, dragging])
+
+  const shown = stops[index] ?? value
+  const exact = !dragging && shown !== value
+
+  const commit = () => {
+    setDragging(false)
+    const next = stops[index]
+    if (next != null && next !== value) onCommit(next)
+  }
+
+  return (
+    <span className="slider">
+      <input
+        type="range"
+        min={0}
+        max={stops.length - 1}
+        step={1}
+        value={index}
+        aria-label={ariaLabel}
+        aria-valuetext={format(shown)}
+        onChange={(e) => {
+          setDragging(true)
+          setIndex(Number(e.target.value))
+        }}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
+      <span className="slider-value" title={exact ? `Exact value: ${value}` : undefined}>
+        {format(shown)}
+        {exact && <span className="slider-exact"> (set to {value})</span>}
+      </span>
+    </span>
+  )
+}
+
+/** nearestIndex returns the index of the stop closest to value. */
+function nearestIndex(stops: number[], value: number): number {
+  let best = 0
+  let bestGap = Infinity
+  stops.forEach((s, i) => {
+    const gap = Math.abs(s - value)
+    if (gap < bestGap) {
+      bestGap = gap
+      best = i
+    }
+  })
+  return best
 }
 
 function Toggle({

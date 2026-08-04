@@ -163,7 +163,10 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
         },
         yearLabel: { show: years.length > 1, color: theme.textMuted, fontSize: 10 },
         monthLabel: { color: theme.textMuted, fontSize: 10, nameMap: 'en' },
-        dayLabel: { color: theme.textMuted, fontSize: 9, firstDay: 1, nameMap: 'en' },
+        // The week starts on Sunday, so Sunday is the top row. Since the driver
+        // never races on one, that row reads as consistently empty — which is
+        // itself worth seeing rather than hiding mid-grid.
+        dayLabel: { color: theme.textMuted, fontSize: 9, firstDay: 0, nameMap: 'en' },
       },
       series: [{ type: 'heatmap', coordinateSystem: 'calendar', data }],
     }

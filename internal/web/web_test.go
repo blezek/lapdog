@@ -1,6 +1,7 @@
 package web
 
 import (
+	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -119,6 +120,81 @@ func TestNoDirectoryTraversal(t *testing.T) {
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, route, nil))
 		if strings.Contains(rec.Body.String(), "module github.com/blezek/lapdog") {
 			t.Errorf("%s escaped the embedded filesystem and read go.mod", route)
+		}
+	}
+}
+
+// Regression: a missing asset returned the app shell with a 200, because the SPA
+// fallback caught every unmatched path. After an upgrade replaced the hashed
+// bundle, a browser holding a stale reference received index.html and then failed
+// to parse HTML as JavaScript — an error that says nothing about the real cause.
+//
+// Only extensionless client-side routes get the shell; anything that looks like a
+// file must 404.
+func TestMissingAssetIs404NotTheAppShell(t *testing.T) {
+	h, err := Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{
+		"/assets/index-DOESNOTEXIST.js",
+		"/assets/index-DOESNOTEXIST.css",
+		"/favicon.ico",
+		"/nested/thing.png",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("%s: status = %d, want 404 — a missing asset must not return the app shell", p, rec.Code)
+		}
+		if strings.Contains(rec.Body.String(), "<div id=\"root\">") {
+			t.Errorf("%s returned the app shell; a browser would try to parse HTML as its asset", p)
+		}
+	}
+}
+
+// Client-side routes still get the shell, including nested ones, so a reload on
+// any page keeps working.
+func TestExtensionlessRoutesStillGetTheShell(t *testing.T) {
+	h, err := Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{"/sessions", "/sessions/1042", "/laps", "/deeply/nested/route"} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", p, rec.Code)
+		}
+		if !strings.Contains(rec.Body.String(), "LapDog") {
+			t.Errorf("%s did not return the app shell", p)
+		}
+	}
+}
+
+// The real bundle must still be served, so the fix cannot have broken asset
+// delivery.
+func TestRealAssetsAreServed(t *testing.T) {
+	sub, err := FS()
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries, err := fs.ReadDir(sub, "assets")
+	if err != nil {
+		t.Skip("no assets directory in this build")
+	}
+	h, err := Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("assets directory is empty; the frontend bundle is missing")
+	}
+	for _, e := range entries {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/assets/"+e.Name(), nil))
+		if rec.Code != http.StatusOK {
+			t.Errorf("/assets/%s: status = %d, want 200", e.Name(), rec.Code)
 		}
 	}
 }

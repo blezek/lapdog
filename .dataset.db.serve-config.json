@@ -1,0 +1,10 @@
+{
+  "pollIntervalSeconds": 1,
+  "minSessionSeconds": 30,
+  "captureEnabled": true,
+  "captureMaxBytes": 2147483648,
+  "port": 47047,
+  "startWithWindows": true,
+  "units": "metric",
+  "theme": "system"
+}

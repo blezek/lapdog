@@ -720,3 +720,41 @@ tbody tr.selected td {
   border-radius: 3px;
   padding: 1px 5px;
 }
+
+/* ----------------------------------------------------------------- sliders */
+
+.slider {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.slider input[type='range'] {
+  width: 168px;
+  accent-color: var(--accent);
+  /* The track is thin and the handle generous: the handle is the hit target and
+     wants to be comfortable, the track is only a reference line. */
+  height: 18px;
+  cursor: pointer;
+}
+
+.slider-value {
+  font-size: 12.5px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+  min-width: 62px;
+}
+
+/* Shown when the stored value is not one of the stops, so the slider position is
+   an approximation and the real number needs stating. */
+.slider-exact {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+/* Sliders and their number field wrap together rather than the field being pushed
+   off the row on a narrow window. */
+.setting-control {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
