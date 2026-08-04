@@ -9169,3 +9169,1389 @@ Expected: PASS, all tests from Tasks 14–17.
 git add internal/collector/
 git commit -m "Add position event detection with cause attribution"
 ```
+
+---
+
+### Task 18: Collector — poll loop, flushing and capture integration
+
+**Files:**
+- Create: `internal/collector/collector.go`, `internal/collector/fixture_test.go`
+- Modify: `internal/source/source.go` — add the `Paced` interface
+- Test: `internal/collector/collector_test.go`
+
+**Interfaces:**
+- Consumes: everything from Tasks 5–17.
+- Produces:
+  - In `internal/source`: `type Paced interface { SetInterval(time.Duration) }`
+  - `type Options struct { Source source.Source; Store *store.Store; Clock Clock; Interval, MinSession time.Duration; CaptureDir string; CaptureEnabled bool; CaptureMaxBytes int64; Logger *slog.Logger }`
+  - `type Collector struct { ... }`
+  - `func New(opts Options) (*Collector, error)`
+  - `func (c *Collector) Run(ctx context.Context) error`
+  - `func (c *Collector) Status() Status`
+  - `type Status struct { Connected, Paused bool; IntervalSeconds float64; SessionKey, SessionLabel, TrackName, CarName string; DrivingSeconds float64; Laps int; MissingVars []string; IncidentSource string }`
+  - `func (c *Collector) SetInterval(d time.Duration)`
+  - `func (c *Collector) SetPaused(bool)`
+  - `const FlushIntervalSeconds = 10`
+
+Pacing lives in the `Source`, not the loop. `Run` simply calls `Next` until the source is exhausted or the context is cancelled; the live source blocks for the poll interval, and the replay source returns immediately. That is what lets a ninety-minute race fixture run through the collector in milliseconds without a special test mode.
+
+Flush policy, spec §7.3: upsert the session row every 10 seconds of frame time and on every transition — session change, session end, disconnect, shutdown. A crash loses at most 10 seconds of accumulated time.
+
+Session change is detected on `SubSessionID` **or** `SessionNum` change. Both matter: `SessionNum` moves through practice → qualify → race within one subsession, and `SubSessionID` changes when the driver joins a different event.
+
+Required-variable failure means the session is **not recorded**, per spec §16. The missing names are stored in `Status` so the UI can surface them.
+
+- [ ] **Step 1: Add the Paced interface to the source package**
+
+In `internal/source/source.go`, append:
+
+```go
+// Paced is implemented by sources whose Next blocks to achieve a poll
+// rate. The live source implements it; the replay source does not, which
+// is what lets a captured race run through the collector as fast as the
+// CPU allows.
+type Paced interface {
+	SetInterval(time.Duration)
+}
+```
+
+Add `"time"` to that file's import block.
+
+- [ ] **Step 2: Write the fixture builder**
+
+Create `internal/collector/fixture_test.go`:
+
+```go
+package collector
+
+import (
+	"encoding/binary"
+	"math"
+	"path/filepath"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/capture"
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// fixtureVars is the variable layout the synthetic fixtures use. Offsets
+// are contiguous; carCount sets the length of the per-car arrays.
+const fixtureCarCount = 4
+
+func fixtureVarHeaders() []irsdk.VarHeader {
+	off := int32(0)
+	next := func(size, count int32) int32 {
+		o := off
+		off += size * count
+		return o
+	}
+	return []irsdk.VarHeader{
+		{Name: "SessionNum", Type: irsdk.VarInt, Offset: next(4, 1), Count: 1},
+		{Name: "SessionState", Type: irsdk.VarInt, Offset: next(4, 1), Count: 1},
+		{Name: "SessionTime", Type: irsdk.VarDouble, Offset: next(8, 1), Count: 1},
+		{Name: "SessionTimeRemain", Type: irsdk.VarDouble, Offset: next(8, 1), Count: 1},
+		{Name: "SessionLapsRemain", Type: irsdk.VarInt, Offset: next(4, 1), Count: 1},
+		{Name: "IsOnTrack", Type: irsdk.VarBool, Offset: next(1, 1), Count: 1},
+		{Name: "IsOnTrackCar", Type: irsdk.VarBool, Offset: next(1, 1), Count: 1},
+		{Name: "IsInGarage", Type: irsdk.VarBool, Offset: next(1, 1), Count: 1},
+		{Name: "IsReplayPlaying", Type: irsdk.VarBool, Offset: next(1, 1), Count: 1},
+		{Name: "OnPitRoad", Type: irsdk.VarBool, Offset: next(1, 1), Count: 1},
+		{Name: "Lap", Type: irsdk.VarInt, Offset: next(4, 1), Count: 1},
+		{Name: "LapCurrentLapTime", Type: irsdk.VarFloat, Offset: next(4, 1), Count: 1},
+		{Name: "LapLastLapTime", Type: irsdk.VarFloat, Offset: next(4, 1), Count: 1},
+		{Name: "LapBestLapTime", Type: irsdk.VarFloat, Offset: next(4, 1), Count: 1},
+		{Name: "LapBestLap", Type: irsdk.VarInt, Offset: next(4, 1), Count: 1},
+		{Name: "LapDist", Type: irsdk.VarFloat, Offset: next(4, 1), Count: 1},
+		{Name: "LapDistPct", Type: irsdk.VarFloat, Offset: next(4, 1), Count: 1},
+		{Name: "FuelLevel", Type: irsdk.VarFloat, Offset: next(4, 1), Count: 1},
+		{Name: "PlayerCarPosition", Type: irsdk.VarInt, Offset: next(4, 1), Count: 1},
+		{Name: "PlayerCarClassPosition", Type: irsdk.VarInt, Offset: next(4, 1), Count: 1},
+		{Name: "CarIdxTrackSurface", Type: irsdk.VarInt, Offset: next(4, fixtureCarCount), Count: fixtureCarCount},
+		{Name: "CarIdxPosition", Type: irsdk.VarInt, Offset: next(4, fixtureCarCount), Count: fixtureCarCount},
+		{Name: "CarIdxClassPosition", Type: irsdk.VarInt, Offset: next(4, fixtureCarCount), Count: fixtureCarCount},
+		{Name: "CarIdxOnPitRoad", Type: irsdk.VarBool, Offset: next(1, fixtureCarCount), Count: fixtureCarCount},
+		{Name: "CarIdxLap", Type: irsdk.VarInt, Offset: next(4, fixtureCarCount), Count: fixtureCarCount},
+	}
+}
+
+func fixtureBufLen() int32 {
+	vh := fixtureVarHeaders()
+	last := vh[len(vh)-1]
+	return last.Offset + int32(last.Type.Size())*last.Count
+}
+
+// frameState describes one synthetic telemetry row.
+type frameState struct {
+	SessionNum   int32
+	SessionState int32
+	SessionTime  float64
+	InCar        bool
+	OnTrack      bool
+	Replay       bool
+	OnPitRoad    bool
+	Lap          int32
+	LastLapTime  float64
+	Fuel         float64
+	MyPosition   int32
+	Surfaces     [fixtureCarCount]int32
+	CarPositions [fixtureCarCount]int32
+	CarOnPitRoad [fixtureCarCount]bool
+}
+
+// encode renders a frameState as a raw variable row matching fixtureVarHeaders.
+func (s frameState) encode() []byte {
+	vh := fixtureVarHeaders()
+	byName := map[string]irsdk.VarHeader{}
+	for _, v := range vh {
+		byName[v.Name] = v
+	}
+	buf := make([]byte, fixtureBufLen())
+
+	putI := func(name string, i int, v int32) {
+		h := byName[name]
+		binary.LittleEndian.PutUint32(buf[int(h.Offset)+i*4:], uint32(v))
+	}
+	putF := func(name string, v float64) {
+		h := byName[name]
+		binary.LittleEndian.PutUint32(buf[h.Offset:], math.Float32bits(float32(v)))
+	}
+	putD := func(name string, v float64) {
+		h := byName[name]
+		binary.LittleEndian.PutUint64(buf[h.Offset:], math.Float64bits(v))
+	}
+	putB := func(name string, i int, v bool) {
+		h := byName[name]
+		if v {
+			buf[int(h.Offset)+i] = 1
+		}
+	}
+
+	putI("SessionNum", 0, s.SessionNum)
+	putI("SessionState", 0, s.SessionState)
+	putD("SessionTime", s.SessionTime)
+	putD("SessionTimeRemain", 0)
+	putI("SessionLapsRemain", 0, 0)
+	putB("IsOnTrack", 0, s.OnTrack)
+	putB("IsOnTrackCar", 0, s.InCar)
+	putB("IsInGarage", 0, false)
+	putB("IsReplayPlaying", 0, s.Replay)
+	putB("OnPitRoad", 0, s.OnPitRoad)
+	putI("Lap", 0, s.Lap)
+	putF("LapCurrentLapTime", 0)
+	putF("LapLastLapTime", s.LastLapTime)
+	putF("LapBestLapTime", 0)
+	putI("LapBestLap", 0, 0)
+	putF("LapDist", 0)
+	putF("LapDistPct", 0)
+	putF("FuelLevel", s.Fuel)
+	putI("PlayerCarPosition", 0, s.MyPosition)
+	putI("PlayerCarClassPosition", 0, s.MyPosition)
+	for i := 0; i < fixtureCarCount; i++ {
+		putI("CarIdxTrackSurface", i, s.Surfaces[i])
+		putI("CarIdxPosition", i, s.CarPositions[i])
+		putI("CarIdxClassPosition", i, s.CarPositions[i])
+		putB("CarIdxOnPitRoad", i, s.CarOnPitRoad[i])
+		putI("CarIdxLap", i, s.Lap)
+	}
+	return buf
+}
+
+// fixture describes a capture to build: YAML blobs interleaved with frames.
+type fixture struct {
+	entries []fixtureEntry
+}
+
+type fixtureEntry struct {
+	t     float64
+	yaml  string
+	frame *frameState
+}
+
+func (f *fixture) yamlAt(t float64, y string) {
+	f.entries = append(f.entries, fixtureEntry{t: t, yaml: y})
+}
+
+func (f *fixture) frameAt(t float64, s frameState) {
+	s.SessionTime = t
+	f.entries = append(f.entries, fixtureEntry{t: t, frame: &s})
+}
+
+// write builds the capture file and returns its path.
+func (f *fixture) write(t *testing.T, name string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	m := capture.Meta{
+		TickRate:   60,
+		NumVars:    int32(len(fixtureVarHeaders())),
+		BufLen:     fixtureBufLen(),
+		VarHeaders: fixtureVarHeaders(),
+	}
+	w, err := capture.NewWriter(path, m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	update := uint32(0)
+	tick := uint32(0)
+	for _, e := range f.entries {
+		if e.frame != nil {
+			tick += 60
+			if err := w.WriteVars(e.t, tick, e.frame.encode()); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		update++
+		if err := w.WriteSession(e.t, update, []byte(e.yaml)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// onTrackSurfaces returns an all-on-track surface array.
+func onTrackSurfaces() [fixtureCarCount]int32 {
+	var s [fixtureCarCount]int32
+	for i := range s {
+		s[i] = int32(irsdk.OnTrack)
+	}
+	return s
+}
+```
+
+- [ ] **Step 3: Write the failing collector test**
+
+Create `internal/collector/collector_test.go`:
+
+```go
+package collector
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/blezek/lapdog/internal/source"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+const practiceYAML = `---
+WeekendInfo:
+ TrackID: 18
+ TrackDisplayName: Watkins Glen International
+ TrackConfigName: Boot
+ TrackLength: 5.43 km
+ SubSessionID: 900001
+ LeagueID: 0
+ Official: 1
+ SimMode: full
+SessionInfo:
+ NumSessions: 1
+ Sessions:
+ - SessionNum: 0
+   SessionType: Open Practice
+DriverInfo:
+ DriverCarIdx: 0
+ Drivers:
+ - CarIdx: 0
+   UserName: Test Driver
+   CarID: 173
+   CarScreenName: Porsche 911 GT3 R
+   CarClassID: 2523
+   CarClassShortName: GT3
+...
+`
+
+const raceWeekendYAML = `---
+WeekendInfo:
+ TrackID: 341
+ TrackDisplayName: Circuit de Spa-Francorchamps
+ TrackLength: 7.00 km
+ SubSessionID: 900002
+ LeagueID: 0
+ Official: 1
+ SimMode: full
+SessionInfo:
+ NumSessions: 2
+ Sessions:
+ - SessionNum: 0
+   SessionType: Practice
+ - SessionNum: 1
+   SessionType: Race
+DriverInfo:
+ DriverCarIdx: 0
+ Drivers:
+ - CarIdx: 0
+   UserName: Test Driver
+   CarID: 173
+   CarScreenName: Porsche 911 GT3 R
+   CarClassID: 2523
+   CarClassShortName: GT3
+ - CarIdx: 1
+   UserName: Rival Driver
+   CarID: 173
+   CarScreenName: Porsche 911 GT3 R
+...
+`
+
+// newTestCollector wires a collector over a replay fixture and a temp store.
+func newTestCollector(t *testing.T, fixturePath string, opts func(*Options)) (*Collector, *store.Store) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	src, err := source.NewReplay(fixturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	o := Options{
+		Source:     src,
+		Store:      st,
+		Clock:      NewFakeClock(time.Date(2026, 8, 4, 19, 0, 0, 0, time.UTC)),
+		Interval:   time.Second,
+		MinSession: 0,
+		Logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	if opts != nil {
+		opts(&o)
+	}
+	c, err := New(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return c, st
+}
+
+func TestCollectorRecordsPracticeSession(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 60; i++ {
+		s := base
+		s.Lap = 1
+		f.frameAt(float64(i), s)
+	}
+	path := f.write(t, "practice.lpd")
+
+	c, st := newTestCollector(t, path, nil)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	rows, total, err := st.ListSessions(store.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("sessions = %d, want 1", total)
+	}
+	g := rows[0]
+	if g.SessionType != "Practice" || g.EventContext != "OfficialPractice" {
+		t.Errorf("classification = %q/%q, want Practice/OfficialPractice", g.SessionType, g.EventContext)
+	}
+	if g.SessionKey != "900001/0" {
+		t.Errorf("SessionKey = %q, want 900001/0", g.SessionKey)
+	}
+	// 61 frames one second apart = 60 seconds of elapsed time.
+	if g.ConnectedSeconds != 60 || g.DrivingSeconds != 60 {
+		t.Errorf("connected=%v driving=%v, want 60 and 60", g.ConnectedSeconds, g.DrivingSeconds)
+	}
+	if g.TrackName == nil || *g.TrackName != "Watkins Glen International" {
+		t.Errorf("TrackName = %v", g.TrackName)
+	}
+	if g.CarName == nil || *g.CarName != "Porsche 911 GT3 R" {
+		t.Errorf("CarName = %v", g.CarName)
+	}
+	if g.EndedAt == nil {
+		t.Error("EndedAt is nil; the session must be closed when the source ends")
+	}
+	if g.ClassifySourceJSON == "" || g.ClassifySourceJSON == "{}" {
+		t.Error("ClassifySourceJSON was not captured")
+	}
+}
+
+func TestCollectorRecordsLaps(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, MyPosition: 1, Surfaces: onTrackSurfaces()}
+
+	tt := 0.0
+	fuel := 50.0
+	for lap := int32(1); lap <= 3; lap++ {
+		for i := 0; i < 5; i++ {
+			s := base
+			s.Lap = lap
+			s.Fuel = fuel
+			fuel -= 0.4
+			f.frameAt(tt, s)
+			tt++
+		}
+		// The crossing frame carries the completed lap's time.
+		s := base
+		s.Lap = lap + 1
+		s.LastLapTime = 102.0 + float64(lap)*0.5
+		s.Fuel = fuel
+		f.frameAt(tt, s)
+		tt++
+	}
+	path := f.write(t, "laps.lpd")
+
+	c, st := newTestCollector(t, path, nil)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, _, _ := st.ListSessions(store.Filter{})
+	if len(rows) != 1 {
+		t.Fatalf("sessions = %d, want 1", len(rows))
+	}
+	laps, err := st.LapsForSession(rows[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(laps) != 3 {
+		t.Fatalf("laps = %d, want 3", len(laps))
+	}
+	if laps[0].LapNumber != 1 || laps[0].LapTimeS == nil {
+		t.Errorf("laps[0] = %+v", laps[0])
+	}
+	if rows[0].LapsCompleted != 3 {
+		t.Errorf("LapsCompleted = %d, want 3", rows[0].LapsCompleted)
+	}
+	// Best is the fastest of 102.5, 103.0, 103.5.
+	if rows[0].BestLapTimeS == nil || *rows[0].BestLapTimeS > 102.6 {
+		t.Errorf("BestLapTimeS = %v, want about 102.5", rows[0].BestLapTimeS)
+	}
+	if laps[0].FuelUsedL == nil {
+		t.Error("FuelUsedL is nil; fuel was decreasing so a delta was available")
+	}
+}
+
+// SessionNum advancing within one subsession must close one segment and
+// open another, not extend the first.
+func TestCollectorSplitsOnSessionNumChange(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, raceWeekendYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 2, Surfaces: onTrackSurfaces()}
+
+	for i := 0; i <= 20; i++ {
+		s := base
+		s.SessionNum = 0
+		s.Lap = 1
+		f.frameAt(float64(i), s)
+	}
+	for i := 21; i <= 50; i++ {
+		s := base
+		s.SessionNum = 1
+		s.SessionState = 4 // racing
+		s.Lap = 1
+		f.frameAt(float64(i), s)
+	}
+	path := f.write(t, "weekend.lpd")
+
+	c, st := newTestCollector(t, path, nil)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, total, _ := st.ListSessions(store.Filter{})
+	if total != 2 {
+		t.Fatalf("sessions = %d, want 2 — practice and race are separate segments", total)
+	}
+	byKey := map[string]store.Session{}
+	for _, r := range rows {
+		byKey[r.SessionKey] = r
+	}
+	practice, ok := byKey["900002/0"]
+	if !ok {
+		t.Fatal("no practice segment recorded")
+	}
+	race, ok := byKey["900002/1"]
+	if !ok {
+		t.Fatal("no race segment recorded")
+	}
+	// Practice sits inside a weekend containing a race, so it is race practice.
+	if practice.EventContext != "OfficialRace" || practice.SessionType != "Practice" {
+		t.Errorf("practice = %q/%q, want Practice/OfficialRace", practice.SessionType, practice.EventContext)
+	}
+	if race.SessionType != "Race" {
+		t.Errorf("race SessionType = %q", race.SessionType)
+	}
+	if practice.EndedAt == nil {
+		t.Error("the practice segment was not closed when SessionNum advanced")
+	}
+}
+
+// Position events are recorded in races and not in practice.
+func TestCollectorRecordsPositionEventsInRacesOnly(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, raceWeekendYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, Surfaces: onTrackSurfaces()}
+
+	// Practice: position changes here must be ignored.
+	for i := 0; i <= 10; i++ {
+		s := base
+		s.SessionNum = 0
+		s.Lap = 1
+		s.MyPosition = int32(1 + i%2)
+		s.CarPositions = [fixtureCarCount]int32{int32(1 + i%2), int32(2 - i%2), 3, 4}
+		f.frameAt(float64(i), s)
+	}
+	// Race: I am P2, then pass the P1 car which is on track.
+	for i := 11; i <= 20; i++ {
+		s := base
+		s.SessionNum = 1
+		s.SessionState = 4
+		s.Lap = 2
+		s.MyPosition = 2
+		s.CarPositions = [fixtureCarCount]int32{2, 1, 3, 4}
+		f.frameAt(float64(i), s)
+	}
+	for i := 21; i <= 30; i++ {
+		s := base
+		s.SessionNum = 1
+		s.SessionState = 4
+		s.Lap = 2
+		s.MyPosition = 1
+		s.CarPositions = [fixtureCarCount]int32{1, 2, 3, 4}
+		f.frameAt(float64(i), s)
+	}
+	path := f.write(t, "positions.lpd")
+
+	c, st := newTestCollector(t, path, nil)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, _, _ := st.ListSessions(store.Filter{})
+	for _, r := range rows {
+		evs, err := st.PositionEventsForSession(r.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch r.SessionType {
+		case "Practice":
+			if len(evs) != 0 {
+				t.Errorf("practice recorded %d position events, want 0", len(evs))
+			}
+		case "Race":
+			if len(evs) != 1 {
+				t.Fatalf("race recorded %d position events, want 1", len(evs))
+			}
+			ev := evs[0]
+			if ev.FromPosition != 2 || ev.ToPosition != 1 {
+				t.Errorf("event = %d -> %d, want 2 -> 1", ev.FromPosition, ev.ToPosition)
+			}
+			if ev.Cause != store.CauseOnTrack {
+				t.Errorf("Cause = %q, want OnTrack", ev.Cause)
+			}
+			if ev.OpponentName == nil || *ev.OpponentName != "Rival Driver" {
+				t.Errorf("OpponentName = %v", ev.OpponentName)
+			}
+		}
+	}
+}
+
+// Replay frames must contribute no time at all.
+func TestCollectorExcludesReplayTime(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 1, Lap: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 10; i++ {
+		f.frameAt(float64(i), base)
+	}
+	for i := 11; i <= 40; i++ {
+		s := base
+		s.Replay = true
+		f.frameAt(float64(i), s)
+	}
+	for i := 41; i <= 50; i++ {
+		f.frameAt(float64(i), base)
+	}
+	path := f.write(t, "replay.lpd")
+
+	c, st := newTestCollector(t, path, nil)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	rows, _, _ := st.ListSessions(store.Filter{})
+	if len(rows) != 1 {
+		t.Fatalf("sessions = %d", len(rows))
+	}
+	// 10 seconds before plus 10 after; the 30 replay seconds contribute nothing.
+	if rows[0].DrivingSeconds != 20 {
+		t.Errorf("DrivingSeconds = %v, want 20 — replay time must be excluded", rows[0].DrivingSeconds)
+	}
+}
+
+// A session below the minimum length is discarded entirely.
+func TestCollectorDropsTooShortSession(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 1, Lap: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 5; i++ {
+		f.frameAt(float64(i), base)
+	}
+	path := f.write(t, "short.lpd")
+
+	c, st := newTestCollector(t, path, func(o *Options) {
+		o.MinSession = 30 * time.Second
+	})
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	_, total, _ := st.ListSessions(store.Filter{})
+	if total != 0 {
+		t.Errorf("sessions = %d, want 0 — a 5 second session is below the 30 second minimum", total)
+	}
+}
+
+// A missing required variable means the session is not recorded, and the
+// omission is surfaced rather than silently producing wrong data.
+func TestCollectorRefusesSessionWithMissingRequiredVariable(t *testing.T) {
+	// Build a capture whose layout omits FuelLevel.
+	var vh []irsdk.VarHeader
+	for _, v := range fixtureVarHeaders() {
+		if v.Name == "FuelLevel" {
+			continue
+		}
+		vh = append(vh, v)
+	}
+	path := filepath.Join(t.TempDir(), "missing.lpd")
+	w, err := capture.NewWriter(path, capture.Meta{
+		TickRate: 60, NumVars: int32(len(vh)), BufLen: fixtureBufLen(), VarHeaders: vh,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := w.WriteSession(0, 1, []byte(practiceYAML)); err != nil {
+		t.Fatal(err)
+	}
+	base := frameState{InCar: true, OnTrack: true, MyPosition: 1, Lap: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 60; i++ {
+		if err := w.WriteVars(float64(i), uint32(i*60), base.encode()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	w.Close()
+
+	c, st := newTestCollector(t, path, nil)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run must not fail on a missing variable, only refuse the session: %v", err)
+	}
+	_, total, _ := st.ListSessions(store.Filter{})
+	if total != 0 {
+		t.Errorf("sessions = %d, want 0 — the session must be refused", total)
+	}
+	if got := c.Status().MissingVars; len(got) == 0 {
+		t.Error("Status().MissingVars is empty; the omission must be surfaced")
+	} else {
+		found := false
+		for _, n := range got {
+			if n == "FuelLevel" {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("MissingVars = %v, want it to name FuelLevel", got)
+		}
+	}
+}
+
+func TestCollectorWritesCaptureFile(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 1, Lap: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 40; i++ {
+		f.frameAt(float64(i), base)
+	}
+	path := f.write(t, "in.lpd")
+
+	capDir := filepath.Join(t.TempDir(), "captures")
+	c, st := newTestCollector(t, path, func(o *Options) {
+		o.CaptureEnabled = true
+		o.CaptureDir = capDir
+		o.CaptureMaxBytes = 1 << 30
+	})
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := filepath.Glob(filepath.Join(capDir, "*.lpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("capture files = %d, want 1", len(entries))
+	}
+	// The session row must name the capture it was recorded alongside.
+	rows, _, _ := st.ListSessions(store.Filter{})
+	if rows[0].CaptureFile == nil {
+		t.Error("CaptureFile is nil on the session row")
+	}
+	// The written capture must itself be replayable.
+	src, err := source.NewReplay(entries[0])
+	if err != nil {
+		t.Fatalf("the capture the collector wrote is not replayable: %v", err)
+	}
+	src.Close()
+}
+
+func TestCollectorStatusReportsProgress(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 1, Lap: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 40; i++ {
+		f.frameAt(float64(i), base)
+	}
+	c, _ := newTestCollector(t, f.write(t, "status.lpd"), nil)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	s := c.Status()
+	if s.SessionLabel != "Public Practice" {
+		t.Errorf("SessionLabel = %q, want Public Practice", s.SessionLabel)
+	}
+	if s.TrackName != "Watkins Glen International" {
+		t.Errorf("TrackName = %q", s.TrackName)
+	}
+	if s.IntervalSeconds != 1 {
+		t.Errorf("IntervalSeconds = %v, want 1", s.IntervalSeconds)
+	}
+}
+
+func TestCollectorContextCancellationFlushes(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 1, Lap: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 500; i++ {
+		f.frameAt(float64(i), base)
+	}
+	c, st := newTestCollector(t, f.write(t, "cancel.lpd"), nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	// Cancel after the first flush interval has certainly passed.
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+	if err := c.Run(ctx); err != nil && err != context.Canceled {
+		t.Fatalf("Run: %v", err)
+	}
+	// Whatever was accumulated must have been written, not lost.
+	_, total, _ := st.ListSessions(store.Filter{})
+	if total == 0 {
+		t.Error("no session written after cancellation; the final flush did not run")
+	}
+}
+
+func TestCollectorPausedRecordsNothing(t *testing.T) {
+	var f fixture
+	f.yamlAt(0, practiceYAML)
+	base := frameState{InCar: true, OnTrack: true, Fuel: 50, MyPosition: 1, Lap: 1, Surfaces: onTrackSurfaces()}
+	for i := 0; i <= 60; i++ {
+		f.frameAt(float64(i), base)
+	}
+	c, st := newTestCollector(t, f.write(t, "paused.lpd"), nil)
+	c.SetPaused(true)
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, total, _ := st.ListSessions(store.Filter{}); total != 0 {
+		t.Errorf("sessions = %d, want 0 while paused", total)
+	}
+	if !c.Status().Paused {
+		t.Error("Status().Paused = false after SetPaused(true)")
+	}
+}
+
+func TestNewRejectsMissingDependencies(t *testing.T) {
+	if _, err := New(Options{}); err == nil {
+		t.Error("New with no Source or Store = nil error, want an error")
+	}
+}
+```
+
+- [ ] **Step 4: Run test to verify it fails**
+
+Run: `go test ./internal/collector/ -run Collector -v`
+Expected: FAIL — build error, `undefined: New`, `undefined: Options`.
+
+- [ ] **Step 5: Write the collector**
+
+Create `internal/collector/collector.go`:
+
+```go
+package collector
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/blezek/lapdog/internal/capture"
+	"github.com/blezek/lapdog/internal/classify"
+	"github.com/blezek/lapdog/internal/sessionyaml"
+	"github.com/blezek/lapdog/internal/source"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+// FlushIntervalSeconds is how much frame time may accumulate before the
+// active session is written to the database. A crash therefore loses at
+// most this much accounted time.
+const FlushIntervalSeconds = 10
+
+// Options configures a Collector.
+type Options struct {
+	Source source.Source
+	Store  *store.Store
+	Clock  Clock
+
+	Interval   time.Duration
+	MinSession time.Duration
+
+	CaptureEnabled  bool
+	CaptureDir      string
+	CaptureMaxBytes int64
+
+	Logger *slog.Logger
+}
+
+// Status is a snapshot of what the collector is doing, for the tray and
+// the settings screen.
+type Status struct {
+	Connected       bool     `json:"connected"`
+	Paused          bool     `json:"paused"`
+	IntervalSeconds float64  `json:"intervalSeconds"`
+	SessionKey      string   `json:"sessionKey"`
+	SessionLabel    string   `json:"sessionLabel"`
+	TrackName       string   `json:"trackName"`
+	CarName         string   `json:"carName"`
+	DrivingSeconds  float64  `json:"drivingSeconds"`
+	Laps            int      `json:"laps"`
+	MissingVars     []string `json:"missingVars"`
+	IncidentSource  string   `json:"incidentSource"`
+}
+
+// Collector polls a telemetry source and records sessions, laps and
+// position events.
+type Collector struct {
+	src   source.Source
+	st    *store.Store
+	clock Clock
+	log   *slog.Logger
+
+	captureEnabled  bool
+	captureDir      string
+	captureMaxBytes int64
+
+	mu         sync.Mutex
+	interval   time.Duration
+	minSession time.Duration
+	paused     bool
+	status     Status
+
+	// Active segment state. Nil segment means nothing is being recorded.
+	seg        *Segment
+	lapDet     *LapDetector
+	posDet     *PositionDetector
+	info       *sessionyaml.Info
+	capWriter  *capture.Writer
+	refused    bool
+	lastFlushT float64
+}
+
+// New validates the options and returns a Collector.
+func New(opts Options) (*Collector, error) {
+	if opts.Source == nil {
+		return nil, errors.New("collector: Source is required")
+	}
+	if opts.Store == nil {
+		return nil, errors.New("collector: Store is required")
+	}
+	if opts.Clock == nil {
+		opts.Clock = RealClock{}
+	}
+	if opts.Logger == nil {
+		opts.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	if opts.Interval <= 0 {
+		opts.Interval = time.Second
+	}
+
+	c := &Collector{
+		src:             opts.Source,
+		st:              opts.Store,
+		clock:           opts.Clock,
+		log:             opts.Logger,
+		captureEnabled:  opts.CaptureEnabled,
+		captureDir:      opts.CaptureDir,
+		captureMaxBytes: opts.CaptureMaxBytes,
+		interval:        opts.Interval,
+		minSession:      opts.MinSession,
+		lapDet:          NewLapDetector(),
+		posDet:          NewPositionDetector(),
+	}
+	c.status.IntervalSeconds = opts.Interval.Seconds()
+	c.applyIntervalToSource(opts.Interval)
+	return c, nil
+}
+
+// SetInterval changes the poll rate, taking effect on the next poll.
+func (c *Collector) SetInterval(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	c.mu.Lock()
+	c.interval = d
+	c.status.IntervalSeconds = d.Seconds()
+	c.mu.Unlock()
+	c.applyIntervalToSource(d)
+}
+
+// applyIntervalToSource forwards the poll rate to sources that pace
+// themselves. The replay source does not, which is what lets a captured
+// race run through as fast as the CPU allows.
+func (c *Collector) applyIntervalToSource(d time.Duration) {
+	if p, ok := c.src.(source.Paced); ok {
+		p.SetInterval(d)
+	}
+}
+
+// SetPaused stops or resumes recording without exiting.
+func (c *Collector) SetPaused(p bool) {
+	c.mu.Lock()
+	c.paused = p
+	c.status.Paused = p
+	c.mu.Unlock()
+	if p {
+		c.closeSegment()
+	}
+}
+
+// Status returns a snapshot of the collector's state.
+func (c *Collector) Status() Status {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	s := c.status
+	s.MissingVars = append([]string(nil), c.status.MissingVars...)
+	return s
+}
+
+// Run polls the source until it is exhausted or ctx is cancelled.
+//
+// Pacing is the source's responsibility: the live source blocks for the
+// poll interval inside Next, and the replay source returns immediately.
+// Run therefore contains no timer.
+func (c *Collector) Run(ctx context.Context) error {
+	defer c.closeSegment()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+		}
+
+		frame, err := c.src.Next()
+		switch {
+		case errors.Is(err, io.EOF):
+			return nil
+		case errors.Is(err, source.ErrDisconnected):
+			// The sim not running is the normal state, not a failure.
+			c.setConnected(false)
+			c.closeSegment()
+			continue
+		case err != nil:
+			c.log.Warn("telemetry read failed", "err", err)
+			continue
+		}
+		c.setConnected(true)
+
+		if c.isPaused() {
+			continue
+		}
+		if err := c.handle(frame); err != nil {
+			c.log.Error("frame handling failed", "err", err)
+		}
+	}
+}
+
+// handle processes one frame.
+func (c *Collector) handle(f source.Frame) error {
+	if f.YAMLChanged || c.info == nil {
+		if info, err := sessionyaml.Parse(f.SessionYAML); err == nil {
+			c.info = info
+		} else if c.info == nil {
+			// Without any session YAML there is nothing to classify or key
+			// on, so this frame cannot be attributed to a session.
+			c.log.Warn("session YAML unparseable and none cached", "err", err)
+			return nil
+		}
+	}
+
+	sessionNum := 0
+	if v, ok := f.Row.Int("SessionNum"); ok {
+		sessionNum = int(v)
+	}
+	subsession := c.info.WeekendInfo.SubSessionID
+
+	// A change in either identity component starts a new segment.
+	if c.seg != nil && (c.seg.SessionNum != sessionNum || c.seg.SubsessionID != subsession) {
+		c.closeSegment()
+	}
+
+	if c.seg == nil {
+		if err := c.openSegment(f, sessionNum); err != nil {
+			return err
+		}
+	}
+	if c.refused {
+		return nil
+	}
+	if f.YAMLChanged {
+		c.seg.ApplyInfo(c.info)
+	}
+
+	sample, ok := SampleFrom(f.Row, c.info.DriverInfo.DriverCarIdx)
+	if !ok {
+		return nil
+	}
+	sample.T = f.T
+	c.seg.Acct.Add(sample)
+
+	if c.capWriter != nil {
+		if err := c.writeCapture(f); err != nil {
+			// Capture must never cost session data, so disable it and
+			// carry on recording to the database.
+			c.log.Warn("capture write failed, disabling capture for this run", "err", err)
+			c.capWriter.Close()
+			c.capWriter = nil
+			c.captureEnabled = false
+		}
+	}
+
+	c.observeIncidents(f)
+	c.observeLaps(f)
+	c.observePositions(f)
+	c.observeStartingPosition(f)
+
+	if f.T-c.lastFlushT >= FlushIntervalSeconds {
+		c.lastFlushT = f.T
+		if err := c.flush(); err != nil {
+			return err
+		}
+	}
+	c.refreshStatus()
+	return nil
+}
+
+// openSegment begins recording a new session segment.
+func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
+	c.refused = false
+	c.lapDet.Reset()
+	c.posDet.Reset()
+	c.lastFlushT = f.T
+
+	// Refuse the session outright if a required variable is absent, rather
+	// than recording data that would be wrong.
+	need := append([]string(nil), RequiredCoreVars...)
+	seg := NewSegment(c.info, sessionNum, c.clock.Now(), c.pollInterval())
+	if seg.IsRace() {
+		need = append(need, RequiredRaceVars...)
+	}
+	if missing := MissingVars(f.Row, need); len(missing) > 0 {
+		c.refused = true
+		c.mu.Lock()
+		c.status.MissingVars = missing
+		c.mu.Unlock()
+		c.log.Error("refusing to record session: required telemetry variables absent",
+			"missing", strings.Join(missing, ","), "session", seg.Key)
+		return nil
+	}
+
+	c.mu.Lock()
+	c.status.MissingVars = nil
+	c.mu.Unlock()
+
+	// The live incident variable is preferred when present because it
+	// updates continuously rather than only when the YAML does.
+	seg.SetIncidentSource(f.Row.Has(OptionalIncidentVar))
+	c.seg = seg
+
+	if c.captureEnabled && c.captureDir != "" {
+		if err := c.openCapture(seg); err != nil {
+			c.log.Warn("could not start capture, continuing without it", "err", err)
+		}
+	}
+	c.log.Info("recording session",
+		"key", seg.Key,
+		"label", classify.Label(seg.Class.SessionType, seg.Class.EventContext))
+	return nil
+}
+
+// observeIncidents updates the segment's incident count from the live
+// variable, when the sim publishes one.
+func (c *Collector) observeIncidents(f source.Frame) {
+	if v, ok := f.Row.Int(OptionalIncidentVar); ok {
+		c.seg.NoteIncidents(int(v))
+	}
+}
+
+// observeLaps records any lap crossed on this frame.
+func (c *Collector) observeLaps(f source.Frame) {
+	var best *float64
+	if v, ok := c.seg.BestLapTimeS(); ok {
+		best = &v
+	}
+	incidents := c.seg.ToStore().Incidents
+
+	lap, ok := c.lapDet.Observe(f.Row, incidents, best)
+	if !ok || lap == nil {
+		return
+	}
+	// The segment must exist in the database before a lap can reference it.
+	if err := c.flush(); err != nil {
+		c.log.Error("flush before lap insert failed", "err", err)
+		return
+	}
+	lap.SessionID = c.seg.StoreID
+	if _, err := c.st.InsertLap(lap); err != nil {
+		c.log.Error("lap insert failed", "lap", lap.LapNumber, "err", err)
+		return
+	}
+	t := 0.0
+	if lap.LapTimeS != nil {
+		t = *lap.LapTimeS
+	}
+	c.seg.NoteLap(lap.LapNumber, t)
+}
+
+// observePositions records position changes, in races only.
+func (c *Collector) observePositions(f source.Frame) {
+	if !c.seg.IsRace() {
+		return
+	}
+	ev, ok := c.posDet.Observe(f.Row, c.info.DriverInfo.DriverCarIdx, f.T, c.info)
+	if !ok || ev == nil {
+		return
+	}
+	if err := c.flush(); err != nil {
+		c.log.Error("flush before position insert failed", "err", err)
+		return
+	}
+	ev.SessionID = c.seg.StoreID
+	if _, err := c.st.InsertPositionEvent(ev); err != nil {
+		c.log.Error("position event insert failed", "err", err)
+	}
+}
+
+// observeStartingPosition captures the grid slot at the green flag, which
+// differs from the qualifying position after a pit-lane start or a penalty.
+func (c *Collector) observeStartingPosition(f source.Frame) {
+	if !c.seg.IsRace() {
+		return
+	}
+	state, ok := f.Row.Int("SessionState")
+	if !ok || state < 4 { // irsdk_StateRacing
+		return
+	}
+	if p, ok := f.Row.Int("PlayerCarPosition"); ok {
+		c.seg.NoteStartingPosition(int(p))
+	}
+}
+
+// flush writes the active segment to the database.
+func (c *Collector) flush() error {
+	if c.seg == nil || c.refused {
+		return nil
+	}
+	rec := c.seg.ToStore()
+	id, err := c.st.UpsertSession(rec)
+	if err != nil {
+		return fmt.Errorf("collector: upsert session %s: %w", c.seg.Key, err)
+	}
+	c.seg.StoreID = id
+	return nil
+}
+
+// closeSegment ends the active segment, discarding it if it is too short.
+func (c *Collector) closeSegment() {
+	if c.capWriter != nil {
+		c.capWriter.Close()
+		c.capWriter = nil
+		c.pruneCaptures()
+	}
+	if c.seg == nil {
+		return
+	}
+	seg := c.seg
+	c.seg = nil
+
+	if c.refused {
+		c.refused = false
+		return
+	}
+
+	seg.End(c.clock.Now())
+	if seg.TooShort(c.minSessionLen()) {
+		// Below the minimum length: an accidental join, not a session. If
+		// it was already flushed, remove it.
+		if seg.StoreID != 0 {
+			if err := c.st.DeleteSession(seg.StoreID); err != nil {
+				c.log.Warn("could not remove a too-short session", "err", err)
+			}
+		}
+		c.log.Info("discarding session below the minimum length",
+			"key", seg.Key, "connectedSeconds", seg.Acct.Connected)
+		return
+	}
+
+	c.seg = seg
+	if err := c.flush(); err != nil {
+		c.log.Error("final flush failed", "err", err)
+	}
+	c.seg = nil
+	if seg.Acct.Clamped > 0 {
+		c.log.Warn("poll gaps were clamped during this session",
+			"key", seg.Key, "count", seg.Acct.Clamped)
+	}
+}
+
+// openCapture starts a capture file for the segment.
+func (c *Collector) openCapture(seg *Segment) error {
+	if err := os.MkdirAll(c.captureDir, 0o755); err != nil {
+		return fmt.Errorf("collector: create capture directory: %w", err)
+	}
+	// Colons are illegal in Windows filenames, so the timestamp is
+	// flattened rather than used verbatim.
+	stamp := strings.NewReplacer(":", "", "-", "").Replace(store.FormatTime(seg.StartedAt))
+	name := fmt.Sprintf("%s-%d-%d%s", stamp, seg.SubsessionID, seg.SessionNum, capture.Ext)
+	path := filepath.Join(c.captureDir, name)
+
+	meta := c.src.Meta()
+	w, err := capture.NewWriter(path, meta)
+	if err != nil {
+		return err
+	}
+	c.capWriter = w
+	seg.SetCaptureFile(name)
+	return nil
+}
+
+// writeCapture records this frame into the active capture file.
+func (c *Collector) writeCapture(f source.Frame) error {
+	if f.YAMLChanged {
+		if err := c.capWriter.WriteSession(f.T, f.SessionUpdate, f.SessionYAML); err != nil {
+			return err
+		}
+	}
+	return c.capWriter.WriteVars(f.T, f.TickCount, f.Row.Raw())
+}
+
+// pruneCaptures enforces the capture retention cap.
+func (c *Collector) pruneCaptures() {
+	if c.captureDir == "" || c.captureMaxBytes <= 0 {
+		return
+	}
+	removed, freed, err := capture.PruneDir(c.captureDir, c.captureMaxBytes, "")
+	if err != nil {
+		c.log.Warn("capture pruning failed", "err", err)
+		return
+	}
+	if removed > 0 {
+		c.log.Info("pruned old captures", "files", removed, "bytes", freed)
+	}
+}
+
+// refreshStatus updates the snapshot the UI reads.
+func (c *Collector) refreshStatus() {
+	if c.seg == nil {
+		return
+	}
+	rec := c.seg.ToStore()
+	label := classify.Label(c.seg.Class.SessionType, c.seg.Class.EventContext)
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status.SessionKey = c.seg.Key
+	c.status.SessionLabel = label
+	c.status.DrivingSeconds = c.seg.Acct.Driving
+	c.status.Laps = rec.LapsCompleted
+	c.status.IncidentSource = rec.IncidentSource
+	if rec.TrackName != nil {
+		c.status.TrackName = *rec.TrackName
+	}
+	if rec.CarName != nil {
+		c.status.CarName = *rec.CarName
+	}
+}
+
+func (c *Collector) setConnected(v bool) {
+	c.mu.Lock()
+	c.status.Connected = v
+	c.mu.Unlock()
+}
+
+func (c *Collector) isPaused() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.paused
+}
+
+func (c *Collector) pollInterval() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.interval
+}
+
+func (c *Collector) minSessionLen() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.minSession
+}
+```
+
+- [ ] **Step 6: Add Row.Raw to the irsdk package**
+
+`writeCapture` needs the underlying bytes to record them verbatim. In
+`internal/irsdk/decode.go`, add:
+
+```go
+// Raw returns the row's backing bytes, for callers that need to store the
+// row verbatim rather than decode it. The slice is not copied.
+func (r Row) Raw() []byte { return r.data }
+```
+
+- [ ] **Step 7: Run test to verify it passes**
+
+Run: `go test ./internal/collector/ -v`
+Expected: PASS, all tests from Tasks 14–18.
+
+- [ ] **Step 8: Run the whole suite with the race detector**
+
+Run: `go test -race ./...`
+Expected: PASS with no race reports. `Status` is read from the HTTP goroutine while `Run` writes it, so the mutex discipline matters here.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/collector/ internal/source/ internal/irsdk/
+git commit -m "Add collector poll loop with flushing and capture integration"
+```
