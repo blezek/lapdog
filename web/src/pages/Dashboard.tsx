@@ -188,8 +188,13 @@ function CarAndTrackBreakdown() {
  * The lightest step means near zero and is allowed to recede toward the surface;
  * the table view is what makes the values readable regardless.
  */
-/** CellMax is the preferred cell size; the grid only goes below it to avoid clipping. */
-const CellMax = 14
+/**
+ * CellMax is the preferred cell size; the grid only goes below it to avoid clipping.
+ *
+ * The panel height in styles.css is seven of these plus the labels and the scale, so
+ * the two move together — raising this without the height crops the bottom rows.
+ */
+const CellMax = 17
 
 /**
  * LabelGutter is the room kept either side for the weekday and year labels.

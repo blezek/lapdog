@@ -439,9 +439,10 @@ h1 {
 }
 
 .chart.calendar {
-  /* Seven 14px rows plus the month and weekday labels and the scale beneath. Sized
-     to the content so a short range does not sit in a tall empty panel. */
-  height: 158px;
+  /* Seven CellMax rows plus the month and weekday labels and the scale beneath. Sized
+     to the content so a short range does not sit in a tall empty panel, which is why
+     it is not simply a round number: it tracks the cell size in Dashboard.tsx. */
+  height: 179px;
 }
 
 .legend {
