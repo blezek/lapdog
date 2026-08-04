@@ -5431,3 +5431,620 @@ Expected: PASS, all tests.
 git add internal/store/
 git commit -m "Add session upsert with stable session_key identity"
 ```
+
+---
+
+### Task 12: Store — lap and position event writes
+
+**Files:**
+- Create: `internal/store/laps.go`, `internal/store/positions.go`
+- Test: `internal/store/laps_test.go`, `internal/store/positions_test.go`
+
+**Interfaces:**
+- Consumes: Task 10's `Store`; Task 11's `ErrNotFound`, `Now`, `Session`.
+- Produces:
+  - `type Lap struct { ID, SessionID int64; UUID string; LapNumber int; LapTimeS, DeltaToBestS, FuelUsedL, FuelLevelEndL *float64; IncidentsOnLap int; IsPitLap bool; Position, ClassPosition *int; RecordedAt string; UploadedAt *string }`
+  - `func (s *Store) InsertLap(rec *Lap) (int64, error)` — idempotent on `(session_id, lap_number)`
+  - `func (s *Store) LapsForSession(sessionID int64) ([]Lap, error)`
+  - `type Cause string` with `CauseOnTrack`, `CauseOpponentPit`, `CauseOpponentOffWorld`, `CauseUnknown`
+  - `type PositionEvent struct { ID, SessionID int64; UUID string; LapNumber int; SessionTimeS float64; FromPosition, ToPosition int; IsClass bool; OpponentCarIdx *int; OpponentName *string; Cause Cause; RecordedAt string; UploadedAt *string }`
+  - `func (s *Store) InsertPositionEvent(rec *PositionEvent) (int64, error)`
+  - `func (s *Store) PositionEventsForSession(sessionID int64) ([]PositionEvent, error)`
+
+`InsertLap` is idempotent on `(session_id, lap_number)` rather than erroring, because a collector restart mid-session can legitimately re-observe a lap it already wrote. Silently keeping the first write is correct; a duplicate-key error would crash the poll loop.
+
+- [ ] **Step 1: Write the failing lap test**
+
+Create `internal/store/laps_test.go`:
+
+```go
+package store
+
+import (
+	"errors"
+	"testing"
+)
+
+// seedSession inserts a session and returns its id, for use as a foreign key.
+func seedSession(t *testing.T, s *Store) int64 {
+	t.Helper()
+	rec := minimalSession("55667788/2")
+	id, err := s.UpsertSession(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return id
+}
+
+func TestInsertLapAndRead(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+
+	rec := &Lap{
+		SessionID:      sid,
+		LapNumber:      11,
+		LapTimeS:       f64p(102.312),
+		DeltaToBestS:   f64p(0.686),
+		FuelUsedL:      f64p(2.41),
+		FuelLevelEndL:  f64p(48.2),
+		IncidentsOnLap: 1,
+		IsPitLap:       true,
+		Position:       intp(5),
+		ClassPosition:  intp(3),
+	}
+	id, err := s.InsertLap(rec)
+	if err != nil {
+		t.Fatalf("InsertLap: %v", err)
+	}
+	if id == 0 || rec.ID != id {
+		t.Errorf("id = %d, rec.ID = %d", id, rec.ID)
+	}
+	if rec.UUID == "" || rec.RecordedAt == "" {
+		t.Errorf("UUID=%q RecordedAt=%q must be generated", rec.UUID, rec.RecordedAt)
+	}
+
+	laps, err := s.LapsForSession(sid)
+	if err != nil {
+		t.Fatalf("LapsForSession: %v", err)
+	}
+	if len(laps) != 1 {
+		t.Fatalf("len(laps) = %d, want 1", len(laps))
+	}
+	g := laps[0]
+	if g.LapNumber != 11 || g.IncidentsOnLap != 1 || !g.IsPitLap {
+		t.Errorf("lap = %+v", g)
+	}
+	if g.LapTimeS == nil || *g.LapTimeS != 102.312 {
+		t.Errorf("LapTimeS = %v", g.LapTimeS)
+	}
+	if g.FuelUsedL == nil || *g.FuelUsedL != 2.41 {
+		t.Errorf("FuelUsedL = %v", g.FuelUsedL)
+	}
+	if g.Position == nil || *g.Position != 5 {
+		t.Errorf("Position = %v", g.Position)
+	}
+}
+
+// A collector restart can re-observe a lap it already wrote. That must not
+// error, or it would crash the poll loop; the first write wins.
+func TestInsertLapIsIdempotent(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+
+	first := &Lap{SessionID: sid, LapNumber: 3, LapTimeS: f64p(100.0)}
+	if _, err := s.InsertLap(first); err != nil {
+		t.Fatal(err)
+	}
+	second := &Lap{SessionID: sid, LapNumber: 3, LapTimeS: f64p(999.9)}
+	if _, err := s.InsertLap(second); err != nil {
+		t.Fatalf("re-inserting the same lap returned an error: %v", err)
+	}
+
+	laps, err := s.LapsForSession(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(laps) != 1 {
+		t.Fatalf("len(laps) = %d, want 1", len(laps))
+	}
+	if laps[0].LapTimeS == nil || *laps[0].LapTimeS != 100.0 {
+		t.Errorf("LapTimeS = %v, want the first write (100.0) preserved", laps[0].LapTimeS)
+	}
+}
+
+// A lap with no valid time (an incomplete final lap) must still store.
+func TestInsertLapAllowsNullTime(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+	if _, err := s.InsertLap(&Lap{SessionID: sid, LapNumber: 1}); err != nil {
+		t.Fatalf("InsertLap with a nil LapTimeS: %v", err)
+	}
+	laps, _ := s.LapsForSession(sid)
+	if len(laps) != 1 || laps[0].LapTimeS != nil {
+		t.Errorf("laps = %+v, want one lap with a nil time", laps)
+	}
+}
+
+func TestLapsForSessionOrderedByLapNumber(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+	for _, n := range []int{5, 1, 3, 2, 4} {
+		if _, err := s.InsertLap(&Lap{SessionID: sid, LapNumber: n}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	laps, err := s.LapsForSession(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []int{1, 2, 3, 4, 5} {
+		if laps[i].LapNumber != want {
+			t.Errorf("laps[%d].LapNumber = %d, want %d", i, laps[i].LapNumber, want)
+		}
+	}
+}
+
+func TestInsertLapRejectsDanglingSession(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.InsertLap(&Lap{SessionID: 9999, LapNumber: 1}); err == nil {
+		t.Fatal("InsertLap with a dangling session_id succeeded, want an error")
+	}
+}
+
+func TestInsertLapNilRecord(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.InsertLap(nil); err == nil {
+		t.Fatal("InsertLap(nil) = nil, want an error")
+	}
+}
+
+func TestLapsForSessionEmpty(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+	laps, err := s.LapsForSession(sid)
+	if err != nil {
+		t.Fatalf("LapsForSession on a session with no laps = %v, want nil", err)
+	}
+	if len(laps) != 0 {
+		t.Errorf("len(laps) = %d, want 0", len(laps))
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Error("an empty result must not be ErrNotFound")
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/store/ -run Lap -v`
+Expected: FAIL — `undefined: Lap`, `undefined: (*Store).InsertLap`.
+
+- [ ] **Step 3: Write the lap store**
+
+Create `internal/store/laps.go`:
+
+```go
+package store
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/google/uuid"
+)
+
+// Lap is one row of the laps table.
+type Lap struct {
+	ID        int64
+	UUID      string
+	SessionID int64
+	LapNumber int
+
+	LapTimeS      *float64
+	DeltaToBestS  *float64
+	FuelUsedL     *float64
+	FuelLevelEndL *float64
+
+	IncidentsOnLap int
+	IsPitLap       bool
+
+	Position      *int
+	ClassPosition *int
+
+	RecordedAt string
+	UploadedAt *string
+}
+
+const lapColumns = `
+	id, uuid, session_id, lap_number,
+	lap_time_s, delta_to_best_s, fuel_used_l, fuel_level_end_l,
+	incidents_on_lap, is_pit_lap,
+	position, class_position,
+	recorded_at, uploaded_at`
+
+// InsertLap records a completed lap.
+//
+// It is idempotent on (session_id, lap_number): a collector restart can
+// legitimately re-observe a lap it already wrote, and the first write
+// wins. Returning a duplicate-key error here would crash the poll loop
+// for no benefit.
+func (s *Store) InsertLap(rec *Lap) (int64, error) {
+	if rec == nil {
+		return 0, errors.New("store: InsertLap called with nil record")
+	}
+	if rec.UUID == "" {
+		rec.UUID = uuid.NewString()
+	}
+	if rec.RecordedAt == "" {
+		rec.RecordedAt = Now()
+	}
+
+	const q = `
+INSERT INTO laps (
+	uuid, session_id, lap_number,
+	lap_time_s, delta_to_best_s, fuel_used_l, fuel_level_end_l,
+	incidents_on_lap, is_pit_lap,
+	position, class_position, recorded_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(session_id, lap_number) DO NOTHING`
+
+	if _, err := s.writer.Exec(q,
+		rec.UUID, rec.SessionID, rec.LapNumber,
+		rec.LapTimeS, rec.DeltaToBestS, rec.FuelUsedL, rec.FuelLevelEndL,
+		rec.IncidentsOnLap, rec.IsPitLap,
+		rec.Position, rec.ClassPosition, rec.RecordedAt,
+	); err != nil {
+		return 0, fmt.Errorf("store: insert lap %d of session %d: %w", rec.LapNumber, rec.SessionID, err)
+	}
+
+	// DO NOTHING means RETURNING yields no row, so read the id back. This
+	// also gives the pre-existing id when the insert was a no-op.
+	var id int64
+	if err := s.writer.QueryRow(
+		`SELECT id FROM laps WHERE session_id = ? AND lap_number = ?`,
+		rec.SessionID, rec.LapNumber,
+	).Scan(&id); err != nil {
+		return 0, fmt.Errorf("store: read back lap %d of session %d: %w", rec.LapNumber, rec.SessionID, err)
+	}
+	rec.ID = id
+	return id, nil
+}
+
+// LapsForSession returns every recorded lap for a session, in lap order.
+// A session with no laps yields an empty slice, not ErrNotFound.
+func (s *Store) LapsForSession(sessionID int64) ([]Lap, error) {
+	rows, err := s.reader.Query(
+		`SELECT `+lapColumns+` FROM laps WHERE session_id = ? ORDER BY lap_number`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query laps for session %d: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	out := []Lap{}
+	for rows.Next() {
+		var r Lap
+		if err := rows.Scan(
+			&r.ID, &r.UUID, &r.SessionID, &r.LapNumber,
+			&r.LapTimeS, &r.DeltaToBestS, &r.FuelUsedL, &r.FuelLevelEndL,
+			&r.IncidentsOnLap, &r.IsPitLap,
+			&r.Position, &r.ClassPosition,
+			&r.RecordedAt, &r.UploadedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan lap: %w", err)
+		}
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate laps: %w", err)
+	}
+	return out, nil
+}
+```
+
+- [ ] **Step 4: Run the lap test to verify it passes**
+
+Run: `go test ./internal/store/ -run Lap -v`
+Expected: PASS, seven tests.
+
+- [ ] **Step 5: Write the failing position event test**
+
+Create `internal/store/positions_test.go`:
+
+```go
+package store
+
+import "testing"
+
+func TestInsertPositionEventAndRead(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+
+	rec := &PositionEvent{
+		SessionID:      sid,
+		LapNumber:      7,
+		SessionTimeS:   412.0,
+		FromPosition:   6,
+		ToPosition:     5,
+		OpponentCarIdx: intp(14),
+		OpponentName:   strp("Other Driver"),
+		Cause:          CauseOnTrack,
+	}
+	id, err := s.InsertPositionEvent(rec)
+	if err != nil {
+		t.Fatalf("InsertPositionEvent: %v", err)
+	}
+	if id == 0 || rec.ID != id || rec.UUID == "" {
+		t.Errorf("id=%d rec=%+v", id, rec)
+	}
+
+	evs, err := s.PositionEventsForSession(sid)
+	if err != nil {
+		t.Fatalf("PositionEventsForSession: %v", err)
+	}
+	if len(evs) != 1 {
+		t.Fatalf("len = %d, want 1", len(evs))
+	}
+	g := evs[0]
+	if g.FromPosition != 6 || g.ToPosition != 5 || g.Cause != CauseOnTrack {
+		t.Errorf("event = %+v", g)
+	}
+	if g.OpponentName == nil || *g.OpponentName != "Other Driver" {
+		t.Errorf("OpponentName = %v — opponent identity is stored, never anonymised", g.OpponentName)
+	}
+	if g.SessionTimeS != 412.0 {
+		t.Errorf("SessionTimeS = %v", g.SessionTimeS)
+	}
+}
+
+// An unattributable swap must still be recorded, tagged Unknown.
+func TestInsertPositionEventUnknownCause(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+	rec := &PositionEvent{
+		SessionID: sid, LapNumber: 2, SessionTimeS: 100,
+		FromPosition: 4, ToPosition: 5, Cause: CauseUnknown,
+	}
+	if _, err := s.InsertPositionEvent(rec); err != nil {
+		t.Fatal(err)
+	}
+	evs, _ := s.PositionEventsForSession(sid)
+	if len(evs) != 1 || evs[0].Cause != CauseUnknown {
+		t.Errorf("events = %+v", evs)
+	}
+	if evs[0].OpponentCarIdx != nil {
+		t.Errorf("OpponentCarIdx = %v, want nil for an unattributed swap", evs[0].OpponentCarIdx)
+	}
+}
+
+// Unlike laps, repeated position changes are real distinct events and must
+// all be stored, even with identical from/to.
+func TestInsertPositionEventAllowsRepeats(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+	for i := 0; i < 3; i++ {
+		rec := &PositionEvent{
+			SessionID: sid, LapNumber: 5, SessionTimeS: float64(300 + i),
+			FromPosition: 4, ToPosition: 5, Cause: CauseOnTrack,
+		}
+		if _, err := s.InsertPositionEvent(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs, _ := s.PositionEventsForSession(sid)
+	if len(evs) != 3 {
+		t.Errorf("len = %d, want 3 — repeated swaps are distinct events", len(evs))
+	}
+}
+
+func TestPositionEventsOrderedByTime(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+	for _, at := range []float64{300, 100, 200} {
+		if _, err := s.InsertPositionEvent(&PositionEvent{
+			SessionID: sid, LapNumber: 1, SessionTimeS: at,
+			FromPosition: 5, ToPosition: 4, Cause: CauseOnTrack,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	evs, _ := s.PositionEventsForSession(sid)
+	for i, want := range []float64{100, 200, 300} {
+		if evs[i].SessionTimeS != want {
+			t.Errorf("evs[%d].SessionTimeS = %v, want %v", i, evs[i].SessionTimeS, want)
+		}
+	}
+}
+
+func TestPassPassedRatioQuery(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+
+	// Two real passes, one real loss, and two attrition gains that must be
+	// excluded from the ratio.
+	events := []PositionEvent{
+		{LapNumber: 3, SessionTimeS: 100, FromPosition: 8, ToPosition: 7, Cause: CauseOnTrack},
+		{LapNumber: 5, SessionTimeS: 200, FromPosition: 7, ToPosition: 6, Cause: CauseOnTrack},
+		{LapNumber: 6, SessionTimeS: 250, FromPosition: 6, ToPosition: 7, Cause: CauseOnTrack},
+		{LapNumber: 9, SessionTimeS: 400, FromPosition: 7, ToPosition: 6, Cause: CauseOpponentPit},
+		{LapNumber: 11, SessionTimeS: 500, FromPosition: 6, ToPosition: 5, Cause: CauseOpponentOffWorld},
+	}
+	for i := range events {
+		events[i].SessionID = sid
+		if _, err := s.InsertPositionEvent(&events[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var made, conceded int
+	err := s.Reader().QueryRow(`
+		SELECT SUM(CASE WHEN to_position < from_position THEN 1 ELSE 0 END),
+		       SUM(CASE WHEN to_position > from_position THEN 1 ELSE 0 END)
+		FROM position_events WHERE session_id = ? AND cause = 'OnTrack'`, sid,
+	).Scan(&made, &conceded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if made != 2 || conceded != 1 {
+		t.Errorf("made=%d conceded=%d; want 2 and 1 — attrition must be excluded", made, conceded)
+	}
+}
+
+func TestInsertPositionEventNilRecord(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.InsertPositionEvent(nil); err == nil {
+		t.Fatal("InsertPositionEvent(nil) = nil, want an error")
+	}
+}
+```
+
+- [ ] **Step 6: Run test to verify it fails**
+
+Run: `go test ./internal/store/ -run Position -v`
+Expected: FAIL — `undefined: PositionEvent`, `undefined: CauseOnTrack`.
+
+- [ ] **Step 7: Write the position event store**
+
+Create `internal/store/positions.go`:
+
+```go
+package store
+
+import (
+	"errors"
+	"fmt"
+
+	"github.com/google/uuid"
+)
+
+// Cause records why a position change happened. A position change is not
+// the same as an overtake: positions also shift when other drivers pit or
+// retire, and crediting those as passes would inflate the ratio.
+type Cause string
+
+// Cause values.
+const (
+	// CauseOnTrack is a real on-track pass, and the only cause counted in
+	// the pass/passed ratio.
+	CauseOnTrack Cause = "OnTrack"
+	// CauseOpponentPit means the car swapped with was on pit road.
+	CauseOpponentPit Cause = "OpponentPit"
+	// CauseOpponentOffWorld means the car swapped with had left the world:
+	// crashed out, towed, or disconnected.
+	CauseOpponentOffWorld Cause = "OpponentOffWorld"
+	// CauseUnknown means the opponent could not be identified.
+	CauseUnknown Cause = "Unknown"
+)
+
+// PositionEvent is one row of the position_events table.
+type PositionEvent struct {
+	ID        int64
+	UUID      string
+	SessionID int64
+
+	LapNumber    int
+	SessionTimeS float64
+	FromPosition int
+	ToPosition   int
+	IsClass      bool
+
+	OpponentCarIdx *int
+	OpponentName   *string
+	Cause          Cause
+
+	RecordedAt string
+	UploadedAt *string
+}
+
+const positionColumns = `
+	id, uuid, session_id, lap_number, session_time_s,
+	from_position, to_position, is_class,
+	opponent_car_idx, opponent_name, cause,
+	recorded_at, uploaded_at`
+
+// InsertPositionEvent records one position change.
+//
+// Unlike laps this is not deduplicated: repeated swaps between the same
+// two positions are genuinely distinct events, and collapsing them would
+// undercount a battle.
+func (s *Store) InsertPositionEvent(rec *PositionEvent) (int64, error) {
+	if rec == nil {
+		return 0, errors.New("store: InsertPositionEvent called with nil record")
+	}
+	if rec.UUID == "" {
+		rec.UUID = uuid.NewString()
+	}
+	if rec.RecordedAt == "" {
+		rec.RecordedAt = Now()
+	}
+	if rec.Cause == "" {
+		rec.Cause = CauseUnknown
+	}
+
+	const q = `
+INSERT INTO position_events (
+	uuid, session_id, lap_number, session_time_s,
+	from_position, to_position, is_class,
+	opponent_car_idx, opponent_name, cause, recorded_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id`
+
+	var id int64
+	err := s.writer.QueryRow(q,
+		rec.UUID, rec.SessionID, rec.LapNumber, rec.SessionTimeS,
+		rec.FromPosition, rec.ToPosition, rec.IsClass,
+		rec.OpponentCarIdx, rec.OpponentName, string(rec.Cause), rec.RecordedAt,
+	).Scan(&id)
+	if err != nil {
+		return 0, fmt.Errorf("store: insert position event for session %d: %w", rec.SessionID, err)
+	}
+	rec.ID = id
+	return id, nil
+}
+
+// PositionEventsForSession returns a session's position events in time
+// order.
+func (s *Store) PositionEventsForSession(sessionID int64) ([]PositionEvent, error) {
+	rows, err := s.reader.Query(
+		`SELECT `+positionColumns+` FROM position_events WHERE session_id = ? ORDER BY session_time_s, id`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("store: query position events for session %d: %w", sessionID, err)
+	}
+	defer rows.Close()
+
+	out := []PositionEvent{}
+	for rows.Next() {
+		var r PositionEvent
+		var cause string
+		if err := rows.Scan(
+			&r.ID, &r.UUID, &r.SessionID, &r.LapNumber, &r.SessionTimeS,
+			&r.FromPosition, &r.ToPosition, &r.IsClass,
+			&r.OpponentCarIdx, &r.OpponentName, &cause,
+			&r.RecordedAt, &r.UploadedAt,
+		); err != nil {
+			return nil, fmt.Errorf("store: scan position event: %w", err)
+		}
+		r.Cause = Cause(cause)
+		out = append(out, r)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("store: iterate position events: %w", err)
+	}
+	return out, nil
+}
+```
+
+- [ ] **Step 8: Run the full store suite**
+
+Run: `go test ./internal/store/ -v`
+Expected: PASS, all tests.
+
+- [ ] **Step 9: Commit**
+
+```bash
+git add internal/store/
+git commit -m "Add lap and position event writes"
+```
