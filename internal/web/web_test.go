@@ -1,11 +1,13 @@
 package web
 
 import (
+	"errors"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"testing/fstest"
 )
 
 // The whole interface must live inside the binary. If this fails, the release is
@@ -13,6 +15,124 @@ import (
 func TestCheckFindsTheEmbeddedBundle(t *testing.T) {
 	if err := Check(); err != nil {
 		t.Fatalf("Check: %v", err)
+	}
+}
+
+// The bundle really is complete, not merely present.
+//
+// This is the check that was missing. index.html was tracked in git while the
+// hashed assets it loads were ignored, so the binary built, started, passed a
+// bundle check that only looked for index.html, and served a blank page. Reading
+// the asset names back out of the HTML is what makes the gap visible.
+func TestEveryAssetIndexReferencesIsEmbedded(t *testing.T) {
+	sub, err := FS()
+	if err != nil {
+		t.Fatalf("FS: %v", err)
+	}
+	html, err := fs.ReadFile(sub, "index.html")
+	if err != nil {
+		t.Fatalf("read index.html: %v", err)
+	}
+
+	refs := assetRef.FindAllStringSubmatch(string(html), -1)
+	if len(refs) == 0 {
+		t.Fatal("index.html references no /assets/ files; expected the bundled script and stylesheet")
+	}
+	for _, m := range refs {
+		name := strings.TrimPrefix(m[1], "/")
+		data, err := fs.ReadFile(sub, name)
+		if err != nil {
+			t.Errorf("index.html references %s, which is not embedded: %v", m[1], err)
+			continue
+		}
+		if len(data) == 0 {
+			t.Errorf("embedded asset %s is empty", m[1])
+		}
+	}
+}
+
+func TestCheckBundleRejectsAnIncompleteBundle(t *testing.T) {
+	const html = `<!DOCTYPE html><html><head>` +
+		`<script type="module" src="/assets/index-abc123.js"></script>` +
+		`<link rel="stylesheet" href="/assets/index-def456.css">` +
+		`</head><body><div id="root"></div></body></html>`
+
+	cases := []struct {
+		name string
+		fsys fs.FS
+		want string
+	}{
+		{
+			name: "index.html without its assets",
+			// Exactly the state a bad .gitignore produced.
+			fsys: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte(html)}},
+			want: "index-abc123.js",
+		},
+		{
+			name: "stylesheet missing",
+			fsys: fstest.MapFS{
+				"index.html":             &fstest.MapFile{Data: []byte(html)},
+				"assets/index-abc123.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+			},
+			want: "index-def456.css",
+		},
+		{
+			name: "no index.html at all",
+			fsys: fstest.MapFS{},
+			want: "index.html is not present",
+		},
+		{
+			name: "empty index.html",
+			fsys: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte{}}},
+			want: "index.html is empty",
+		},
+		{
+			name: "index.html loading nothing",
+			fsys: fstest.MapFS{"index.html": &fstest.MapFile{Data: []byte("<html></html>")}},
+			want: "loads no bundle assets",
+		},
+	}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkBundle(c.fsys)
+			if err == nil {
+				t.Fatal("checkBundle accepted an unusable bundle")
+			}
+			if !errors.Is(err, ErrNoBundle) {
+				t.Errorf("error is not ErrNoBundle: %v", err)
+			}
+			if !strings.Contains(err.Error(), c.want) {
+				t.Errorf("error %q does not mention %q", err, c.want)
+			}
+		})
+	}
+}
+
+func TestCheckBundleAcceptsACompleteBundle(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte(
+			`<html><head><script src="/assets/app.js"></script>` +
+				`<link href="/assets/app.css"></head><body></body></html>`)},
+		"assets/app.js":  &fstest.MapFile{Data: []byte("console.log(1)")},
+		"assets/app.css": &fstest.MapFile{Data: []byte("body{}")},
+	}
+	if err := checkBundle(fsys); err != nil {
+		t.Fatalf("checkBundle rejected a complete bundle: %v", err)
+	}
+}
+
+// The icon link in index.html is served by the icon handler, not from dist, so it
+// must not be mistaken for a missing bundle asset.
+func TestCheckBundleIgnoresNonAssetLinks(t *testing.T) {
+	fsys := fstest.MapFS{
+		"index.html": &fstest.MapFile{Data: []byte(
+			`<html><head><link rel="icon" href="/icons/racing-helmet.svg">` +
+				`<script src="/assets/app.js"></script></head><body></body></html>`)},
+		"assets/app.js": &fstest.MapFile{Data: []byte("console.log(1)")},
+	}
+	if err := checkBundle(fsys); err != nil {
+		t.Fatalf("checkBundle rejected a bundle over a non-asset link: %v", err)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"regexp"
 	"strings"
 
 	"github.com/blezek/lapdog/internal/ui/icons"
@@ -30,7 +31,7 @@ var ErrNoBundle = errors.New("web: no frontend bundle embedded")
 func FS() (fs.FS, error) {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
-		return nil, fmt.Errorf("web: %w: %v", ErrNoBundle, err)
+		return nil, fmt.Errorf("%w: %v", ErrNoBundle, err)
 	}
 	return sub, nil
 }
@@ -44,18 +45,48 @@ func Check() error {
 	if err != nil {
 		return err
 	}
-	f, err := sub.Open("index.html")
-	if err != nil {
-		return fmt.Errorf("web: %w: index.html is not present", ErrNoBundle)
-	}
-	defer f.Close()
+	return checkBundle(sub)
+}
 
-	info, err := f.Stat()
+// assetRef matches the hashed bundle files index.html loads.
+//
+// The bundler rewrites these names on every build, so they cannot be checked
+// against a fixed list — they have to be read back out of the HTML that
+// references them.
+var assetRef = regexp.MustCompile(`(?:src|href)="(/assets/[^"]+)"`)
+
+// checkBundle verifies the interface is present and complete.
+//
+// Checking that index.html exists is not enough, and its absence is not the
+// failure that actually happened. A stray "dist/" line in .gitignore matched
+// internal/web/dist as well as the intended build directory, so a clone held
+// index.html — added before that rule — without the hashed assets it loads. The
+// binary then built and started cleanly and served a blank page, because the
+// only thing verified was the one file that happened to be tracked. So every
+// asset the HTML references is now confirmed to be embedded too.
+func checkBundle(sub fs.FS) error {
+	html, err := fs.ReadFile(sub, "index.html")
 	if err != nil {
-		return fmt.Errorf("web: cannot stat index.html: %w", err)
+		return fmt.Errorf("%w: index.html is not present", ErrNoBundle)
 	}
-	if info.Size() == 0 {
-		return fmt.Errorf("web: %w: index.html is empty", ErrNoBundle)
+	if len(html) == 0 {
+		return fmt.Errorf("%w: index.html is empty", ErrNoBundle)
+	}
+
+	refs := assetRef.FindAllStringSubmatch(string(html), -1)
+	if len(refs) == 0 {
+		return fmt.Errorf("%w: index.html loads no bundle assets", ErrNoBundle)
+	}
+	for _, m := range refs {
+		f, err := sub.Open(strings.TrimPrefix(m[1], "/"))
+		if err != nil {
+			return fmt.Errorf(
+				"%w: index.html references %s, which is not embedded "+
+					"(run `make ui`, and check it is not being ignored by git)",
+				ErrNoBundle, m[1],
+			)
+		}
+		f.Close()
 	}
 	return nil
 }

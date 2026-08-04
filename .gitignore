@@ -10,4 +10,11 @@
 # Build output. Rebuild with `make build-ctl`, `make build-gen`, `make build-windows`.
 # Note: not "*.lpd" — the committed capture fixtures under testdata/fixtures must
 # stay tracked, since tests and reviewers depend on them.
-dist/
+#
+# Anchored to the repository root. An unanchored "dist/" matches a directory of
+# that name at any depth, which also caught internal/web/dist — so the frontend
+# bundle that is meant to be committed was ignored, except for index.html, which
+# had been added before the rule existed. That left the worst possible state: a
+# clone contained HTML referencing hashed assets that were not in the repository,
+# so the binary built and started but served a blank page.
+/dist/
