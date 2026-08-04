@@ -24,11 +24,17 @@ SETUP   := $(DIST)/lapdog-$(VERSION)-setup.exe
 # Authenticode signing is optional. Absent a certificate the release still
 # builds and emits unsigned artefacts with a warning, because a missing
 # certificate must not block a development build.
+# The development dataset. Overridable so a real database can be inspected with the
+# same target: make run-ctl DEV_DB=~/.local/share/lapdog/lapdog.db
+DEV_DB   ?= .dataset.db
+DEV_PORT ?= 47047
+
 SIGN_PKCS12   ?=
 SIGN_PASSWORD ?=
 TIMESTAMP_URL ?= http://timestamp.digicert.com
 
-.PHONY: help test test-ci vet ui ui-clean ui-dev ci verify-embed build-windows build-ctl build-gen \
+.PHONY: help test test-ci vet ui ui-clean ui-dev ci verify-embed run-ctl dataset-db \
+        build-windows build-ctl build-gen \
         fixtures dataset validate portable installer sign release tools clean
 
 help:
@@ -40,6 +46,8 @@ help:
 	@echo "ci             what CI runs: vet, frontend, both test suites, cross-build"
 	@echo "verify-embed   prove the interface is inside a Windows binary"
 	@echo "ui-dev         run the Vite dev server against a local API"
+	@echo "run-ctl        serve $(DEV_DB) on port $(DEV_PORT) for local testing"
+	@echo "dataset-db     ingest the generated captures into $(DEV_DB)"
 	@echo "build-windows  cross-compile the tray app for Windows"
 	@echo "build-ctl      build the lapdogctl development CLI"
 	@echo "build-gen      build the dataset generator"
@@ -130,6 +138,36 @@ dataset: build-gen
 
 validate: build-gen
 	./dist/lapdog-gen -validate -dir .dataset
+
+# Ingest the generated captures into a database.
+#
+# This is the step between `make dataset` and anything that reads data: the
+# generator writes capture files, and the database is what replaying them produces.
+# Going through ingest rather than writing rows directly is the point — it means the
+# development data has been through the same decode, classify and accounting path as
+# a real session, so a bug there shows up here rather than only on a race weekend.
+dataset-db: build-ctl
+	@test -d .dataset || { \
+	  echo "dataset-db: .dataset does not exist; run 'make dataset' first"; \
+	  echo "            (generates about 250 MB of captures, and is gitignored)"; exit 1; }
+	rm -f $(DEV_DB) $(DEV_DB)-wal $(DEV_DB)-shm
+	./dist/lapdogctl ingest .dataset $(DEV_DB)
+	./dist/lapdogctl summary $(DEV_DB)
+
+# Serve a database locally, for looking at the interface with real data in it.
+#
+# This is the quickest way to see the UI: the synthetic dataset covers two years of
+# sessions, so every chart has something in it. The tray application is the other
+# way to run the interface, but on a development machine it has no simulator to read
+# and so shows an empty database.
+run-ctl: build-ctl
+	@test -f $(DEV_DB) || { \
+	  echo "run-ctl: $(DEV_DB) does not exist. To create it:"; \
+	  echo "           make dataset      # generate captures (~250 MB, a few minutes)"; \
+	  echo "           make dataset-db   # replay them into $(DEV_DB)"; \
+	  echo "         Or point at another database: make run-ctl DEV_DB=path/to.db"; exit 1; }
+	@echo "run-ctl: http://127.0.0.1:$(DEV_PORT)  (Ctrl-C to stop)"
+	./dist/lapdogctl serve $(DEV_DB) $(DEV_PORT)
 
 # The whole Windows toolchain runs on macOS, which is why the release needs no
 # Windows machine. See the packaging spec, section 4.1.
