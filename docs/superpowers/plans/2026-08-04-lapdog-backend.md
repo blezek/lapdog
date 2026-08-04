@@ -6950,3 +6950,663 @@ Expected: PASS
 git add internal/store/
 git commit -m "Add session filters and aggregation queries"
 ```
+
+---
+
+### Task 14: Collector — clock, required variables, and the three time counters
+
+**Files:**
+- Create: `internal/collector/clock.go`, `internal/collector/vars.go`, `internal/collector/accounting.go`
+- Test: `internal/collector/accounting_test.go`, `internal/collector/vars_test.go`
+
+**Interfaces:**
+- Consumes: Task 4's `irsdk.Row`, Task 2's `irsdk.TrkLoc`; Task 6's `source.Frame`.
+- Produces:
+  - `type Clock interface { Now() time.Time }`
+  - `type RealClock struct{}`, `func (RealClock) Now() time.Time`
+  - `type FakeClock struct{ ... }`, `func NewFakeClock(t time.Time) *FakeClock`, `(*FakeClock) Now() time.Time`, `(*FakeClock) Advance(d time.Duration)`
+  - `var RequiredCoreVars []string`, `var RequiredRaceVars []string`, `const OptionalIncidentVar = "PlayerCarMyIncidentCount"`
+  - `func MissingVars(row irsdk.Row, names []string) []string`
+  - `type Sample struct { T float64; InCar, Driving, Replay bool }`
+  - `func SampleFrom(row irsdk.Row, driverCarIdx int) (Sample, bool)` — second result false if a required variable is absent
+  - `type Accountant struct { Connected, InCar, Driving float64; Clamped int }`
+  - `func NewAccountant(interval time.Duration) *Accountant`
+  - `func (a *Accountant) Add(s Sample)`
+  - `func (a *Accountant) Reset()`
+
+Accounting rules, spec §7.2 verbatim:
+
+| Counter | Accrues when |
+|---|---|
+| `Connected` | a frame was received at all — the sim is running and this session is active |
+| `InCar` | above, and `IsOnTrackCar` |
+| `Driving` | above, and `CarIdxTrackSurface[DriverCarIdx]` is neither `NotInWorld` (-1) nor `InPitStall` (1) |
+
+`Driving` therefore **includes** `OffTrack`, `ApproachingPits` and `OnTrack` — the driver is driving in all three. Only sitting stationary in the pit box is not driving.
+
+`Replay` suppresses all three counters. There is no setting for this.
+
+The poll-gap clamp is important and easy to overlook: if the gap between frames exceeds four times the configured interval — machine sleep, sim hang, a debugger pause — only one interval is credited. Without it an overnight suspend records as ten hours of practice.
+
+`SampleFrom` takes the row rather than the whole frame so the accounting logic has no dependency on the capture format.
+
+- [ ] **Step 1: Write the failing clock and accounting test**
+
+Create `internal/collector/accounting_test.go`:
+
+```go
+package collector
+
+import (
+	"math"
+	"testing"
+	"time"
+)
+
+func TestFakeClockAdvances(t *testing.T) {
+	start := time.Date(2026, 8, 4, 19, 0, 0, 0, time.UTC)
+	c := NewFakeClock(start)
+	if !c.Now().Equal(start) {
+		t.Fatalf("Now() = %v, want %v", c.Now(), start)
+	}
+	c.Advance(90 * time.Second)
+	if got := c.Now(); !got.Equal(start.Add(90 * time.Second)) {
+		t.Errorf("after Advance, Now() = %v", got)
+	}
+}
+
+func TestRealClockIsMonotonicEnough(t *testing.T) {
+	a := RealClock{}.Now()
+	b := RealClock{}.Now()
+	if b.Before(a) {
+		t.Error("RealClock went backwards")
+	}
+}
+
+// The first sample establishes a baseline and credits nothing: there is no
+// previous observation to measure an interval against.
+func TestAccountantFirstSampleCreditsNothing(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 100, InCar: true, Driving: true})
+	if a.Connected != 0 || a.InCar != 0 || a.Driving != 0 {
+		t.Errorf("after one sample: %+v, want all zero", a)
+	}
+}
+
+func TestAccountantCreditsElapsedBetweenSamples(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, InCar: true, Driving: true})
+	a.Add(Sample{T: 1, InCar: true, Driving: true})
+	a.Add(Sample{T: 2, InCar: true, Driving: true})
+
+	if math.Abs(a.Connected-2) > 1e-9 {
+		t.Errorf("Connected = %v, want 2", a.Connected)
+	}
+	if math.Abs(a.InCar-2) > 1e-9 {
+		t.Errorf("InCar = %v, want 2", a.InCar)
+	}
+	if math.Abs(a.Driving-2) > 1e-9 {
+		t.Errorf("Driving = %v, want 2", a.Driving)
+	}
+}
+
+// Sitting in the garage: connected accrues, the other two do not.
+func TestAccountantGarageOnlyCreditsConnected(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0})
+	a.Add(Sample{T: 10})
+	if math.Abs(a.Connected-10) > 1e-9 {
+		t.Errorf("Connected = %v, want 10", a.Connected)
+	}
+	if a.InCar != 0 || a.Driving != 0 {
+		t.Errorf("InCar=%v Driving=%v, want 0 and 0", a.InCar, a.Driving)
+	}
+}
+
+// Sitting in the pit box: in-car accrues, driving does not.
+func TestAccountantPitStallIsNotDriving(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, InCar: true, Driving: false})
+	a.Add(Sample{T: 30, InCar: true, Driving: false})
+	if math.Abs(a.InCar-30) > 1e-9 {
+		t.Errorf("InCar = %v, want 30", a.InCar)
+	}
+	if a.Driving != 0 {
+		t.Errorf("Driving = %v, want 0 — the pit box is not driving", a.Driving)
+	}
+}
+
+// Replay playback must suppress everything, with no setting to change it.
+func TestAccountantReplaySuppressesAllCounters(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, InCar: true, Driving: true, Replay: true})
+	a.Add(Sample{T: 60, InCar: true, Driving: true, Replay: true})
+	if a.Connected != 0 || a.InCar != 0 || a.Driving != 0 {
+		t.Errorf("during replay: %+v, want all zero", a)
+	}
+}
+
+// Replay in the middle of a session must not poison the surrounding time.
+func TestAccountantReplayMidSession(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, InCar: true, Driving: true})
+	a.Add(Sample{T: 1, InCar: true, Driving: true}) // +1 driving
+	a.Add(Sample{T: 2, Replay: true})               // suppressed
+	a.Add(Sample{T: 3, Replay: true})               // suppressed
+	a.Add(Sample{T: 4, InCar: true, Driving: true}) // +1 driving
+	if math.Abs(a.Driving-2) > 1e-9 {
+		t.Errorf("Driving = %v, want 2 — replay frames must contribute nothing", a.Driving)
+	}
+}
+
+// A machine suspend must not be recorded as hours of practice.
+func TestAccountantClampsLongGap(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, InCar: true, Driving: true})
+	a.Add(Sample{T: 36000, InCar: true, Driving: true}) // ten hours later
+
+	if math.Abs(a.Driving-1) > 1e-9 {
+		t.Errorf("Driving = %v, want 1 — a long gap credits one interval only", a.Driving)
+	}
+	if a.Clamped != 1 {
+		t.Errorf("Clamped = %d, want 1", a.Clamped)
+	}
+}
+
+// A gap at exactly the threshold is credited in full; past it, clamped.
+func TestAccountantClampThreshold(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, Driving: true, InCar: true})
+	a.Add(Sample{T: 4, Driving: true, InCar: true}) // exactly 4x
+	if math.Abs(a.Driving-4) > 1e-9 {
+		t.Errorf("Driving = %v, want 4 — a gap of exactly 4x is not clamped", a.Driving)
+	}
+	if a.Clamped != 0 {
+		t.Errorf("Clamped = %d, want 0", a.Clamped)
+	}
+
+	b := NewAccountant(time.Second)
+	b.Add(Sample{T: 0, Driving: true, InCar: true})
+	b.Add(Sample{T: 4.001, Driving: true, InCar: true})
+	if b.Clamped != 1 {
+		t.Errorf("Clamped = %d, want 1 just past the threshold", b.Clamped)
+	}
+}
+
+// The clamp must scale with the configured interval, not a fixed constant.
+func TestAccountantClampScalesWithInterval(t *testing.T) {
+	a := NewAccountant(10 * time.Second)
+	a.Add(Sample{T: 0, Driving: true, InCar: true})
+	a.Add(Sample{T: 30, Driving: true, InCar: true}) // 3x of 10s: allowed
+	if math.Abs(a.Driving-30) > 1e-9 {
+		t.Errorf("Driving = %v, want 30", a.Driving)
+	}
+	a.Add(Sample{T: 130, Driving: true, InCar: true}) // 10x: clamped to 10
+	if math.Abs(a.Driving-40) > 1e-9 {
+		t.Errorf("Driving = %v, want 40 (30 + one clamped 10s interval)", a.Driving)
+	}
+}
+
+// Frame time going backwards is nonsense and must credit nothing rather
+// than subtract.
+func TestAccountantIgnoresBackwardsTime(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 100, Driving: true, InCar: true})
+	a.Add(Sample{T: 101, Driving: true, InCar: true})
+	before := a.Driving
+	a.Add(Sample{T: 50, Driving: true, InCar: true})
+	if a.Driving != before {
+		t.Errorf("Driving = %v after backwards time, want unchanged %v", a.Driving, before)
+	}
+}
+
+func TestAccountantReset(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, InCar: true, Driving: true})
+	a.Add(Sample{T: 5, InCar: true, Driving: true})
+	a.Reset()
+	if a.Connected != 0 || a.InCar != 0 || a.Driving != 0 || a.Clamped != 0 {
+		t.Errorf("after Reset: %+v, want all zero", a)
+	}
+	// Reset must also clear the baseline, so the next sample credits nothing.
+	a.Add(Sample{T: 100, InCar: true, Driving: true})
+	if a.Connected != 0 {
+		t.Errorf("Connected = %v after Reset then one sample, want 0", a.Connected)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/collector/ -v`
+Expected: FAIL — build error, `undefined: NewFakeClock`, `undefined: Accountant`.
+
+- [ ] **Step 3: Write the clock**
+
+Create `internal/collector/clock.go`:
+
+```go
+package collector
+
+import "time"
+
+// Clock supplies the current time. The collector takes one as a
+// dependency rather than calling time.Now directly, so a replayed capture
+// can run a ninety-minute race through the collector in milliseconds.
+type Clock interface {
+	Now() time.Time
+}
+
+// RealClock reads the system clock.
+type RealClock struct{}
+
+// Now returns the current system time.
+func (RealClock) Now() time.Time { return time.Now() }
+
+// FakeClock is a manually advanced clock for tests.
+type FakeClock struct {
+	t time.Time
+}
+
+// NewFakeClock returns a clock fixed at t.
+func NewFakeClock(t time.Time) *FakeClock { return &FakeClock{t: t} }
+
+// Now returns the clock's current value.
+func (c *FakeClock) Now() time.Time { return c.t }
+
+// Advance moves the clock forward by d.
+func (c *FakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
+```
+
+- [ ] **Step 4: Write the accounting**
+
+Create `internal/collector/accounting.go`:
+
+```go
+package collector
+
+import (
+	"time"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// clampFactor is how many poll intervals a gap may span before it is
+// treated as a stall rather than elapsed session time. Without this, a
+// machine suspend would be recorded as hours of practice.
+const clampFactor = 4
+
+// Sample is one poll's accounting-relevant state, extracted from a
+// telemetry row.
+//
+// There is no Connected field: receiving a sample at all means the sim is
+// running and this session is active, which is exactly what connected
+// time measures.
+type Sample struct {
+	T       float64 // frame timestamp, in seconds
+	InCar   bool
+	Driving bool
+	Replay  bool
+}
+
+// Accountant accumulates the three time measures across samples.
+//
+// Time comes from the sample timestamps, never from the wall clock, so
+// replay is deterministic and can run faster than real time.
+type Accountant struct {
+	Connected float64
+	InCar     float64
+	Driving   float64
+
+	// Clamped counts how many gaps were treated as stalls. A non-zero
+	// value in a real session is worth logging.
+	Clamped int
+
+	interval float64
+	lastT    float64
+	haveLast bool
+}
+
+// NewAccountant returns an Accountant sized for the given poll interval.
+func NewAccountant(interval time.Duration) *Accountant {
+	s := interval.Seconds()
+	if s <= 0 {
+		s = 1
+	}
+	return &Accountant{interval: s}
+}
+
+// Reset zeroes the counters and forgets the baseline, so the next sample
+// establishes a new one and credits nothing.
+func (a *Accountant) Reset() {
+	a.Connected, a.InCar, a.Driving = 0, 0, 0
+	a.Clamped = 0
+	a.lastT = 0
+	a.haveLast = false
+}
+
+// Add credits the interval since the previous sample to whichever counters
+// qualify.
+//
+// The first sample after construction or Reset establishes a baseline and
+// credits nothing, because there is no prior observation to measure
+// against. A replay sample credits nothing and does not become a baseline
+// gap: it still advances lastT, so surrounding real time is unaffected.
+func (a *Accountant) Add(s Sample) {
+	if !a.haveLast {
+		a.lastT = s.T
+		a.haveLast = true
+		return
+	}
+
+	elapsed := s.T - a.lastT
+	a.lastT = s.T
+
+	// Time running backwards is nonsense; credit nothing rather than
+	// subtracting.
+	if elapsed <= 0 {
+		return
+	}
+	if elapsed > a.interval*clampFactor {
+		elapsed = a.interval
+		a.Clamped++
+	}
+
+	// Replay playback is never counted, and there is no setting for it.
+	if s.Replay {
+		return
+	}
+
+	a.Connected += elapsed
+	if s.InCar {
+		a.InCar += elapsed
+	}
+	if s.InCar && s.Driving {
+		a.Driving += elapsed
+	}
+}
+
+// SampleFrom extracts accounting state from a telemetry row.
+//
+// It reports false if a variable it needs is absent, which the caller
+// treats as "do not record this session" rather than guessing.
+func SampleFrom(row irsdk.Row, driverCarIdx int) (Sample, bool) {
+	inCar, ok := row.Bool("IsOnTrackCar")
+	if !ok {
+		return Sample{}, false
+	}
+	surfaces, ok := row.IntArray("CarIdxTrackSurface")
+	if !ok {
+		return Sample{}, false
+	}
+	if driverCarIdx < 0 || driverCarIdx >= len(surfaces) {
+		return Sample{}, false
+	}
+
+	// Replay is optional in the sense that its absence should not stop
+	// recording; treat a missing value as "not replaying".
+	replay, _ := row.Bool("IsReplayPlaying")
+
+	loc := irsdk.TrkLoc(surfaces[driverCarIdx])
+	// Driving includes OffTrack, ApproachingPits and OnTrack — the driver
+	// is driving in all three. Only NotInWorld and a stationary pit box
+	// are excluded.
+	driving := loc != irsdk.NotInWorld && loc != irsdk.InPitStall
+
+	return Sample{InCar: inCar, Driving: driving, Replay: replay}, true
+}
+```
+
+- [ ] **Step 5: Run the accounting test to verify it passes**
+
+Run: `go test ./internal/collector/ -v`
+Expected: PASS, thirteen tests.
+
+- [ ] **Step 6: Write the failing required-variable test**
+
+Create `internal/collector/vars_test.go`:
+
+```go
+package collector
+
+import (
+	"testing"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// rowWith builds a row containing exactly the named int variables, so
+// absence can be tested precisely.
+func rowWith(names ...string) irsdk.Row {
+	var vars []irsdk.VarHeader
+	for i, n := range names {
+		vars = append(vars, irsdk.VarHeader{
+			Name: n, Type: irsdk.VarInt, Offset: int32(i * 4), Count: 1,
+		})
+	}
+	return irsdk.NewRow(vars, make([]byte, len(names)*4))
+}
+
+func TestMissingVarsReportsAbsentNames(t *testing.T) {
+	row := rowWith("Lap", "SessionNum")
+	missing := MissingVars(row, []string{"Lap", "SessionNum", "FuelLevel", "OnPitRoad"})
+	if len(missing) != 2 {
+		t.Fatalf("missing = %v, want 2 entries", missing)
+	}
+	got := map[string]bool{missing[0]: true, missing[1]: true}
+	if !got["FuelLevel"] || !got["OnPitRoad"] {
+		t.Errorf("missing = %v, want FuelLevel and OnPitRoad", missing)
+	}
+}
+
+func TestMissingVarsEmptyWhenAllPresent(t *testing.T) {
+	row := rowWith("Lap", "SessionNum")
+	if got := MissingVars(row, []string{"Lap", "SessionNum"}); len(got) != 0 {
+		t.Errorf("missing = %v, want none", got)
+	}
+}
+
+// The required list is the contract with the sim. Spot-check that the
+// variables the collector actually reads are all declared, so a rename
+// cannot silently drop one.
+func TestRequiredCoreVarsCoversWhatWeRead(t *testing.T) {
+	need := []string{
+		"SessionNum", "SessionState", "SessionTime", "IsOnTrackCar",
+		"IsReplayPlaying", "OnPitRoad", "Lap", "LapLastLapTime",
+		"FuelLevel", "PlayerCarPosition", "CarIdxTrackSurface",
+	}
+	have := map[string]bool{}
+	for _, v := range RequiredCoreVars {
+		have[v] = true
+	}
+	for _, n := range need {
+		if !have[n] {
+			t.Errorf("RequiredCoreVars is missing %q", n)
+		}
+	}
+}
+
+// CarIdxTrackSurface must be in the CORE set, not the race-only set,
+// because driving_seconds depends on it in every session type.
+func TestCarIdxTrackSurfaceIsCore(t *testing.T) {
+	for _, v := range RequiredRaceVars {
+		if v == "CarIdxTrackSurface" {
+			t.Error("CarIdxTrackSurface is in RequiredRaceVars; driving_seconds needs it in every session, so it belongs in RequiredCoreVars")
+		}
+	}
+	found := false
+	for _, v := range RequiredCoreVars {
+		if v == "CarIdxTrackSurface" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("CarIdxTrackSurface is not in RequiredCoreVars")
+	}
+}
+
+func TestRequiredRaceVarsAreRaceOnly(t *testing.T) {
+	want := map[string]bool{
+		"CarIdxPosition": true, "CarIdxClassPosition": true,
+		"CarIdxOnPitRoad": true, "CarIdxLap": true,
+	}
+	for _, v := range RequiredRaceVars {
+		if !want[v] {
+			t.Errorf("unexpected entry %q in RequiredRaceVars", v)
+		}
+		delete(want, v)
+	}
+	for v := range want {
+		t.Errorf("RequiredRaceVars is missing %q", v)
+	}
+}
+
+func TestSampleFromMissingVariable(t *testing.T) {
+	// IsOnTrackCar is a bool; a row where it is absent must fail cleanly.
+	if _, ok := SampleFrom(rowWith("Lap"), 0); ok {
+		t.Error("SampleFrom ok = true with IsOnTrackCar absent, want false")
+	}
+}
+
+func TestSampleFromOutOfRangeCarIdx(t *testing.T) {
+	vars := []irsdk.VarHeader{
+		{Name: "IsOnTrackCar", Type: irsdk.VarBool, Offset: 0, Count: 1},
+		{Name: "CarIdxTrackSurface", Type: irsdk.VarInt, Offset: 4, Count: 2},
+	}
+	data := make([]byte, 12)
+	data[0] = 1
+	row := irsdk.NewRow(vars, data)
+
+	if _, ok := SampleFrom(row, 64); ok {
+		t.Error("SampleFrom ok = true for a DriverCarIdx past the array, want false")
+	}
+	if _, ok := SampleFrom(row, 0); !ok {
+		t.Error("SampleFrom ok = false for a valid index, want true")
+	}
+}
+
+func TestSampleFromTrackSurfaceMapping(t *testing.T) {
+	cases := []struct {
+		loc         irsdk.TrkLoc
+		wantDriving bool
+	}{
+		{irsdk.NotInWorld, false},
+		{irsdk.InPitStall, false},
+		{irsdk.OffTrack, true},
+		{irsdk.ApproachingPits, true},
+		{irsdk.OnTrack, true},
+	}
+	for _, c := range cases {
+		vars := []irsdk.VarHeader{
+			{Name: "IsOnTrackCar", Type: irsdk.VarBool, Offset: 0, Count: 1},
+			{Name: "CarIdxTrackSurface", Type: irsdk.VarInt, Offset: 4, Count: 1},
+		}
+		data := make([]byte, 8)
+		data[0] = 1
+		putInt32(data[4:], int32(c.loc))
+		s, ok := SampleFrom(irsdk.NewRow(vars, data), 0)
+		if !ok {
+			t.Fatalf("SampleFrom failed for %v", c.loc)
+		}
+		if s.Driving != c.wantDriving {
+			t.Errorf("TrkLoc %v: Driving = %v, want %v", c.loc, s.Driving, c.wantDriving)
+		}
+	}
+}
+
+// putInt32 writes a little-endian int32, matching the sim's layout.
+func putInt32(b []byte, v int32) {
+	b[0] = byte(v)
+	b[1] = byte(v >> 8)
+	b[2] = byte(v >> 16)
+	b[3] = byte(v >> 24)
+}
+```
+
+- [ ] **Step 7: Run test to verify it fails**
+
+Run: `go test ./internal/collector/ -run 'MissingVars|Required|SampleFrom' -v`
+Expected: FAIL — `undefined: MissingVars`, `undefined: RequiredCoreVars`.
+
+- [ ] **Step 8: Write the variable contract**
+
+Create `internal/collector/vars.go`:
+
+```go
+package collector
+
+import "github.com/blezek/lapdog/internal/irsdk"
+
+// RequiredCoreVars are the telemetry variables the collector needs in
+// every session. All are confirmed present in
+// documentation/telemetry_11_23_15.pdf, Appendix A.
+//
+// If any is absent the session is not recorded and the omission is logged
+// and surfaced in the UI. Recording wrong data is worse than recording
+// none.
+//
+// CarIdxTrackSurface is here rather than in RequiredRaceVars because
+// driving_seconds depends on it in every session type, not just races.
+// Outside races only the local driver's index is read.
+var RequiredCoreVars = []string{
+	"SessionNum",
+	"SessionState",
+	"SessionTime",
+	"SessionTimeRemain",
+	"SessionLapsRemain",
+	"IsOnTrack",
+	"IsOnTrackCar",
+	"IsInGarage",
+	"IsReplayPlaying",
+	"OnPitRoad",
+	"Lap",
+	"LapCurrentLapTime",
+	"LapLastLapTime",
+	"LapBestLapTime",
+	"LapBestLap",
+	"LapDist",
+	"LapDistPct",
+	"FuelLevel",
+	"PlayerCarPosition",
+	"PlayerCarClassPosition",
+	"CarIdxTrackSurface",
+}
+
+// RequiredRaceVars are additionally needed to attribute position changes,
+// and are read only when the session is a race. Position in practice is an
+// artefact of who happens to be on track.
+var RequiredRaceVars = []string{
+	"CarIdxPosition",
+	"CarIdxClassPosition",
+	"CarIdxOnPitRoad",
+	"CarIdxLap",
+}
+
+// OptionalIncidentVar is preferred for incident counting when present,
+// because it updates live rather than only when the session YAML does. It
+// postdates the 2015 documentation, so its absence is not an error.
+const OptionalIncidentVar = "PlayerCarMyIncidentCount"
+
+// MissingVars returns which of names are absent from the row's layout.
+func MissingVars(row irsdk.Row, names []string) []string {
+	var missing []string
+	for _, n := range names {
+		if !row.Has(n) {
+			missing = append(missing, n)
+		}
+	}
+	return missing
+}
+```
+
+- [ ] **Step 9: Run the full collector suite**
+
+Run: `go test ./internal/collector/ -v`
+Expected: PASS, all tests.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/collector/
+git commit -m "Add collector clock, variable contract and time accounting"
+```
