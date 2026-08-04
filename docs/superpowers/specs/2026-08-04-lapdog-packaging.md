@@ -191,6 +191,8 @@ SHA256SUMS                                 checksums for both
 
 `lapdogctl` and `lapdog-gen` are development tools and are deliberately not published.
 
-## 8. Open decision
+## 8. Decisions taken
 
-**Installer format.** NSIS is implemented and is the recommendation. An MSI is a small addition (§5.4) but is only worth building if LapDog needs to be deployed by a management tool rather than installed by the person driving. Flagged for the user rather than assumed.
+**Installer format: NSIS only.** An MSI was considered and declined — LapDog is installed by the person driving, not deployed by a management tool, so the enterprise channel MSI exists to serve has no user. Section 5.4 records how to add one if that ever changes; nothing in the design forecloses it.
+
+**Status:** `2026-08-04`, confirmed by the project owner.

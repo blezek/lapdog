@@ -47,8 +47,8 @@ func advanceField(sw *writer, w *Weekend, cars []carState, order []int, lap int,
 			continue
 		}
 
-		// A mid-race pit stop. Restricted to the middle of the race so the
-		// window does not overlap the start or the finish.
+		// A mid-race pit stop. Restricted to the middle of the race so the window
+		// does not overlap the start or the finish.
 		if lap > 3 && sw.rng.Float64() < 0.0016 {
 			c.onPitRoad = true
 			c.pitUntil = sw.t + 20 + sw.rng.Float64()*18
@@ -57,13 +57,29 @@ func advanceField(sw *writer, w *Weekend, cars []carState, order []int, lap int,
 		// A retirement. Rare, and permanent for the rest of the session.
 		if lap > 2 && sw.rng.Float64() < 0.00035 {
 			c.retired = true
-			// A retired car drops to the back of the classification.
-			if idx := indexOf(order, c.carIdx); idx >= 0 {
-				order = append(order[:idx], order[idx+1:]...)
-				order = append(order, c.carIdx)
-			}
 		}
 	}
+
+	// A retired car keeps its slot in the running order rather than being moved to
+	// the back.
+	//
+	// That is deliberate, and it is what generates the OpponentOffWorld cause: the
+	// driver passes the stricken car, so at the moment of the swap that car is the
+	// one holding the position just vacated, and the ingestion path can see it is
+	// out of the world. Dropping it to the rear instead would leave a different,
+	// perfectly healthy car in that slot, and the gain would be indistinguishable
+	// from a real overtake.
+}
+
+// stateFor returns the tracked state of a car by index, or nil if it is not in
+// the field.
+func stateFor(cars []carState, carIdx int) *carState {
+	for i := range cars {
+		if cars[i].carIdx == carIdx {
+			return &cars[i]
+		}
+	}
+	return nil
 }
 
 // maybeSwap occasionally exchanges the driver with an adjacent car, returning
@@ -74,29 +90,57 @@ func advanceField(sw *writer, w *Weekend, cars []carState, order []int, lap int,
 // position change happen and leaves attribution to the collector, exactly as it
 // would with real telemetry.
 func maybeSwap(sw *writer, w *Weekend, cars []carState, order []int, driverPos int) (int, bool) {
-	if sw.rng.Float64() > 0.004 {
-		return driverPos, false
-	}
 	di := driverPos - 1
 	if di < 0 || di >= len(order) {
 		return driverPos, false
 	}
 
-	// Gaining is more likely than losing as the driver improves, but both must
-	// occur or the pass/passed ratio would be degenerate.
-	forward := sw.rng.Float64() < 0.56
-	var other int
-	switch {
-	case forward && di > 0:
-		other = di - 1
-	case !forward && di < len(order)-1:
-		other = di + 1
-	default:
+	swapWith := func(other int) (int, bool) {
+		order[di], order[other] = order[other], order[di]
+		return other + 1, true
+	}
+
+	// stopped reports whether a car cannot defend its position.
+	stopped := func(carIdx int) bool {
+		c := stateFor(cars, carIdx)
+		return c != nil && (c.onPitRoad || c.retired)
+	}
+
+	// A car directly ahead that is on pit road or out of the world is passed
+	// immediately. This is what produces the OpponentPit and OpponentOffWorld
+	// causes: without it every swap would look like an on-track pass, and
+	// attributing a cause — separating real overtakes from other people's
+	// misfortune — would go untested.
+	if di > 0 && stopped(order[di-1]) {
+		return swapWith(di - 1)
+	}
+
+	if sw.rng.Float64() > 0.004 {
 		return driverPos, false
 	}
 
-	order[di], order[other] = order[other], order[di]
-	return other + 1, true
+	// Gaining is somewhat more likely than losing as the driver improves, but both
+	// must occur or the pass/passed ratio would be degenerate.
+	//
+	// A car that is stopped never takes a place from the driver: you do not lose a
+	// position to someone sitting in the pit lane. Excluding that case is what
+	// keeps a loss from being attributed to OpponentPit or OpponentOffWorld, which
+	// would be nonsense.
+	forward := sw.rng.Float64() < 0.56
+	canGain := di > 0
+	canLose := di < len(order)-1 && !stopped(order[di+1])
+
+	switch {
+	case forward && canGain:
+		return swapWith(di - 1)
+	case !forward && canLose:
+		return swapWith(di + 1)
+	case canGain:
+		return swapWith(di - 1)
+	case canLose:
+		return swapWith(di + 1)
+	}
+	return driverPos, false
 }
 
 // recordResults fills in a session's classified results once it has run.

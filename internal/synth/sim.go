@@ -103,8 +103,21 @@ func SimulateWeekend(w *Weekend, path string, seed int64) error {
 }
 
 // coolDown emits garage frames after a session's results are published.
+//
+// The incident counter is carried through these frames. The real simulator does
+// not zero it when the driver returns to the garage, and emitting zero here would
+// invite a consumer to treat the drop as incidents being forgiven.
 func coolDown(sw *writer, w *Weekend, sessionIdx, frames int) error {
 	s := &w.Sessions[sessionIdx]
+
+	incidents := 0
+	for _, r := range s.Results {
+		if r.CarIdx == w.DriverCarIdx {
+			incidents = r.Incidents
+			break
+		}
+	}
+
 	for i := 0; i < frames; i++ {
 		sw.rb.Reset()
 		if err := setBase(sw, w, s, 0); err != nil {
@@ -116,7 +129,10 @@ func coolDown(sw *writer, w *Weekend, sessionIdx, frames int) error {
 		if err := sw.rb.SetInt("SessionState", int32(irsdk.StateCoolDown)); err != nil {
 			return err
 		}
-		if err := setAllCars(sw, w, nil, irsdk.InPitStall); err != nil {
+		if err := sw.rb.SetInt("PlayerCarMyIncidentCount", int32(incidents)); err != nil {
+			return err
+		}
+		if err := setAllCars(sw, w, nil, nil, irsdk.InPitStall); err != nil {
 			return err
 		}
 		if err := sw.emit(); err != nil {
@@ -148,7 +164,7 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 		if err := sw.rb.SetInt("SessionState", int32(irsdk.StateGetInCar)); err != nil {
 			return err
 		}
-		if err := setAllCars(sw, w, nil, irsdk.InPitStall); err != nil {
+		if err := setAllCars(sw, w, nil, nil, irsdk.InPitStall); err != nil {
 			return err
 		}
 		if err := sw.emit(); err != nil {
@@ -181,7 +197,7 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 		if err := setInCar(sw, w, s, fuel, lapNum, 0, 0, bestLap, bestLapNum, incidents, driverPos, true); err != nil {
 			return err
 		}
-		if err := setAllCars(sw, w, cars, irsdk.InPitStall); err != nil {
+		if err := setAllCars(sw, w, cars, order, irsdk.InPitStall); err != nil {
 			return err
 		}
 		if err := sw.emit(); err != nil {
@@ -252,15 +268,19 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 				return err
 			}
 
-			// Field movement, and the position swaps that produce the
-			// pass/passed record.
+			// Field movement, and the position swaps that produce the pass/passed
+			// record.
+			//
+			// The driver's position is re-derived from the running order rather than
+			// tracked alongside it. Both advanceField and maybeSwap may reorder the
+			// field, and keeping a separate counter in step with them proved to be a
+			// source of silent misattribution.
 			if isRace {
 				advanceField(sw, w, cars, order, lap, pct)
-				if newPos, changed := maybeSwap(sw, w, cars, order, driverPos); changed {
-					driverPos = newPos
-				}
+				maybeSwap(sw, w, cars, order, driverPos)
+				driverPos = indexOf(order, w.DriverCarIdx) + 1
 			}
-			if err := setAllCars(sw, w, cars, surface); err != nil {
+			if err := setAllCars(sw, w, cars, order, surface); err != nil {
 				return err
 			}
 			if err := sw.rb.SetInt("PlayerCarPosition", int32(driverPos)); err != nil {
@@ -297,7 +317,7 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 		if err := sw.rb.SetFloat("LapLastLapTime", lapTime); err != nil {
 			return err
 		}
-		if err := setAllCars(sw, w, cars, irsdk.OnTrack); err != nil {
+		if err := setAllCars(sw, w, cars, order, irsdk.OnTrack); err != nil {
 			return err
 		}
 		if err := sw.emit(); err != nil {
@@ -319,7 +339,7 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 				if err := sw.rb.SetIntAt("CarIdxTrackSurface", w.DriverCarIdx, int32(irsdk.InPitStall)); err != nil {
 					return err
 				}
-				if err := setAllCars(sw, w, cars, irsdk.InPitStall); err != nil {
+				if err := setAllCars(sw, w, cars, order, irsdk.InPitStall); err != nil {
 					return err
 				}
 				if err := sw.emit(); err != nil {
@@ -342,7 +362,7 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 		if err := sw.rb.SetBool("IsOnTrackCar", true); err != nil {
 			return err
 		}
-		if err := setAllCars(sw, w, cars, irsdk.OnTrack); err != nil {
+		if err := setAllCars(sw, w, cars, order, irsdk.OnTrack); err != nil {
 			return err
 		}
 		if err := sw.emit(); err != nil {
@@ -429,7 +449,12 @@ func setInCar(
 }
 
 // setAllCars writes the per-car arrays, including the driver's own slot.
-func setAllCars(sw *writer, w *Weekend, cars []carState, driverSurface irsdk.TrkLoc) error {
+//
+// order carries the field in position order, which is what makes the per-car
+// position array meaningful. Without it every CarIdxPosition would be zero and no
+// position change could ever be attributed to an opponent — the ingestion path
+// would record every swap as cause Unknown.
+func setAllCars(sw *writer, w *Weekend, cars []carState, order []int, driverSurface irsdk.TrkLoc) error {
 	rb := sw.rb
 	// Everything not in the field is out of the world, which is what the sim
 	// reports for unused car indices.
@@ -441,6 +466,18 @@ func setAllCars(sw *writer, w *Weekend, cars []carState, driverSurface irsdk.Trk
 			return err
 		}
 		if err := rb.SetIntAt("CarIdxClassPosition", i, 0); err != nil {
+			return err
+		}
+	}
+	// Position is one-based and follows the running order.
+	for pos, carIdx := range order {
+		if carIdx < 0 || carIdx >= MaxCars {
+			continue
+		}
+		if err := rb.SetIntAt("CarIdxPosition", carIdx, int32(pos+1)); err != nil {
+			return err
+		}
+		if err := rb.SetIntAt("CarIdxClassPosition", carIdx, int32(pos+1)); err != nil {
 			return err
 		}
 	}
