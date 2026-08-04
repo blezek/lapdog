@@ -8,6 +8,7 @@ import { seriesColour, useTheme, type Theme } from '../theme'
 import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from '../components/Chart'
 import { Card, Empty, ErrorNote, Legend, Loading, Stat } from '../components/ui'
 import { Filters } from '../components/Filters'
+import { StackedByCategory } from '../components/StackedByCategory'
 
 export function Dashboard() {
   const { filter } = useFilter()
@@ -80,6 +81,8 @@ export function Dashboard() {
         </Card>
       </div>
 
+      <CarAndTrackBreakdown />
+
       <div className="grid two-col">
         <Card
           title="Driving hours by category"
@@ -109,6 +112,51 @@ export function Dashboard() {
         <GridToFinish />
       </div>
     </>
+  )
+}
+
+/* ------------------------------------------------- car and track breakdowns */
+
+/**
+ * CarAndTrackBreakdown shows where the time went, by car and by track.
+ *
+ * Both charts drill down rather than staying fixed. With every car selected the bars
+ * are cars; narrow to one car and the same panel becomes that car's tracks, which is
+ * the more detailed question a driver asks next — "I have spent forty hours in the
+ * GT3, where?" The track panel mirrors it, becoming a per-car split once a single
+ * track is chosen.
+ *
+ * The drill-down reuses the ordinary filter rather than holding its own state, so the
+ * charts, the tables and any export all stay describing the same set.
+ */
+function CarAndTrackBreakdown() {
+  const { filter, state } = useFilter()
+
+  const oneCar = state.carId != null
+  const oneTrack = state.trackId != null
+
+  const carTitle = oneCar
+    ? 'Where this car was driven, by track'
+    : 'Driving hours by car, split by category'
+  const trackTitle = oneTrack
+    ? 'What was driven at this track, by car'
+    : 'Driving hours by track, split by category'
+
+  return (
+    <div className="grid two-col" style={{ marginBottom: 14 }}>
+      <StackedByCategory
+        title={carTitle}
+        by={oneCar ? 'track' : 'car'}
+        filter={filter}
+        maxGroups={oneCar ? 16 : 12}
+      />
+      <StackedByCategory
+        title={trackTitle}
+        by={oneTrack ? 'car' : 'track'}
+        filter={filter}
+        maxGroups={oneTrack ? 12 : 16}
+      />
+    </div>
   )
 }
 
@@ -241,14 +289,22 @@ function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
       series: [
         {
           type: 'bar',
-          data: sorted.map((r, i) => ({
+          // groupId is the category itself, so a filter change animates each bar to
+          // its own new length instead of sliding between reordered slots.
+          //
+          // The colour is keyed to the category's rank in the full unsorted list
+          // rather than to its position on screen, so a category keeps its hue when
+          // the ordering shifts. Colour follows the entity, never its rank.
+          data: sorted.map((r) => ({
             value: Number(r.drivingHours.toFixed(2)),
+            groupId: r.key,
             itemStyle: {
-              color: seriesColour(theme, i % 8),
+              color: seriesColour(theme, colourIndex(folded, r.key)),
               // 4px rounded data-ends, anchored to the baseline.
               borderRadius: [0, 4, 4, 0],
             },
           })),
+          universalTransition: { enabled: true, divideShape: 'clone' },
           barMaxWidth: 15,
           // Direct labels, which is what makes the low-contrast light-mode hues
           // legible without relying on the swatch.
@@ -267,14 +323,29 @@ function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
   return (
     <>
       <Chart option={option} ariaLabel="Driving hours by session category" />
+      {/* The legend uses the same colourIndex as the bars. It previously indexed
+          the unsorted list while the bars indexed the sorted one, so the swatches
+          named the wrong colours. */}
       <Legend
-        items={folded.map((r, i) => ({
+        items={folded.map((r) => ({
           label: labelForKey(r.key),
-          colour: seriesColour(theme, i % 8),
+          colour: seriesColour(theme, colourIndex(folded, r.key)),
         }))}
       />
     </>
   )
+}
+
+/**
+ * colourIndex returns a category's fixed categorical slot.
+ *
+ * Keyed to the category rather than to its position in a sorted view, so a category
+ * keeps its hue when the ordering changes. Colour follows the entity, never its
+ * rank: a filter that reorders the bars must not repaint the survivors.
+ */
+function colourIndex(all: SummaryRow[], key: string): number {
+  const i = all.findIndex((r) => r.key === key)
+  return i < 0 ? 0 : i % 8
 }
 
 function CategoryTable({ rows }: { rows: SummaryRow[] }) {

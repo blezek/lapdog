@@ -707,3 +707,100 @@ func TestExportDefaultsToCSV(t *testing.T) {
 }
 
 func storeFilterAll() store.Filter { return store.Filter{} }
+
+func TestBreakdownEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+
+	var rows []store.BreakdownRow
+	rec := get(t, h, "/api/breakdown?by=car", &rows)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d\n%s", rec.Code, rec.Body.String())
+	}
+	if len(rows) == 0 {
+		t.Fatal("no breakdown rows")
+	}
+	for _, r := range rows {
+		if r.Group == "" || r.Stack == "" {
+			t.Errorf("row has an empty dimension: %+v", r)
+		}
+		if !strings.Contains(r.Stack, "/") {
+			t.Errorf("stack %q is not a type/context pair", r.Stack)
+		}
+	}
+
+	// The stacked bars must add up to what the KPI row shows, or the dashboard
+	// contradicts itself.
+	var totals store.Totals
+	get(t, h, "/api/totals", &totals)
+	var sum float64
+	for _, r := range rows {
+		sum += r.DrivingHours
+	}
+	if diff := sum - totals.DrivingHours; diff > 1e-9 || diff < -1e-9 {
+		t.Errorf("breakdown sums to %v driving hours but totals reports %v", sum, totals.DrivingHours)
+	}
+}
+
+// The dimension defaults rather than erroring, since the stacked bar is the primary
+// consumer and "by car" is its natural default.
+func TestBreakdownDefaultsToCar(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var withDefault, explicit []store.BreakdownRow
+	get(t, h, "/api/breakdown", &withDefault)
+	get(t, h, "/api/breakdown?by=car", &explicit)
+	if len(withDefault) != len(explicit) || len(withDefault) == 0 {
+		t.Errorf("default gave %d rows, by=car gave %d", len(withDefault), len(explicit))
+	}
+}
+
+// An unrecognised dimension is a client mistake, so 400 not 500, and the allowlist
+// means it can never reach SQL.
+func TestBreakdownRejectsUnknownDimension(t *testing.T) {
+	h, store0, _ := newTestServer(t)
+	for _, q := range []string{
+		"by=nonsense",
+		"by=car%3B+DROP+TABLE+sessions",
+		"by=1%3D1",
+	} {
+		if rec := get(t, h, "/api/breakdown?"+q, nil); rec.Code != http.StatusBadRequest {
+			t.Errorf("breakdown?%s: status = %d, want 400", q, rec.Code)
+		}
+	}
+	if _, total, err := store0.ListSessions(storeFilterAll()); err != nil || total != 2 {
+		t.Errorf("after injection attempts: total=%d err=%v, want 2 and nil", total, err)
+	}
+}
+
+// The breakdown must honour the shared filter like every other endpoint.
+func TestBreakdownHonoursFilter(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var rows []store.BreakdownRow
+	get(t, h, "/api/breakdown?by=car&session_type=Race", &rows)
+	for _, r := range rows {
+		if !strings.HasPrefix(r.Stack, "Race/") {
+			t.Errorf("stack %q leaked past a session_type=Race filter", r.Stack)
+		}
+	}
+	if len(rows) == 0 {
+		t.Error("filtering to races produced no rows")
+	}
+}
+
+// The server owns the dimension allowlist, so it advertises it.
+func TestFacetsAdvertisesBreakdownDimensions(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var f facetsResponse
+	get(t, h, "/api/facets", &f)
+	if len(f.BreakdownBy) == 0 {
+		t.Error("facets does not advertise the breakdown dimensions")
+	}
+	found := false
+	for _, d := range f.BreakdownBy {
+		if d == "car" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("breakdownBy = %v, want it to include car", f.BreakdownBy)
+	}
+}

@@ -107,6 +107,14 @@ export interface SummaryRow {
   incidents: number
 }
 
+export interface BreakdownRow {
+  group: string
+  stack: string
+  drivingHours: number
+  sessions: number
+  laps: number
+}
+
 export interface DailyRow {
   day: string
   drivingHours: number
@@ -125,6 +133,7 @@ export interface Facets {
   sessionTypes: string[]
   eventContexts: string[]
   groupBy: string[]
+  breakdownBy: string[]
 }
 
 export interface Status {
@@ -232,6 +241,8 @@ export const api = {
   summary: (f: Filter, groupBy: string) =>
     get<SummaryRow[]>(`/api/summary?${toQuery(f, { group_by: groupBy })}`),
   daily: (f: Filter) => get<DailyRow[]>(`/api/daily?${toQuery(f)}`),
+  breakdown: (f: Filter, by: string) =>
+    get<BreakdownRow[]>(`/api/breakdown?${toQuery(f, { by })}`),
 
   sessions: (f: Filter) => get<ListResponse<Session>>(`/api/sessions?${toQuery(f)}`),
   session: (id: number) => get<Session>(`/api/sessions/${id}`),

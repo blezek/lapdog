@@ -9,7 +9,7 @@
  * bundle to what the interface draws.
  */
 
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as echarts from 'echarts/core'
 import { BarChart, LineChart, HeatmapChart, CustomChart } from 'echarts/charts'
 import {
@@ -21,6 +21,7 @@ import {
   VisualMapComponent,
 } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
+import { UniversalTransition } from 'echarts/features'
 
 echarts.use([
   BarChart,
@@ -34,6 +35,11 @@ echarts.use([
   MarkLineComponent,
   VisualMapComponent,
   CanvasRenderer,
+  // UniversalTransition lets a series match its data across updates by identity
+  // rather than by array index. Charts whose rows are sorted by value need it: when
+  // the order changes, index matching would animate a bar from one category's slot
+  // into another's, which reads as the wrong category moving.
+  UniversalTransition,
 ])
 
 export interface ChartProps {
@@ -67,13 +73,50 @@ export function Chart({ option, className = 'chart', onEvent, ariaLabel }: Chart
     }
   }, [])
 
+  const reducedMotion = usePrefersReducedMotion()
+
   useEffect(() => {
     const instance = chart.current
     if (!instance) return
-    // notMerge, because a filter change can remove series entirely and a merged
-    // update would leave the departed ones on screen.
-    instance.setOption(option, { notMerge: true })
-  }, [option])
+
+    // Animation defaults are applied here rather than per chart, so every chart
+    // transitions the same way. A chart can still override them, since the caller's
+    // option is spread last.
+    // The cast is needed because spreading the caller's option widens the easing
+    // fields to plain strings; the values themselves are valid easing names.
+    const withMotion = {
+      animation: !reducedMotion,
+      animationDuration: reducedMotion ? 0 : 400,
+      animationDurationUpdate: reducedMotion ? 0 : 400,
+      animationEasing: 'cubicOut',
+      animationEasingUpdate: 'cubicOut',
+      ...option,
+    } as echarts.EChartsCoreOption
+
+    // replaceMerge rather than notMerge.
+    //
+    // notMerge disposes and rebuilds the series, so a filter change had nothing to
+    // transition from and the chart simply snapped to its new shape. replaceMerge
+    // swaps the listed components wholesale — so a series that no longer exists is
+    // still removed rather than lingering — while letting ECharts diff the values
+    // it can and animate between them.
+    //
+    // tooltip is in the list for correctness, not appearance: the formatters close
+    // over the data arrays, so leaving the old tooltip in place would show numbers
+    // from the previous filter on hover.
+    instance.setOption(withMotion, {
+      replaceMerge: [
+        'series',
+        'xAxis',
+        'yAxis',
+        'tooltip',
+        'grid',
+        'visualMap',
+        'calendar',
+        'dataZoom',
+      ],
+    })
+  }, [option, reducedMotion])
 
   useEffect(() => {
     const instance = chart.current
@@ -85,6 +128,26 @@ export function Chart({ option, className = 'chart', onEvent, ariaLabel }: Chart
   }, [onEvent])
 
   return <div ref={host} className={className} role="img" aria-label={ariaLabel} />
+}
+
+/**
+ * usePrefersReducedMotion reports the operating system's reduced-motion setting.
+ *
+ * Someone who has asked their system to reduce motion has asked for a reason, and a
+ * chart that slides and grows on every filter change is exactly the kind of motion
+ * they turned off. Animation is skipped entirely for them rather than shortened.
+ */
+export function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(
+    () => window.matchMedia('(prefers-reduced-motion: reduce)').matches,
+  )
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const update = () => setReduced(media.matches)
+    media.addEventListener('change', update)
+    return () => media.removeEventListener('change', update)
+  }, [])
+  return reduced
 }
 
 /**

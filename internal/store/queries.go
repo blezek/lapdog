@@ -216,6 +216,81 @@ ORDER BY k`
 	return out, rows.Err()
 }
 
+// BreakdownRow is one cell of a two-dimensional aggregate: driving time for a
+// group, split by the category stacked within it.
+type BreakdownRow struct {
+	// Group is the outer dimension, such as a car or a track.
+	Group string `json:"group"`
+	// Stack is the session type and event context pair, the same category the rest
+	// of the interface uses.
+	Stack string `json:"stack"`
+
+	DrivingHours float64 `json:"drivingHours"`
+	Sessions     int     `json:"sessions"`
+	Laps         int     `json:"laps"`
+}
+
+// breakdownExpr maps an allowlisted outer dimension to its SQL expression.
+//
+// An allowlist for the same reason Summary uses one: the value arrives from a query
+// parameter and interpolating it would be SQL injection.
+var breakdownExpr = map[string]string{
+	"car":      "COALESCE(s.car_name, 'Unknown')",
+	"track":    "COALESCE(s.track_name, 'Unknown')",
+	"league":   "CASE WHEN s.league_id = 0 THEN 'Not a league' ELSE CAST(s.league_id AS TEXT) END",
+	"carclass": "COALESCE(s.car_class_name, 'Unknown')",
+}
+
+// BreakdownNames returns the allowlisted outer dimensions.
+func BreakdownNames() []string {
+	out := make([]string, 0, len(breakdownExpr))
+	for k := range breakdownExpr {
+		out = append(out, k)
+	}
+	return out
+}
+
+// Breakdown aggregates driving time by an outer dimension, split by category.
+//
+// This is what a stacked bar needs and Summary cannot express: Summary groups by a
+// single dimension, so asking it for "hours per car, split by what the driver was
+// doing" would require encoding two fields into one key and splitting the string
+// back apart — which breaks the moment a track or car name contains the separator.
+func (s *Store) Breakdown(f Filter, by string) ([]BreakdownRow, error) {
+	expr, ok := breakdownExpr[by]
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrBadGroupBy, by)
+	}
+	pred, args := f.where()
+
+	q := `
+SELECT ` + expr + ` AS grp,
+       s.session_type || '/' || s.event_context AS stack,
+       SUM(s.driving_seconds) / 3600.0,
+       COUNT(*),
+       SUM(s.laps_completed)
+FROM sessions s
+WHERE ` + pred + `
+GROUP BY grp, stack
+ORDER BY grp, stack`
+
+	rows, err := s.reader.Query(q, args...)
+	if err != nil {
+		return nil, fmt.Errorf("store: breakdown by %s: %w", by, err)
+	}
+	defer rows.Close()
+
+	out := []BreakdownRow{}
+	for rows.Next() {
+		var r BreakdownRow
+		if err := rows.Scan(&r.Group, &r.Stack, &r.DrivingHours, &r.Sessions, &r.Laps); err != nil {
+			return nil, fmt.Errorf("store: scan breakdown row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
 // DailyRow is one day's driving time, for the calendar heatmap.
 type DailyRow struct {
 	Day          string  `json:"day"`

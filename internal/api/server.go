@@ -60,6 +60,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/totals", s.handleTotals)
 	mux.HandleFunc("GET /api/summary", s.handleSummary)
 	mux.HandleFunc("GET /api/daily", s.handleDaily)
+	mux.HandleFunc("GET /api/breakdown", s.handleBreakdown)
 	mux.HandleFunc("GET /api/sessions", s.handleSessions)
 	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
 	mux.HandleFunc("GET /api/sessions/{id}/laps", s.handleSessionLaps)

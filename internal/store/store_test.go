@@ -714,3 +714,107 @@ func TestFacets(t *testing.T) {
 		}
 	}
 }
+
+// Breakdown is the two-dimensional aggregate the stacked bars need. Summary cannot
+// express it: it groups by one dimension, so asking it for "hours per car, split by
+// category" would mean encoding two fields into one key and splitting the string back
+// apart — which breaks the moment a name contains the separator.
+func TestBreakdownByCar(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	rows, err := s.Breakdown(Filter{}, "car")
+	if err != nil {
+		t.Fatalf("Breakdown: %v", err)
+	}
+	if len(rows) == 0 {
+		t.Fatal("no breakdown rows")
+	}
+
+	// The seed has two cars; the Porsche appears in several categories, the MX-5 in
+	// exactly one (the AI race).
+	byCar := map[string]float64{}
+	cells := map[string]int{}
+	for _, r := range rows {
+		byCar[r.Group] += r.DrivingHours
+		cells[r.Group]++
+		if r.Group == "" || r.Stack == "" {
+			t.Errorf("row has an empty dimension: %+v", r)
+		}
+		if !strings.Contains(r.Stack, "/") {
+			t.Errorf("stack %q is not a type/context pair", r.Stack)
+		}
+	}
+	if len(byCar) != 2 {
+		t.Errorf("cars = %v, want 2", byCar)
+	}
+	if cells["Mazda MX-5"] != 1 {
+		t.Errorf("MX-5 cells = %d, want 1 — it appears in only one category", cells["Mazda MX-5"])
+	}
+	if cells["Porsche 911 GT3 R"] < 3 {
+		t.Errorf("Porsche cells = %d, want at least 3 categories", cells["Porsche 911 GT3 R"])
+	}
+
+	// The per-car totals must reconcile with the overall driving time, or the stacked
+	// bars would not add up to what the KPI row reports.
+	total, err := s.Totals(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum float64
+	for _, v := range byCar {
+		sum += v
+	}
+	if math.Abs(sum-total.DrivingHours) > 1e-9 {
+		t.Errorf("breakdown sums to %v driving hours but Totals reports %v", sum, total.DrivingHours)
+	}
+}
+
+func TestBreakdownByTrackHonoursFilter(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	rows, err := s.Breakdown(Filter{TrackID: intp(341)}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rows {
+		if r.Group != "Spa" {
+			t.Errorf("group = %q, want only Spa when filtered to that track", r.Group)
+		}
+	}
+	if len(rows) == 0 {
+		t.Error("filtering to a track produced no rows")
+	}
+}
+
+// The outer dimension is an allowlist for the same reason group_by is: it arrives
+// from a query parameter.
+func TestBreakdownRejectsUnknownDimension(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	for _, bad := range []string{"", "nonsense", "car; DROP TABLE sessions", "1=1"} {
+		if _, err := s.Breakdown(Filter{}, bad); !errors.Is(err, ErrBadGroupBy) {
+			t.Errorf("Breakdown(%q) = %v, want ErrBadGroupBy", bad, err)
+		}
+	}
+	if _, total, err := s.ListSessions(Filter{}); err != nil || total != 6 {
+		t.Errorf("after injection attempts: total=%d err=%v, want 6 and nil", total, err)
+	}
+}
+
+func TestBreakdownDimensionsAreAdvertised(t *testing.T) {
+	names := BreakdownNames()
+	want := map[string]bool{"car": false, "track": false, "carclass": false, "league": false}
+	for _, n := range names {
+		if _, ok := want[n]; !ok {
+			t.Errorf("unexpected dimension %q", n)
+		}
+		want[n] = true
+	}
+	for n, seen := range want {
+		if !seen {
+			t.Errorf("dimension %q is not advertised", n)
+		}
+	}
+}

@@ -68,6 +68,30 @@ func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, rows)
 }
 
+// handleBreakdown serves a two-dimensional aggregate for the stacked bars: driving
+// time per car or track, split by what the driver was doing.
+func (s *Server) handleBreakdown(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	by := r.URL.Query().Get("by")
+	if by == "" {
+		by = "car"
+	}
+	rows, err := s.st.Breakdown(f, by)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		// An unrecognised dimension is a client mistake, not a server fault.
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
 func (s *Server) handleDaily(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.filterOrFail(w, r)
 	if !ok {
@@ -157,7 +181,8 @@ func (s *Server) handleLaps(w http.ResponseWriter, r *http.Request) {
 // have to hard-code a list the server owns.
 type facetsResponse struct {
 	store.Facets
-	GroupBy []string `json:"groupBy"`
+	GroupBy     []string `json:"groupBy"`
+	BreakdownBy []string `json:"breakdownBy"`
 }
 
 func (s *Server) handleFacets(w http.ResponseWriter, r *http.Request) {
@@ -166,7 +191,11 @@ func (s *Server) handleFacets(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.writeJSON(w, facetsResponse{Facets: f, GroupBy: store.GroupByNames()})
+	s.writeJSON(w, facetsResponse{
+		Facets:      f,
+		GroupBy:     store.GroupByNames(),
+		BreakdownBy: store.BreakdownNames(),
+	})
 }
 
 // settingsResponse echoes the saved config and names the fields whose change needs
