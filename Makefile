@@ -8,6 +8,15 @@ LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -s -w
 export CGO_ENABLED=0
 
 DIST    := dist
+BUNDLE  := internal/web/dist/index.html
+
+# Everything the bundle is built from. Listed explicitly rather than as `web/*` so
+# editing a source file rebuilds it while a stray file in web/ does not, and so
+# node_modules is never scanned.
+UI_SRC  := $(shell find web/src -type f 2>/dev/null) \
+           $(wildcard web/index.html web/package.json web/package-lock.json) \
+           $(wildcard web/vite.config.ts web/tsconfig*.json)
+
 EXE     := $(DIST)/lapdog.exe
 ZIP     := $(DIST)/lapdog-$(VERSION)-windows-amd64.zip
 SETUP   := $(DIST)/lapdog-$(VERSION)-setup.exe
@@ -19,13 +28,17 @@ SIGN_PKCS12   ?=
 SIGN_PASSWORD ?=
 TIMESTAMP_URL ?= http://timestamp.digicert.com
 
-.PHONY: help test vet ui ui-dev build-windows build-ctl build-gen fixtures dataset validate \
-        portable installer sign release tools clean
+.PHONY: help test test-ci vet ui ui-clean ui-dev ci verify-embed build-windows build-ctl build-gen \
+        fixtures dataset validate portable installer sign release tools clean
 
 help:
-	@echo "test           run the unit tests"
+	@echo "test           run the Go unit tests"
+	@echo "test-ci        run the Go tests with the frontend bundle required"
 	@echo "vet            run go vet"
 	@echo "ui             build the frontend into internal/web/dist"
+	@echo "ui-clean       rebuild the frontend from scratch"
+	@echo "ci             what CI runs: vet, frontend, both test suites, cross-build"
+	@echo "verify-embed   prove the interface is inside a Windows binary"
 	@echo "ui-dev         run the Vite dev server against a local API"
 	@echo "build-windows  cross-compile the tray app for Windows"
 	@echo "build-ctl      build the lapdogctl development CLI"
@@ -42,14 +55,41 @@ help:
 test:
 	go test ./...
 
+# The bundle-dependent tests skip when the frontend has not been built, so that a
+# clone without Node still runs the Go suite. That skip must not be reachable in
+# CI or a release: this target builds the bundle first and makes its absence a
+# failure rather than a skip.
+test-ci: $(BUNDLE)
+	LAPDOG_REQUIRE_BUNDLE=1 go test ./...
+
 vet:
 	go vet ./...
 
-# The built bundle is committed to internal/web/dist so that `go build` works
-# without a Node toolchain, and so a release can be reproduced from the Go source
-# alone. Rerun this after changing anything under web/.
-ui:
+# The frontend bundle is generated, not committed: it is about a megabyte of
+# minified JavaScript that changes wholesale on every UI edit, so committing it
+# would bury real changes under regenerated noise. CI builds it, and so does any
+# target that needs it — see BUNDLE below.
+ui: $(BUNDLE)
+
+# Force a rebuild even when the inputs look unchanged.
+ui-clean:
+	rm -rf internal/web/dist/assets internal/web/dist/index.html
+	$(MAKE) ui
+
+# A file target, not a phony one, so builds can depend on the bundle without
+# rerunning npm on every invocation. index.html stands in for the whole bundle
+# because the bundler always rewrites it: the asset names it references are
+# content-hashed, so it cannot be stale while the assets are current.
+#
+# The previous assets are removed here rather than by the bundler. Vite's
+# emptyOutDir would clear the whole directory including the tracked .gitkeep that
+# keeps //go:embed compiling, so it is off; clearing only the generated paths gets
+# the same freshness without deleting the placeholder.
+$(BUNDLE): $(UI_SRC)
+	rm -rf internal/web/dist/assets $(BUNDLE)
 	cd web && npm ci && npm run build
+	@test -d internal/web/dist/assets || { echo "ui: build produced no assets"; exit 1; }
+	@test -f internal/web/dist/.gitkeep || { echo "ui: build removed the embed placeholder"; exit 1; }
 
 # Vite serves the interface and proxies /api to a running backend, so the frontend
 # hot-reloads while talking to real data:
@@ -58,12 +98,12 @@ ui-dev:
 	cd web && npm run dev
 
 # The tray app must be linked -H windowsgui so no console window appears.
-build-windows:
+build-windows: $(BUNDLE)
 	go build -ldflags "-H windowsgui $(LDFLAGS)" -o dist/lapdog.exe ./cmd/lapdog
 
 # lapdogctl is a separate binary precisely because a GUI-subsystem executable has
 # no console and is therefore useless as a CLI. It is not shipped in releases.
-build-ctl:
+build-ctl: $(BUNDLE)
 	go build -ldflags "$(LDFLAGS)" -o dist/lapdogctl ./cmd/lapdogctl
 
 build-gen:
@@ -122,11 +162,31 @@ sign:
 	done
 	@echo "signed: $(EXE) $(SETUP)"
 
-release: test vet ui build-windows portable installer sign
+release: test-ci vet build-windows portable installer sign
 	cd $(DIST) && shasum -a 256 lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) > SHA256SUMS
 	@echo
 	@echo "Release artefacts in $(DIST):"
 	@cd $(DIST) && ls -lh lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) SHA256SUMS
 
+# Proves the interface really is inside a Windows executable rather than read from
+# disk at runtime, by finding strings that only exist in the bundle and icon set.
+#
+# It builds lapdogctl rather than the tray app because the tray entry point is not
+# written yet (backend plan, task 23). Both embed internal/web, so either one
+# demonstrates the property; switch this to $(EXE) once cmd/lapdog exists.
+verify-embed: $(BUNDLE)
+	@mkdir -p $(DIST)
+	GOOS=windows GOARCH=amd64 go build -o $(DIST)/lapdogctl.exe ./cmd/lapdogctl
+	@for n in LapDog mdi-racing-helmet; do \
+	  grep -qa "$$n" $(DIST)/lapdogctl.exe || { echo "verify-embed: $$n is missing from the binary"; exit 1; }; \
+	done
+	@echo "verify-embed: interface and icons are inside $(DIST)/lapdogctl.exe"
+
+# Mirrors .github/workflows/ci.yml so the same checks can be run before pushing.
+ci: vet test-ci verify-embed
+	cd web && npm run typecheck && npm run test
+	GOOS=windows GOARCH=amd64 go build ./...
+	@echo "ci: ok"
+
 clean:
-	rm -rf dist .dataset
+	rm -rf dist .dataset internal/web/dist/assets internal/web/dist/index.html

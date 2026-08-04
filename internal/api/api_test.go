@@ -17,6 +17,7 @@ import (
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
 	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/web/webtest"
 )
 
 // ------------------------------------------------------------- test doubles
@@ -70,7 +71,7 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, *fakeConfig) {
 	for _, r := range seed {
 		rec := &store.Session{
 			SessionKey: r.key, SessionType: r.st, EventContext: r.ctx,
-			StartedAt: r.started,
+			StartedAt:        r.started,
 			ConnectedSeconds: r.conn, InCarSeconds: r.car, DrivingSeconds: r.drive,
 			LapsCompleted: r.laps, Incidents: r.inc, BestLapTimeS: f64p(r.best),
 			TrackID: intp(18), TrackName: strp("Watkins Glen International"),
@@ -509,6 +510,7 @@ func TestUnknownAPIPathIs404JSON(t *testing.T) {
 // Non-API paths serve the embedded interface, and client-side routes survive a
 // reload.
 func TestNonAPIPathsServeTheInterface(t *testing.T) {
+	webtest.RequireBundle(t)
 	h, _, _ := newTestServer(t)
 	for _, p := range []string{"/", "/sessions", "/settings"} {
 		rec := get(t, h, p, nil)
@@ -560,7 +562,10 @@ func exportCSV(t *testing.T, h http.Handler, query string) ([][]string, *httptes
 
 func TestExportScopesCSV(t *testing.T) {
 	h, _, _ := newTestServer(t)
-	cases := []struct{ scope string; wantRows int }{
+	cases := []struct {
+		scope    string
+		wantRows int
+	}{
 		{"sessions", 3},  // header plus two sessions
 		{"laps", 5},      // header plus four laps
 		{"positions", 3}, // header plus two events

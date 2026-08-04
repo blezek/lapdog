@@ -8,7 +8,16 @@ export default defineConfig({
   // package that embeds it. There is no separate copy step to forget.
   build: {
     outDir: '../internal/web/dist',
-    emptyOutDir: true,
+    // Not emptied, because that directory is not only build output.
+    //
+    // It holds a tracked .gitkeep, which is what gives //go:embed all:dist
+    // something to match on a clean clone — without it every Go build fails at
+    // compile time. Emptying the directory deleted that placeholder on every
+    // build, so the repository showed it as deleted and a `make clean` left the
+    // tree unable to compile at all. `make ui` removes the previous assets
+    // explicitly instead, which keeps stale content-hashed files from piling up
+    // without taking the placeholder with them.
+    emptyOutDir: false,
     // Charts and tables are the bulk of the bundle and there is no network to
     // optimise for — the assets are served from the same executable over
     // loopback. A single chunk keeps the output simple.

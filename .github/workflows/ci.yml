@@ -1,0 +1,95 @@
+# Builds the frontend and runs both test suites.
+#
+# The frontend bundle is not committed — it is about a megabyte of minified
+# JavaScript that changes wholesale on every UI edit. So CI builds it, and it is
+# built before the Go tests run, because Go embeds it: the tests that prove the
+# interface ships inside the binary cannot pass without it.
+#
+# Those tests skip when the bundle is absent, so that a clone without a Node
+# toolchain still runs the Go suite. A skip that can be reached in CI is a test
+# that has quietly stopped running, so LAPDOG_REQUIRE_BUNDLE turns it into a
+# failure here. `make test-ci` sets it.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push supersedes an in-flight run on the same ref.
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      # Fails the run if a committed file was generated rather than written, which
+      # is the state this workflow exists to make unnecessary.
+      - name: Check the bundle is not committed
+        run: |
+          if git ls-files --error-unmatch internal/web/dist/index.html >/dev/null 2>&1; then
+            echo "internal/web/dist/index.html is tracked; the bundle is generated, not committed."
+            exit 1
+          fi
+          if [ -n "$(git ls-files internal/web/dist/assets)" ]; then
+            echo "internal/web/dist/assets is tracked; the bundle is generated, not committed."
+            exit 1
+          fi
+
+      - name: Build the frontend
+        run: make ui
+
+      - name: Frontend typecheck
+        run: cd web && npm run typecheck
+
+      - name: Frontend tests
+        run: cd web && npm run test
+
+      - name: go vet
+        run: make vet
+
+      # Requires the bundle rather than skipping over it.
+      - name: Go tests
+        run: make test-ci
+
+      # The release target is Windows, so a host-only build would not prove much.
+      # CGO_ENABLED=0 is what makes this work without a mingw toolchain.
+      - name: Cross-compile for Windows
+        run: GOOS=windows GOARCH=amd64 go build ./...
+
+      # The point of embedding is that the .exe needs no sidecar files, so this
+      # greps a Windows binary for strings that exist only in the bundle and the
+      # icon set. A build that silently dropped either fails here rather than on a
+      # user's machine.
+      #
+      # It checks lapdogctl, not the tray app: cmd/lapdog has no Go files yet
+      # (backend plan, task 23). Both embed internal/web, so either proves the
+      # property. Point this at dist/lapdog.exe once the tray entry point exists.
+      - name: Check the interface really is inside a Windows executable
+        run: make verify-embed
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lapdogctl-windows-amd64
+          path: dist/lapdogctl.exe
+          if-no-files-found: error

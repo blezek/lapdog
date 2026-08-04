@@ -147,7 +147,13 @@ export function useElementWidth<T extends HTMLElement>(): [RefObject<T | null>, 
     const el = ref.current
     if (!el) return
     setWidth(el.getBoundingClientRect().width)
-    const observer = new ResizeObserver(([entry]) => setWidth(entry.contentRect.width))
+    const observer = new ResizeObserver((entries) => {
+      // The observer is documented to deliver at least one entry, but the array is
+      // still typed as possibly sparse, and reading the element directly is both
+      // honest about that and unaffected by a batched delivery.
+      const entry = entries[0]
+      if (entry) setWidth(entry.contentRect.width)
+    })
     observer.observe(el)
     return () => observer.disconnect()
   }, [])

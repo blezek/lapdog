@@ -26,6 +26,16 @@ var distFS embed.FS
 // ErrNoBundle indicates the frontend bundle is missing from the binary.
 var ErrNoBundle = errors.New("web: no frontend bundle embedded")
 
+// RequireBundleEnv names the variable that makes a missing bundle a test failure
+// rather than a skipped test.
+//
+// The bundle is generated rather than committed, so tests that serve the interface
+// skip on a clone that has not run the frontend build. CI and `make test-ci` set
+// this so that the skip cannot be reached where it would hide a real breakage. It
+// is declared here, beside Check, because it is part of the same contract; the
+// helpers that read it are in webtest and in this package's own tests.
+const RequireBundleEnv = "LAPDOG_REQUIRE_BUNDLE"
+
 // FS returns the built frontend rooted at dist, so paths are served without the
 // dist prefix.
 func FS() (fs.FS, error) {

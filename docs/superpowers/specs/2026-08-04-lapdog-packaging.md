@@ -22,7 +22,7 @@ Everything the browser needs is compiled in with `embed`:
 
 | Asset | Package | Source |
 |---|---|---|
-| Interface HTML, JS, CSS | `internal/web` | `internal/web/dist/`, produced by the frontend build |
+| Interface HTML, JS, CSS | `internal/web` | `internal/web/dist/`, produced by the frontend build (generated, not committed — see 2.3) |
 | Icon set (25 SVGs) | `internal/ui/icons` | `internal/ui/icons/mdi/` |
 | Icon licence text | `internal/ui/icons` | `internal/ui/icons/mdi/LICENSE` |
 | Database migrations | `internal/store` | `internal/store/migrations/*.sql` |
@@ -33,11 +33,23 @@ Everything the browser needs is compiled in with `embed`:
 
 Embedding is a verified property, not an intention.
 
-- **`web.Check()`** runs at start-up and returns `ErrNoBundle` if `index.html` is absent or empty. A build that forgot to run the frontend bundler fails loudly instead of serving a blank page that reads as a runtime fault.
+- **`web.Check()`** runs at start-up and returns `ErrNoBundle` unless the bundle is present *and complete*: it reads the asset names back out of `index.html` and confirms each one is embedded. A build that forgot to run the frontend bundler fails loudly instead of serving a blank page that reads as a runtime fault.
+
+  Checking only that `index.html` exists is not sufficient, and this is not hypothetical. A `dist/` line in `.gitignore` matched `internal/web/dist` as well as the intended build directory, while `index.html` itself was tracked from before that rule existed. A clone therefore held HTML referencing hashed assets that were absent, the binary built and started cleanly, and the interface was blank. The asset names are content-hashed per build, so they cannot be checked against a fixed list — they have to be read from the HTML that loads them.
 - **No runtime file reads.** No code path in `internal/web` or `internal/ui/icons` opens a path on disk; every read goes through `embed.FS`.
 - **Verified against a real Windows binary.** Building `internal/web` for `windows/amd64` and searching the output finds the interface HTML, the icon path data and the licence text inside it.
 
-### 2.3 Consequence for the installer
+### 2.3 The bundle is generated, not committed
+
+`internal/web/dist/` is gitignored apart from a `.gitkeep`, and CI builds it (`.github/workflows/ci.yml`).
+
+The bundle is roughly a megabyte of minified JavaScript whose entire contents change on every UI edit, so committing it buries real diffs under regenerated noise. The cost is that `go build` alone is no longer sufficient to produce a working executable: `make ui` must run first. `make build-windows` and `make build-ctl` depend on the bundle so this cannot be forgotten, and CI fails if the bundle is ever committed again.
+
+`.gitkeep` is tracked deliberately. `//go:embed all:dist` fails at *compile* time when its pattern matches nothing, so without a tracked file in that directory every Go build on a clean clone breaks — including `go vet` and binaries that never serve the interface. A directory holding only the placeholder still fails `web.Check()`, so the placeholder cannot be mistaken for an interface.
+
+The Go tests that need the bundle skip when it is absent, so a clone without a Node toolchain can still run the suite. A skip that is reachable in CI is a test that has silently stopped running, so `LAPDOG_REQUIRE_BUNDLE=1` converts the skip into a failure; `make test-ci` and CI both set it.
+
+### 2.4 Consequence for the installer
 
 Because the executable is genuinely self-contained, the installer's only jobs are placing one file, creating shortcuts, registering an uninstaller, and optionally setting the startup entry. There is no dependency to install, no runtime to bundle, no VC++ redistributable. This is what makes a portable zip a legitimate distribution channel alongside the installer rather than a degraded one.
 
@@ -102,8 +114,8 @@ This is the significant finding, and it shapes everything below: **the complete 
 ### 4.2 Stages
 
 ```
-1. frontend      cd web && npm ci && npm run build      -> internal/web/dist/
-2. verify        go test ./...                          -> web.Check passes
+1. frontend      make ui                                -> internal/web/dist/
+2. verify        make test-ci                           -> web.Check passes, no skips
 3. compile       GOOS=windows GOARCH=amd64              -> dist/lapdog.exe
                  -ldflags "-H windowsgui -X …Version=…"
 4. portable      zip                                    -> dist/lapdog-<ver>-windows-amd64.zip

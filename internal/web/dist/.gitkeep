@@ -1,0 +1,6 @@
+# The frontend bundle is generated, not committed: it is ~1 MB of minified
+# JavaScript that changes wholesale on every UI edit. CI builds it (make ui).
+#
+# This file exists so //go:embed all:dist still has something to match on a
+# clean clone. Without it the embed pattern matches nothing and every Go build
+# fails at compile time, including builds that never serve the interface.

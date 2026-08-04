@@ -89,6 +89,20 @@ func (s *Server) Handler() (http.Handler, error) {
 // ListenAndServe binds the loopback interface only and serves until the listener
 // fails.
 func (s *Server) ListenAndServe(port int) error {
+	// Refuse to start without a usable interface.
+	//
+	// The bundle is generated rather than committed, and //go:embed always finds
+	// something because a placeholder keeps it compiling on a clone that has not run
+	// the frontend build. So the check has to be explicit: without it the server
+	// started happily and served a blank page, which reads as a frontend fault
+	// rather than as a build step that was skipped.
+	//
+	// This lives here, not in Handler, because Handler is also how tests assemble
+	// the API. Requiring the bundle there would make every JSON endpoint test
+	// depend on a Node toolchain to say anything about JSON.
+	if err := web.Check(); err != nil {
+		return err
+	}
 	h, err := s.Handler()
 	if err != nil {
 		return err

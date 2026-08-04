@@ -5,16 +5,59 @@ import (
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"testing/fstest"
 )
 
+// requireBundle skips a test that needs the built frontend.
+//
+// This duplicates webtest.RequireBundle deliberately: these tests are in package
+// web, so importing webtest — which imports web — would be an import cycle. Both
+// read web.RequireBundleEnv, so the contract itself is declared once.
+//
+// The bundle is generated rather than committed, so a clone without a Node
+// toolchain can still run the Go suite — those tests skip instead of failing over
+// something the developer never broke.
+//
+// A skip is only safe if something guarantees it does not apply where it matters.
+// CI builds the bundle first and sets this variable, which turns the skip into a
+// failure; otherwise the tests proving the interface ships inside the binary would
+// quietly disable themselves exactly when the bundle went missing, which is the
+// failure they exist to catch.
+func requireBundle(t *testing.T) {
+	t.Helper()
+	err := Check()
+	if err == nil {
+		return
+	}
+	if os.Getenv(RequireBundleEnv) != "" {
+		t.Fatalf("%s is set, so the bundle must be usable, but: %v", RequireBundleEnv, err)
+	}
+	t.Skipf("no frontend bundle (run `make ui`): %v", err)
+}
+
 // The whole interface must live inside the binary. If this fails, the release is
 // not a single self-contained executable.
 func TestCheckFindsTheEmbeddedBundle(t *testing.T) {
+	requireBundle(t)
 	if err := Check(); err != nil {
 		t.Fatalf("Check: %v", err)
+	}
+}
+
+// The placeholder that keeps //go:embed compiling must not be mistaken for an
+// interface. A build with only .gitkeep has to fail the bundle check, or CI would
+// pass while shipping a blank page.
+func TestPlaceholderAloneIsNotAUsableBundle(t *testing.T) {
+	fsys := fstest.MapFS{".gitkeep": &fstest.MapFile{Data: []byte("# placeholder\n")}}
+	err := checkBundle(fsys)
+	if err == nil {
+		t.Fatal("checkBundle accepted a directory holding only the embed placeholder")
+	}
+	if !errors.Is(err, ErrNoBundle) {
+		t.Errorf("error is not ErrNoBundle: %v", err)
 	}
 }
 
@@ -25,6 +68,7 @@ func TestCheckFindsTheEmbeddedBundle(t *testing.T) {
 // bundle check that only looked for index.html, and served a blank page. Reading
 // the asset names back out of the HTML is what makes the gap visible.
 func TestEveryAssetIndexReferencesIsEmbedded(t *testing.T) {
+	requireBundle(t)
 	sub, err := FS()
 	if err != nil {
 		t.Fatalf("FS: %v", err)
@@ -137,6 +181,7 @@ func TestCheckBundleIgnoresNonAssetLinks(t *testing.T) {
 }
 
 func TestServesIndexAtRoot(t *testing.T) {
+	requireBundle(t)
 	h, err := Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +200,7 @@ func TestServesIndexAtRoot(t *testing.T) {
 // A page reload on a client-side route must return the app shell, not a 404, or
 // refreshing any page but the root would break.
 func TestUnknownRouteFallsBackToTheAppShell(t *testing.T) {
+	requireBundle(t)
 	h, err := Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -252,6 +298,7 @@ func TestNoDirectoryTraversal(t *testing.T) {
 // Only extensionless client-side routes get the shell; anything that looks like a
 // file must 404.
 func TestMissingAssetIs404NotTheAppShell(t *testing.T) {
+	requireBundle(t)
 	h, err := Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -276,6 +323,7 @@ func TestMissingAssetIs404NotTheAppShell(t *testing.T) {
 // Client-side routes still get the shell, including nested ones, so a reload on
 // any page keeps working.
 func TestExtensionlessRoutesStillGetTheShell(t *testing.T) {
+	requireBundle(t)
 	h, err := Handler()
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +343,7 @@ func TestExtensionlessRoutesStillGetTheShell(t *testing.T) {
 // The real bundle must still be served, so the fix cannot have broken asset
 // delivery.
 func TestRealAssetsAreServed(t *testing.T) {
+	requireBundle(t)
 	sub, err := FS()
 	if err != nil {
 		t.Fatal(err)

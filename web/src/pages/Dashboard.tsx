@@ -222,7 +222,9 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
     const days = rows.map((r) => r.day).sort()
     const first = days[0] ?? '2020-01-01'
     const last = days[days.length - 1] ?? first
-    const range = [weekStart(first), weekEnd(last)]
+    const rangeStart = weekStart(first)
+    const rangeEnd = weekEnd(last)
+    const range = [rangeStart, rangeEnd]
     const years = [...new Set(days.map((d) => d.slice(0, 4)))]
 
     // Cell size is capped, not fixed.
@@ -234,7 +236,7 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
     // down to whatever makes the range fit, and stay at the preferred size whenever
     // there is room. The gutter is reserved on both sides so centring cannot push
     // the weekday labels off the edge.
-    const spanDays = (Date.parse(range[1]) - Date.parse(range[0])) / 86_400_000 + 1
+    const spanDays = (Date.parse(rangeEnd) - Date.parse(rangeStart)) / 86_400_000 + 1
     const weeks = Math.max(1, Math.round(spanDays / 7))
     const usable = Math.max(0, width - LabelGutter * 2)
     const cell = width > 0 ? Math.max(3, Math.min(CellMax, Math.floor(usable / weeks))) : CellMax
