@@ -6,3 +6,8 @@
 .dataset.db
 .dataset.db-wal
 .dataset.db-shm
+
+# Build output. Rebuild with `make build-ctl`, `make build-gen`, `make build-windows`.
+# Note: not "*.lpd" — the committed capture fixtures under testdata/fixtures must
+# stay tracked, since tests and reviewers depend on them.
+dist/

@@ -19,12 +19,14 @@ SIGN_PKCS12   ?=
 SIGN_PASSWORD ?=
 TIMESTAMP_URL ?= http://timestamp.digicert.com
 
-.PHONY: help test vet build-windows build-ctl build-gen fixtures dataset validate \
+.PHONY: help test vet ui ui-dev build-windows build-ctl build-gen fixtures dataset validate \
         portable installer sign release tools clean
 
 help:
 	@echo "test           run the unit tests"
 	@echo "vet            run go vet"
+	@echo "ui             build the frontend into internal/web/dist"
+	@echo "ui-dev         run the Vite dev server against a local API"
 	@echo "build-windows  cross-compile the tray app for Windows"
 	@echo "build-ctl      build the lapdogctl development CLI"
 	@echo "build-gen      build the dataset generator"
@@ -42,6 +44,18 @@ test:
 
 vet:
 	go vet ./...
+
+# The built bundle is committed to internal/web/dist so that `go build` works
+# without a Node toolchain, and so a release can be reproduced from the Go source
+# alone. Rerun this after changing anything under web/.
+ui:
+	cd web && npm ci && npm run build
+
+# Vite serves the interface and proxies /api to a running backend, so the frontend
+# hot-reloads while talking to real data:
+#   ./dist/lapdogctl serve .dataset.db
+ui-dev:
+	cd web && npm run dev
 
 # The tray app must be linked -H windowsgui so no console window appears.
 build-windows:
@@ -108,7 +122,7 @@ sign:
 	done
 	@echo "signed: $(EXE) $(SETUP)"
 
-release: test vet build-windows portable installer sign
+release: test vet ui build-windows portable installer sign
 	cd $(DIST) && shasum -a 256 lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) > SHA256SUMS
 	@echo
 	@echo "Release artefacts in $(DIST):"
