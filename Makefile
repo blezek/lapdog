@@ -151,23 +151,33 @@ installer: build-windows
 	  packaging/windows/lapdog.nsi
 	@echo "installer: $(SETUP)"
 
-# Both the executable and the installer are signed. Signing the inner binary
-# matters because someone running it from the portable zip never sees the
-# installer's signature.
+# Both the executable and the installer are signed, when there is a certificate.
+#
+# Signing the inner binary matters because someone running it from the portable zip
+# never sees the installer's signature.
+#
+# The whole recipe is one shell command, joined with backslashes, and that is
+# load-bearing rather than style. Make runs each recipe line in a separate shell,
+# so the `exit 0` in the no-certificate branch used to end only its own line —
+# make then ran the next one, which requires osslsigncode, and the target failed on
+# any machine without a certificate. That is the opposite of what is wanted: a
+# missing certificate must leave the artefacts unsigned, not break the release.
 sign:
 	@if [ -z "$(SIGN_PKCS12)" ]; then \
-	  echo "WARNING: SIGN_PKCS12 is not set; leaving artefacts unsigned."; \
-	  echo "         Unsigned installers trigger SmartScreen warnings."; \
+	  echo "sign: SIGN_PKCS12 is not set; leaving artefacts unsigned."; \
+	  echo "      Windows shows a SmartScreen warning the first time an unsigned"; \
+	  echo "      executable is run. Publish SHA256SUMS so it can be checked."; \
 	  exit 0; \
-	fi
-	@command -v osslsigncode >/dev/null || { echo "osslsigncode not found; run 'make tools'"; exit 1; }
+	fi; \
+	command -v osslsigncode >/dev/null || { \
+	  echo "sign: osslsigncode not found; run 'make tools'"; exit 1; }; \
 	for f in $(EXE) $(SETUP); do \
 	  [ -f "$$f" ] || continue; \
 	  osslsigncode sign -pkcs12 "$(SIGN_PKCS12)" -pass "$(SIGN_PASSWORD)" \
 	    -n "LapDog" -i "https://github.com/blezek/lapdog" \
 	    -ts "$(TIMESTAMP_URL)" -in "$$f" -out "$$f.signed" && mv "$$f.signed" "$$f"; \
-	done
-	@echo "signed: $(EXE) $(SETUP)"
+	done; \
+	echo "sign: signed $(EXE) $(SETUP)"
 
 release: test-ci vet build-windows portable installer sign
 	cd $(DIST) && shasum -a 256 lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) > SHA256SUMS
