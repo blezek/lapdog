@@ -12618,3 +12618,597 @@ git commit -m "Add HTTP API server, filter parsing and read endpoints"
 ```
 
 Expected: PASS, all API tests.
+
+---
+
+### Task 21: Streaming CSV and JSON export
+
+**Files:**
+- Create: `internal/api/export.go`
+- Modify: `internal/api/handlers.go` — delete the `handleExport` stub from Task 20
+- Test: `internal/api/export_test.go`
+
+**Interfaces:**
+- Consumes: Task 13's query methods and `store.Filter`.
+- Produces:
+  - `func (s *Server) handleExport(w http.ResponseWriter, r *http.Request)` — replaces the stub
+  - `var exportScopes map[string]bool`
+
+`GET /api/export?scope=<sessions|laps|positions>&format=<csv|json>` plus every filter parameter.
+
+Two properties matter and both are tested:
+
+1. **Streaming.** Rows are written to the response as they are scanned, never collected into a slice first, so a multi-year export does not balloon memory. The `store` layer's list methods return slices, so export uses its own `Query` calls against the reader pool.
+2. **Filter fidelity.** An export returns exactly the rows the equivalent list endpoint would, because both go through `parseFilter` and the same predicate.
+
+`Content-Disposition` names the file with the scope and a UTC date stamp so repeated exports do not overwrite each other in the browser's download folder.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/api/export_test.go`:
+
+```go
+package api
+
+import (
+	"encoding/csv"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+// exportCSV requests a CSV export and returns its parsed records.
+func exportCSV(t *testing.T, h http.Handler, query string) ([][]string, *httptest.ResponseRecorder) {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/export?"+query, nil))
+	if rec.Code != http.StatusOK {
+		return nil, rec
+	}
+	rows, err := csv.NewReader(strings.NewReader(rec.Body.String())).ReadAll()
+	if err != nil {
+		t.Fatalf("response is not valid CSV: %v\n%s", err, rec.Body.String())
+	}
+	return rows, rec
+}
+
+func TestExportSessionsCSV(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rows, rec := exportCSV(t, h, "scope=sessions&format=csv")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d\n%s", rec.Code, rec.Body.String())
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want a header plus one session", len(rows))
+	}
+
+	header := rows[0]
+	want := map[string]bool{
+		"session_key": false, "session_type": false, "event_context": false,
+		"started_at": false, "driving_seconds": false, "track_name": false,
+		"car_name": false, "qualify_position": false, "finish_position": false,
+	}
+	for _, col := range header {
+		if _, ok := want[col]; ok {
+			want[col] = true
+		}
+	}
+	for col, present := range want {
+		if !present {
+			t.Errorf("CSV header is missing %q; header = %v", col, header)
+		}
+	}
+
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Errorf("Content-Type = %q, want text/csv", ct)
+	}
+	cd := rec.Header().Get("Content-Disposition")
+	if !strings.Contains(cd, "attachment") || !strings.Contains(cd, "sessions") {
+		t.Errorf("Content-Disposition = %q, want an attachment naming the scope", cd)
+	}
+}
+
+func TestExportLapsCSV(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rows, rec := exportCSV(t, h, "scope=laps&format=csv")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want a header plus two laps", len(rows))
+	}
+	// The session context must be joined in, otherwise a lap export is
+	// meaningless on its own.
+	joined := strings.Join(rows[0], ",")
+	for _, col := range []string{"track_name", "car_name", "session_type", "lap_time_s"} {
+		if !strings.Contains(joined, col) {
+			t.Errorf("lap CSV header is missing %q; header = %v", col, rows[0])
+		}
+	}
+}
+
+func TestExportPositionsCSV(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rows, rec := exportCSV(t, h, "scope=positions&format=csv")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want a header plus one event", len(rows))
+	}
+	joined := strings.Join(rows[0], ",")
+	for _, col := range []string{"from_position", "to_position", "cause", "opponent_name"} {
+		if !strings.Contains(joined, col) {
+			t.Errorf("position CSV header is missing %q", col)
+		}
+	}
+}
+
+func TestExportSessionsJSON(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/export?scope=sessions&format=json", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d\n%s", rec.Code, rec.Body.String())
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("response is not a JSON array: %v\n%s", err, rec.Body.String())
+	}
+	if len(out) != 1 {
+		t.Fatalf("rows = %d, want 1", len(out))
+	}
+	if out[0]["session_key"] != "900001/0" {
+		t.Errorf("session_key = %v", out[0]["session_key"])
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("Content-Type = %q", ct)
+	}
+}
+
+// An export must return exactly what the equivalent list endpoint returns,
+// since both share parseFilter.
+func TestExportHonoursFilter(t *testing.T) {
+	h, _, _ := newTestServer(t)
+
+	rows, rec := exportCSV(t, h, "scope=sessions&format=csv&session_type=Race")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(rows) != 1 {
+		t.Errorf("rows = %d, want only the header — the seed has no race session", len(rows))
+	}
+
+	rows, _ = exportCSV(t, h, "scope=sessions&format=csv&session_type=Practice")
+	if len(rows) != 2 {
+		t.Errorf("rows = %d, want a header plus the practice session", len(rows))
+	}
+
+	rows, _ = exportCSV(t, h, "scope=sessions&format=csv&track_id=9999")
+	if len(rows) != 1 {
+		t.Errorf("rows = %d, want only the header for a non-matching track", len(rows))
+	}
+}
+
+// An empty export must still emit the header row, so the file is readable.
+func TestExportEmptyStillHasHeader(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rows, rec := exportCSV(t, h, "scope=sessions&format=csv&track_id=9999")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(rows) != 1 || len(rows[0]) == 0 {
+		t.Errorf("empty export = %v, want a single header row", rows)
+	}
+}
+
+// An empty JSON export must be [] rather than null.
+func TestExportEmptyJSONIsArray(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/api/export?scope=sessions&format=json&track_id=9999", nil))
+	if got := strings.TrimSpace(rec.Body.String()); got != "[]" {
+		t.Errorf("body = %q, want []", got)
+	}
+}
+
+func TestExportRejectsUnknownScope(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	for _, q := range []string{
+		"scope=nonsense&format=csv",
+		"format=csv",
+		"scope=sessions; DROP TABLE sessions&format=csv",
+	} {
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/export?"+q, nil))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("export?%s: status = %d, want 400", q, rec.Code)
+		}
+	}
+}
+
+func TestExportRejectsUnknownFormat(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/api/export?scope=sessions&format=parquet", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestExportDefaultsToCSV(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/export?scope=sessions", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/csv") {
+		t.Errorf("Content-Type = %q, want CSV by default", ct)
+	}
+}
+
+func TestExportRejectsBadFilter(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/api/export?scope=sessions&format=csv&track_id=abc", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// Opponent names are exported as-is. There is no anonymisation anywhere.
+func TestExportIncludesOpponentNames(t *testing.T) {
+	h, st, _ := newTestServer(t)
+	rows, _, _ := st.ListSessions(storeFilterAll())
+	name := "Rival Driver"
+	idx := 1
+	if _, err := st.InsertPositionEvent(&positionEventWithName(rows[0].ID, &idx, &name)); err != nil {
+		t.Fatal(err)
+	}
+	body, rec := exportCSV(t, h, "scope=positions&format=csv")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	found := false
+	for _, r := range body[1:] {
+		if strings.Contains(strings.Join(r, ","), "Rival Driver") {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("opponent name absent from the export; names are stored and exported as-is")
+	}
+}
+```
+
+Add these helpers at the bottom of `internal/api/export_test.go`, importing `github.com/blezek/lapdog/internal/store`:
+
+```go
+func storeFilterAll() store.Filter { return store.Filter{} }
+
+func positionEventWithName(sessionID int64, carIdx *int, name *string) store.PositionEvent {
+	return store.PositionEvent{
+		SessionID: sessionID, LapNumber: 2, SessionTimeS: 200,
+		FromPosition: 4, ToPosition: 3,
+		OpponentCarIdx: carIdx, OpponentName: name,
+		Cause: store.CauseOnTrack,
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/api/ -run Export -v`
+Expected: FAIL — every export test returns 501 from the Task 20 stub.
+
+- [ ] **Step 3: Delete the stub**
+
+Remove the `handleExport` stub added in Task 20 Step 8 from
+`internal/api/handlers.go`, including its comment. The real implementation
+replaces it in the next step.
+
+- [ ] **Step 4: Write the export handler**
+
+Create `internal/api/export.go`:
+
+```go
+package api
+
+import (
+	"database/sql"
+	"encoding/csv"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/blezek/lapdog/internal/store"
+)
+
+// exportScopes is the allowlist of exportable row sets. Scope selects a
+// fixed SQL statement; it is never interpolated, because it arrives from a
+// query parameter.
+var exportScopes = map[string]bool{
+	"sessions":  true,
+	"laps":      true,
+	"positions": true,
+}
+
+// exportQuery returns the column names and the SQL for a scope.
+//
+// Each statement selects explicit columns rather than star, so the export
+// format is stable even if the schema gains columns later.
+func exportQuery(scope, predicate string) ([]string, string) {
+	switch scope {
+	case "sessions":
+		cols := []string{
+			"id", "session_key", "subsession_id", "session_num",
+			"session_type", "event_context", "league_id", "series_id", "official",
+			"track_id", "track_name", "track_config", "track_length_km",
+			"car_id", "car_name", "car_class_name",
+			"started_at", "ended_at",
+			"connected_seconds", "in_car_seconds", "driving_seconds",
+			"laps_completed", "incidents", "best_lap_time_s",
+			"starting_position", "finish_position", "finish_class_position",
+			"qualify_position", "qualify_class_position", "qualify_best_time_s",
+			"field_size", "ai_opponent_count", "ai_detection", "incident_source",
+		}
+		q := `SELECT ` + prefixed("s", cols) +
+			` FROM sessions s WHERE ` + predicate +
+			` ORDER BY s.started_at, s.session_num`
+		return cols, q
+
+	case "laps":
+		cols := []string{
+			"session_id", "lap_number", "lap_time_s", "delta_to_best_s",
+			"fuel_used_l", "fuel_level_end_l", "incidents_on_lap", "is_pit_lap",
+			"position", "class_position", "recorded_at",
+			"started_at", "track_name", "car_name", "session_type", "event_context",
+		}
+		q := `SELECT l.session_id, l.lap_number, l.lap_time_s, l.delta_to_best_s,
+		             l.fuel_used_l, l.fuel_level_end_l, l.incidents_on_lap, l.is_pit_lap,
+		             l.position, l.class_position, l.recorded_at,
+		             s.started_at, s.track_name, s.car_name, s.session_type, s.event_context
+		      FROM laps l JOIN sessions s ON s.id = l.session_id
+		      WHERE ` + predicate + `
+		      ORDER BY s.started_at, l.lap_number`
+		return cols, q
+
+	default: // positions
+		cols := []string{
+			"session_id", "lap_number", "session_time_s",
+			"from_position", "to_position", "is_class",
+			"opponent_car_idx", "opponent_name", "cause", "recorded_at",
+			"started_at", "track_name", "car_name", "session_type", "event_context",
+		}
+		q := `SELECT pe.session_id, pe.lap_number, pe.session_time_s,
+		             pe.from_position, pe.to_position, pe.is_class,
+		             pe.opponent_car_idx, pe.opponent_name, pe.cause, pe.recorded_at,
+		             s.started_at, s.track_name, s.car_name, s.session_type, s.event_context
+		      FROM position_events pe JOIN sessions s ON s.id = pe.session_id
+		      WHERE ` + predicate + `
+		      ORDER BY s.started_at, pe.session_time_s`
+		return cols, q
+	}
+}
+
+// prefixed qualifies each column with a table alias.
+func prefixed(alias string, cols []string) string {
+	out := make([]string, len(cols))
+	for i, c := range cols {
+		out[i] = alias + "." + c
+	}
+	return strings.Join(out, ", ")
+}
+
+// handleExport streams a filtered row set as CSV or JSON.
+//
+// Rows are written to the response as they are scanned rather than
+// collected first, so exporting several years of history does not balloon
+// memory.
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+
+	scope := q.Get("scope")
+	if !exportScopes[scope] {
+		s.fail(w, http.StatusBadRequest,
+			fmt.Errorf("%w: scope must be sessions, laps or positions", ErrBadRequest))
+		return
+	}
+	format := q.Get("format")
+	if format == "" {
+		format = "csv"
+	}
+	if format != "csv" && format != "json" {
+		s.fail(w, http.StatusBadRequest,
+			fmt.Errorf("%w: format must be csv or json", ErrBadRequest))
+		return
+	}
+
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	predicate, args := store.FilterPredicate(f)
+	cols, sqlText := exportQuery(scope, predicate)
+
+	rows, err := s.st.Reader().Query(sqlText, args...)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	defer rows.Close()
+
+	// A date stamp keeps repeated exports from overwriting one another in
+	// the browser's download folder.
+	name := fmt.Sprintf("lapdog-%s-%s.%s", scope, time.Now().UTC().Format("20060102"), format)
+	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	w.Header().Set("Cache-Control", "no-store")
+
+	if format == "csv" {
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		if err := streamCSV(w, rows, cols); err != nil {
+			// Headers are already sent, so the response cannot become a 500.
+			// Log it and let the truncated download surface the problem.
+			s.log.Error("CSV export failed mid-stream", "scope", scope, "err", err)
+		}
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	if err := streamJSON(w, rows, cols); err != nil {
+		s.log.Error("JSON export failed mid-stream", "scope", scope, "err", err)
+	}
+}
+
+// scanTargets allocates one *any per column for a generic scan.
+func scanTargets(n int) ([]any, []any) {
+	vals := make([]any, n)
+	ptrs := make([]any, n)
+	for i := range vals {
+		ptrs[i] = &vals[i]
+	}
+	return vals, ptrs
+}
+
+// streamCSV writes the result set as CSV, header first.
+//
+// The header is always written, even for an empty result, so the file is
+// still readable and self-describing.
+func streamCSV(w http.ResponseWriter, rows *sql.Rows, cols []string) error {
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+
+	if err := cw.Write(cols); err != nil {
+		return err
+	}
+	vals, ptrs := scanTargets(len(cols))
+	line := make([]string, len(cols))
+
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return err
+		}
+		for i, v := range vals {
+			line[i] = csvValue(v)
+		}
+		if err := cw.Write(line); err != nil {
+			return err
+		}
+		// Flush periodically so a large export starts downloading promptly
+		// rather than buffering in full.
+		cw.Flush()
+		if err := cw.Error(); err != nil {
+			return err
+		}
+	}
+	return rows.Err()
+}
+
+// csvValue renders a scanned value as a CSV field. NULL becomes an empty
+// field, which is the convention spreadsheets expect.
+func csvValue(v any) string {
+	switch x := v.(type) {
+	case nil:
+		return ""
+	case []byte:
+		return string(x)
+	case string:
+		return x
+	case bool:
+		if x {
+			return "true"
+		}
+		return "false"
+	case int64:
+		return strconv.FormatInt(x, 10)
+	case float64:
+		return strconv.FormatFloat(x, 'f', -1, 64)
+	case time.Time:
+		return x.UTC().Format(time.RFC3339)
+	default:
+		return fmt.Sprint(x)
+	}
+}
+
+// streamJSON writes the result set as a JSON array of objects.
+//
+// The array brackets are written manually so rows can be encoded one at a
+// time instead of being gathered into a slice first.
+func streamJSON(w http.ResponseWriter, rows *sql.Rows, cols []string) error {
+	if _, err := w.Write([]byte("[")); err != nil {
+		return err
+	}
+	enc := json.NewEncoder(w)
+	vals, ptrs := scanTargets(len(cols))
+	first := true
+
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return err
+		}
+		if !first {
+			if _, err := w.Write([]byte(",")); err != nil {
+				return err
+			}
+		}
+		first = false
+
+		obj := make(map[string]any, len(cols))
+		for i, c := range cols {
+			if b, ok := vals[i].([]byte); ok {
+				obj[c] = string(b)
+				continue
+			}
+			obj[c] = vals[i]
+		}
+		if err := enc.Encode(obj); err != nil {
+			return err
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err := w.Write([]byte("]"))
+	return err
+}
+```
+
+- [ ] **Step 5: Export the filter predicate from the store package**
+
+`handleExport` needs the same predicate the list queries use. In
+`internal/store/queries.go`, add an exported wrapper next to `where`:
+
+```go
+// FilterPredicate returns the SQL predicate and bound arguments for f,
+// over a sessions table aliased s.
+//
+// Exported so the API's streaming export can reuse the exact predicate the
+// list queries use. That shared path is what guarantees an export contains
+// precisely the rows the UI is displaying.
+func FilterPredicate(f Filter) (string, []any) { return f.where() }
+```
+
+- [ ] **Step 6: Run the tests**
+
+```bash
+go test ./internal/api/ -v
+go test ./...
+```
+
+Expected: PASS. Every export test now returns real data instead of 501.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/api/ internal/store/
+git commit -m "Add streaming CSV and JSON export"
+```
