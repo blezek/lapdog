@@ -7610,3 +7610,700 @@ Expected: PASS, all tests.
 git add internal/collector/
 git commit -m "Add collector clock, variable contract and time accounting"
 ```
+
+---
+
+### Task 15: Collector — session segment lifecycle and results extraction
+
+**Files:**
+- Create: `internal/collector/segment.go`
+- Test: `internal/collector/segment_test.go`
+
+**Interfaces:**
+- Consumes: Task 7's `sessionyaml.Info`; Task 8's `classify.Result`, `classify.Classify`; Task 11's `store.Session`, `store.SessionKey`, `store.FormatTime`; Task 14's `Accountant`, `Sample`.
+- Produces:
+  - `type Segment struct { Key string; SubsessionID, SessionNum int; StartedAt, EndedAt time.Time; Acct *Accountant; Class classify.Result; ... }`
+  - `func NewSegment(info *sessionyaml.Info, sessionNum int, startedAt time.Time, interval time.Duration) *Segment`
+  - `func (g *Segment) ApplyInfo(info *sessionyaml.Info)` — refreshes identity, results and classification from a new YAML
+  - `func (g *Segment) SetIncidentSource(live bool)`
+  - `func (g *Segment) NoteIncidents(n int)`
+  - `func (g *Segment) NoteLap(lapNumber int, lapTimeS float64)`
+  - `func (g *Segment) NoteStartingPosition(p int)`
+  - `func (g *Segment) End(at time.Time)`
+  - `func (g *Segment) IsRace() bool`
+  - `func (g *Segment) TooShort(min time.Duration) bool`
+  - `func (g *Segment) ToStore() *store.Session`
+  - `func classifySourceJSON(info *sessionyaml.Info) (string, error)`
+
+`classifySourceJSON` stores the `WeekendInfo`, `Sessions[]`, `QualifyResultsInfo` and the **full** `Drivers[]` array — not just the local driver. The full array is required so AI detection can be re-derived once the `CarIsAI` field is confirmed (spec §6.4, §6.5). Storing only the player's entry would make re-classification impossible for exactly the case it exists to fix.
+
+`ApplyInfo` is called on every YAML change rather than once at session start, because `QualifyResultsInfo` only populates after qualifying runs and `ResultsPositions` only fills in as the session concludes.
+
+`TooShort` implements the minimum-session-length setting, which drops accidental joins.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/collector/segment_test.go`:
+
+```go
+package collector
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/blezek/lapdog/internal/classify"
+	"github.com/blezek/lapdog/internal/sessionyaml"
+)
+
+func loadInfo(t *testing.T, name string) *sessionyaml.Info {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join("..", "sessionyaml", "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	info, err := sessionyaml.Parse(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return info
+}
+
+var startAt = time.Date(2026, 8, 4, 19, 30, 0, 0, time.UTC)
+
+func TestNewSegmentIdentityAndClassification(t *testing.T) {
+	info := loadInfo(t, "race_weekend.yaml")
+	g := NewSegment(info, 2, startAt, time.Second)
+
+	if g.Key != "55667788/2" {
+		t.Errorf("Key = %q, want 55667788/2", g.Key)
+	}
+	if g.SubsessionID != 55667788 || g.SessionNum != 2 {
+		t.Errorf("identity = %d/%d", g.SubsessionID, g.SessionNum)
+	}
+	if g.Class.SessionType != classify.TypeRace {
+		t.Errorf("SessionType = %q, want Race", g.Class.SessionType)
+	}
+	if g.Class.EventContext != classify.ContextOfficialRace {
+		t.Errorf("EventContext = %q, want OfficialRace", g.Class.EventContext)
+	}
+	if !g.IsRace() {
+		t.Error("IsRace() = false for a race session")
+	}
+}
+
+func TestNewSegmentCapturesTrackAndCar(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	rec := g.ToStore()
+
+	if rec.TrackID == nil || *rec.TrackID != 341 {
+		t.Errorf("TrackID = %v, want 341", rec.TrackID)
+	}
+	if rec.TrackName == nil || *rec.TrackName != "Circuit de Spa-Francorchamps" {
+		t.Errorf("TrackName = %v — must come from TrackDisplayName", rec.TrackName)
+	}
+	if rec.TrackConfig == nil || *rec.TrackConfig != "Grand Prix Pits" {
+		t.Errorf("TrackConfig = %v", rec.TrackConfig)
+	}
+	if rec.CarName == nil || *rec.CarName != "Porsche 911 GT3 R" {
+		t.Errorf("CarName = %v — must come from CarScreenName", rec.CarName)
+	}
+	if rec.CarID == nil || *rec.CarID != 173 {
+		t.Errorf("CarID = %v", rec.CarID)
+	}
+	if rec.CarClassName == nil || *rec.CarClassName != "GT3" {
+		t.Errorf("CarClassName = %v", rec.CarClassName)
+	}
+	if rec.TrackLengthKm == nil || *rec.TrackLengthKm != 7.0 {
+		t.Errorf("TrackLengthKm = %v, want 7.0", rec.TrackLengthKm)
+	}
+}
+
+// Results only populate as the session concludes, so ApplyInfo must pick
+// them up on a later YAML rather than only at session start.
+func TestApplyInfoExtractsResults(t *testing.T) {
+	info := loadInfo(t, "race_weekend.yaml")
+	g := NewSegment(info, 2, startAt, time.Second)
+	g.ApplyInfo(info)
+	rec := g.ToStore()
+
+	if rec.FinishPosition == nil || *rec.FinishPosition != 4 {
+		t.Errorf("FinishPosition = %v, want 4", rec.FinishPosition)
+	}
+	if rec.FinishClassPosition == nil || *rec.FinishClassPosition != 3 {
+		t.Errorf("FinishClassPosition = %v, want 3", rec.FinishClassPosition)
+	}
+	if rec.QualifyPosition == nil || *rec.QualifyPosition != 6 {
+		t.Errorf("QualifyPosition = %v, want 6", rec.QualifyPosition)
+	}
+	if rec.QualifyClassPosition == nil || *rec.QualifyClassPosition != 5 {
+		t.Errorf("QualifyClassPosition = %v, want 5", rec.QualifyClassPosition)
+	}
+	if rec.QualifyBestTimeS == nil || *rec.QualifyBestTimeS != 140.912 {
+		t.Errorf("QualifyBestTimeS = %v, want 140.912", rec.QualifyBestTimeS)
+	}
+	if rec.FieldSize == nil || *rec.FieldSize != 2 {
+		t.Errorf("FieldSize = %v, want 2", rec.FieldSize)
+	}
+	// Incidents come from the YAML result when no live variable is present.
+	if rec.Incidents != 6 {
+		t.Errorf("Incidents = %d, want 6 from ResultsPositions", rec.Incidents)
+	}
+}
+
+// A practice session has no result of any kind; those columns must stay nil.
+func TestApplyInfoPracticeHasNoResults(t *testing.T) {
+	info := loadInfo(t, "practice_only.yaml")
+	g := NewSegment(info, 0, startAt, time.Second)
+	g.ApplyInfo(info)
+	rec := g.ToStore()
+
+	if rec.FinishPosition != nil {
+		t.Errorf("FinishPosition = %v, want nil", rec.FinishPosition)
+	}
+	if rec.QualifyPosition != nil {
+		t.Errorf("QualifyPosition = %v, want nil", rec.QualifyPosition)
+	}
+	if g.IsRace() {
+		t.Error("IsRace() = true for a practice session")
+	}
+}
+
+// Qualifying position is copied onto the race row so a race can be
+// analysed without joining to the qualifying session.
+func TestQualifyPositionAppearsOnRaceRow(t *testing.T) {
+	info := loadInfo(t, "race_weekend.yaml")
+	g := NewSegment(info, 2, startAt, time.Second)
+	g.ApplyInfo(info)
+	if rec := g.ToStore(); rec.QualifyPosition == nil {
+		t.Error("QualifyPosition is nil on the race row; it must be copied across")
+	}
+}
+
+// starting_position differs from qualify_position after a pit-lane start
+// or a grid penalty, so it is recorded separately.
+func TestNoteStartingPositionIsSeparateFromQualifying(t *testing.T) {
+	info := loadInfo(t, "race_weekend.yaml")
+	g := NewSegment(info, 2, startAt, time.Second)
+	g.ApplyInfo(info)
+	g.NoteStartingPosition(12) // pit-lane start from P6 on the grid
+
+	rec := g.ToStore()
+	if rec.StartingPosition == nil || *rec.StartingPosition != 12 {
+		t.Errorf("StartingPosition = %v, want 12", rec.StartingPosition)
+	}
+	if rec.QualifyPosition == nil || *rec.QualifyPosition != 6 {
+		t.Errorf("QualifyPosition = %v, want 6 — it must not be overwritten", rec.QualifyPosition)
+	}
+}
+
+// Only the first call wins: the grid position is set once at the green.
+func TestNoteStartingPositionOnlyOnce(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	g.NoteStartingPosition(12)
+	g.NoteStartingPosition(3)
+	if rec := g.ToStore(); rec.StartingPosition == nil || *rec.StartingPosition != 12 {
+		t.Errorf("StartingPosition = %v, want the first value 12", rec.StartingPosition)
+	}
+}
+
+func TestNoteLapTracksCountAndBest(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	g.NoteLap(1, 143.5)
+	g.NoteLap(2, 141.882)
+	g.NoteLap(3, 142.4)
+
+	rec := g.ToStore()
+	if rec.LapsCompleted != 3 {
+		t.Errorf("LapsCompleted = %d, want 3", rec.LapsCompleted)
+	}
+	if rec.BestLapTimeS == nil || *rec.BestLapTimeS != 141.882 {
+		t.Errorf("BestLapTimeS = %v, want 141.882", rec.BestLapTimeS)
+	}
+}
+
+// A zero or negative lap time is not a lap and must not become the best.
+func TestNoteLapIgnoresInvalidTimes(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	g.NoteLap(1, 142.0)
+	g.NoteLap(2, 0)
+	g.NoteLap(3, -1)
+	rec := g.ToStore()
+	if rec.BestLapTimeS == nil || *rec.BestLapTimeS != 142.0 {
+		t.Errorf("BestLapTimeS = %v, want 142.0", rec.BestLapTimeS)
+	}
+	if rec.LapsCompleted != 3 {
+		t.Errorf("LapsCompleted = %d, want 3 — the lap still happened", rec.LapsCompleted)
+	}
+}
+
+// The live incident variable, when present, must win over the YAML count.
+func TestIncidentSourcePrecedence(t *testing.T) {
+	info := loadInfo(t, "race_weekend.yaml")
+
+	yamlOnly := NewSegment(info, 2, startAt, time.Second)
+	yamlOnly.ApplyInfo(info)
+	if rec := yamlOnly.ToStore(); rec.IncidentSource != "yaml" || rec.Incidents != 6 {
+		t.Errorf("yaml path: source=%q incidents=%d", rec.IncidentSource, rec.Incidents)
+	}
+
+	live := NewSegment(info, 2, startAt, time.Second)
+	live.SetIncidentSource(true)
+	live.NoteIncidents(9)
+	live.ApplyInfo(info) // must not clobber the live value with the YAML's 6
+	rec := live.ToStore()
+	if rec.IncidentSource != "live" {
+		t.Errorf("IncidentSource = %q, want live", rec.IncidentSource)
+	}
+	if rec.Incidents != 9 {
+		t.Errorf("Incidents = %d, want 9 — the live count must win", rec.Incidents)
+	}
+}
+
+func TestTimeCountersFlowThroughToStore(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	g.Acct.Add(Sample{T: 0, InCar: true, Driving: true})
+	g.Acct.Add(Sample{T: 10, InCar: true, Driving: true})
+	g.Acct.Add(Sample{T: 20, InCar: true, Driving: false}) // pit box
+
+	rec := g.ToStore()
+	if rec.ConnectedSeconds != 20 {
+		t.Errorf("ConnectedSeconds = %v, want 20", rec.ConnectedSeconds)
+	}
+	if rec.InCarSeconds != 20 {
+		t.Errorf("InCarSeconds = %v, want 20", rec.InCarSeconds)
+	}
+	if rec.DrivingSeconds != 10 {
+		t.Errorf("DrivingSeconds = %v, want 10", rec.DrivingSeconds)
+	}
+}
+
+func TestEndSetsEndedAt(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	if rec := g.ToStore(); rec.EndedAt != nil {
+		t.Errorf("EndedAt = %v, want nil while in progress", rec.EndedAt)
+	}
+	g.End(startAt.Add(48 * time.Minute))
+	rec := g.ToStore()
+	if rec.EndedAt == nil || *rec.EndedAt != "2026-08-04T20:18:00Z" {
+		t.Errorf("EndedAt = %v", rec.EndedAt)
+	}
+}
+
+func TestTooShort(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	g.Acct.Add(Sample{T: 0})
+	g.Acct.Add(Sample{T: 10})
+	if !g.TooShort(30 * time.Second) {
+		t.Error("TooShort(30s) = false for a 10 second session")
+	}
+	g.Acct.Add(Sample{T: 40})
+	if g.TooShort(30 * time.Second) {
+		t.Error("TooShort(30s) = true for a 40 second session")
+	}
+}
+
+// The stored provenance must include the FULL driver array, since AI
+// detection is re-derived from it once CarIsAI is confirmed.
+func TestClassifySourceJSONIncludesAllDrivers(t *testing.T) {
+	info := loadInfo(t, "race_weekend.yaml")
+	raw, err := classifySourceJSON(info)
+	if err != nil {
+		t.Fatalf("classifySourceJSON: %v", err)
+	}
+
+	var round sessionyaml.Info
+	if err := json.Unmarshal([]byte(raw), &round); err != nil {
+		t.Fatalf("stored JSON does not round-trip: %v", err)
+	}
+	if len(round.DriverInfo.Drivers) != 2 {
+		t.Errorf("stored drivers = %d, want 2 — the full array is needed to re-derive AI detection",
+			len(round.DriverInfo.Drivers))
+	}
+	if round.WeekendInfo.SubSessionID != 55667788 {
+		t.Errorf("stored SubSessionID = %d", round.WeekendInfo.SubSessionID)
+	}
+	if len(round.SessionInfo.Sessions) != 3 {
+		t.Errorf("stored sessions = %d, want 3 — HasRaceSession needs the whole array",
+			len(round.SessionInfo.Sessions))
+	}
+	if len(round.QualifyResultsInfo.Results) != 2 {
+		t.Errorf("stored qualify results = %d, want 2", len(round.QualifyResultsInfo.Results))
+	}
+	// Re-classifying from the stored JSON must reproduce the same answer.
+	if got := classify.Classify(&round, 2); got.EventContext != classify.ContextOfficialRace {
+		t.Errorf("reclassified context = %q, want OfficialRace", got.EventContext)
+	}
+}
+
+func TestToStoreCarriesClassificationAndAIFields(t *testing.T) {
+	g := NewSegment(loadInfo(t, "race_weekend.yaml"), 2, startAt, time.Second)
+	rec := g.ToStore()
+	if rec.SessionType != "Race" || rec.EventContext != "OfficialRace" {
+		t.Errorf("classification = %q/%q", rec.SessionType, rec.EventContext)
+	}
+	if rec.AIDetection == nil || *rec.AIDetection != "none" {
+		t.Errorf("AIDetection = %v, want none", rec.AIDetection)
+	}
+	if rec.AIOpponentCount != 0 {
+		t.Errorf("AIOpponentCount = %d, want 0", rec.AIOpponentCount)
+	}
+	if rec.ClassifySourceJSON == "" {
+		t.Error("ClassifySourceJSON is empty")
+	}
+	if rec.StartedAt != "2026-08-04T19:30:00Z" {
+		t.Errorf("StartedAt = %q", rec.StartedAt)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/collector/ -run 'Segment|ApplyInfo|Note|Qualify|Incident|TooShort|End|ToStore|classifySource|TimeCounters' -v`
+Expected: FAIL — `undefined: NewSegment`.
+
+- [ ] **Step 3: Write the segment**
+
+Create `internal/collector/segment.go`:
+
+```go
+package collector
+
+import (
+	"encoding/json"
+	"fmt"
+	"time"
+
+	"github.com/blezek/lapdog/internal/classify"
+	"github.com/blezek/lapdog/internal/sessionyaml"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+// Segment is the collector's in-memory state for one session segment: one
+// entry in SessionInfo.Sessions for one subsession.
+//
+// It accumulates until a flush writes it to the database, which is why the
+// counters live here rather than being read back from SQLite each poll.
+type Segment struct {
+	Key          string
+	SubsessionID int
+	SessionNum   int
+
+	StartedAt time.Time
+	endedAt   *time.Time
+
+	Acct  *Accountant
+	Class classify.Result
+
+	// StoreID is the database primary key once the segment has been
+	// flushed at least once. Zero means never written.
+	StoreID int64
+
+	leagueID int
+	seriesID int
+	seasonID int
+	official int
+
+	trackID       *int
+	trackName     *string
+	trackConfig   *string
+	trackLengthKm *float64
+
+	carID        *int
+	carName      *string
+	carClassID   *int
+	carClassName *string
+
+	lapsCompleted int
+	bestLapTimeS  *float64
+
+	incidents      int
+	incidentIsLive bool
+
+	startingPosition     *int
+	finishPosition       *int
+	finishClassPosition  *int
+	qualifyPosition      *int
+	qualifyClassPosition *int
+	qualifyBestTimeS     *float64
+	fieldSize            *int
+
+	captureFile *string
+
+	sourceJSON string
+}
+
+// NewSegment starts tracking a session segment.
+func NewSegment(info *sessionyaml.Info, sessionNum int, startedAt time.Time, interval time.Duration) *Segment {
+	g := &Segment{
+		SessionNum: sessionNum,
+		StartedAt:  startedAt,
+		Acct:       NewAccountant(interval),
+	}
+	if info != nil {
+		g.SubsessionID = info.WeekendInfo.SubSessionID
+	}
+	g.Key = store.SessionKey(g.SubsessionID, sessionNum, startedAt)
+	g.ApplyInfo(info)
+	return g
+}
+
+// SetCaptureFile records which capture file this segment is being written to.
+func (g *Segment) SetCaptureFile(name string) { g.captureFile = &name }
+
+// ApplyInfo refreshes everything derived from the session YAML.
+//
+// This runs on every YAML change rather than once at session start,
+// because QualifyResultsInfo only populates after qualifying has run and
+// ResultsPositions only fills in as the session concludes.
+func (g *Segment) ApplyInfo(info *sessionyaml.Info) {
+	if info == nil {
+		return
+	}
+	g.Class = classify.Classify(info, g.SessionNum)
+
+	w := info.WeekendInfo
+	g.leagueID, g.seriesID, g.seasonID, g.official = w.LeagueID, w.SeriesID, w.SeasonID, w.Official
+
+	g.trackID = intPtr(w.TrackID)
+	g.trackName = strPtrIfSet(w.TrackDisplayName)
+	g.trackConfig = strPtrIfSet(w.TrackConfigName)
+	if km := info.TrackLengthKm(); km > 0 {
+		g.trackLengthKm = &km
+	}
+
+	if me, ok := info.Me(); ok {
+		g.carID = intPtr(me.CarID)
+		g.carName = strPtrIfSet(me.CarScreenName)
+		g.carClassID = intPtr(me.CarClassID)
+		g.carClassName = strPtrIfSet(me.CarClassShortName)
+	}
+
+	if r, ok := info.MyResult(g.SessionNum); ok {
+		g.finishPosition = intPtr(r.Position)
+		g.finishClassPosition = intPtr(r.ClassPosition)
+		// The YAML incident count is only authoritative when no live
+		// variable is available; otherwise it would clobber a fresher value.
+		if !g.incidentIsLive {
+			g.incidents = r.Incidents
+		}
+	}
+	if q, ok := info.MyQualifyResult(); ok {
+		g.qualifyPosition = intPtr(q.Position)
+		g.qualifyClassPosition = intPtr(q.ClassPosition)
+		if q.FastestTime > 0 {
+			t := q.FastestTime
+			g.qualifyBestTimeS = &t
+		}
+	}
+	if n := info.FieldSize(g.SessionNum); n > 0 {
+		g.fieldSize = &n
+	}
+
+	if raw, err := classifySourceJSON(info); err == nil {
+		g.sourceJSON = raw
+	}
+}
+
+// SetIncidentSource records whether the live incident variable is in use.
+func (g *Segment) SetIncidentSource(live bool) { g.incidentIsLive = live }
+
+// NoteIncidents records an incident count read from the live variable.
+func (g *Segment) NoteIncidents(n int) {
+	if n >= 0 {
+		g.incidents = n
+	}
+}
+
+// NoteLap records a completed lap, tracking the count and the session best.
+func (g *Segment) NoteLap(lapNumber int, lapTimeS float64) {
+	g.lapsCompleted++
+	// A zero or negative time is not a usable lap time, but the lap still
+	// happened and still counts toward the total.
+	if lapTimeS <= 0 {
+		return
+	}
+	if g.bestLapTimeS == nil || lapTimeS < *g.bestLapTimeS {
+		t := lapTimeS
+		g.bestLapTimeS = &t
+	}
+}
+
+// NoteStartingPosition records the grid position at the green flag. Only
+// the first call takes effect, since the grid slot is set once.
+func (g *Segment) NoteStartingPosition(p int) {
+	if g.startingPosition == nil && p > 0 {
+		g.startingPosition = intPtr(p)
+	}
+}
+
+// End marks the segment finished.
+func (g *Segment) End(at time.Time) {
+	t := at
+	g.endedAt = &t
+}
+
+// IsRace reports whether position events should be recorded. Position in
+// practice is an artefact of who happens to be on track.
+func (g *Segment) IsRace() bool { return g.Class.SessionType == classify.TypeRace }
+
+// TooShort reports whether the segment is below the minimum recordable
+// length, which drops accidental joins.
+func (g *Segment) TooShort(min time.Duration) bool {
+	return g.Acct.Connected < min.Seconds()
+}
+
+// BestLapTimeS returns the session best so far, for lap delta computation.
+func (g *Segment) BestLapTimeS() (float64, bool) {
+	if g.bestLapTimeS == nil {
+		return 0, false
+	}
+	return *g.bestLapTimeS, true
+}
+
+// ToStore renders the segment as a database row.
+func (g *Segment) ToStore() *store.Session {
+	rec := &store.Session{
+		ID:           g.StoreID,
+		SessionKey:   g.Key,
+		SubsessionID: g.SubsessionID,
+		SessionNum:   g.SessionNum,
+		SessionType:  string(g.Class.SessionType),
+		EventContext: string(g.Class.EventContext),
+
+		LeagueID: g.leagueID,
+		SeriesID: g.seriesID,
+		SeasonID: g.seasonID,
+		Official: g.official,
+
+		TrackID:       g.trackID,
+		TrackName:     g.trackName,
+		TrackConfig:   g.trackConfig,
+		TrackLengthKm: g.trackLengthKm,
+
+		CarID:        g.carID,
+		CarName:      g.carName,
+		CarClassID:   g.carClassID,
+		CarClassName: g.carClassName,
+
+		StartedAt: store.FormatTime(g.StartedAt),
+
+		ConnectedSeconds: g.Acct.Connected,
+		InCarSeconds:     g.Acct.InCar,
+		DrivingSeconds:   g.Acct.Driving,
+
+		LapsCompleted: g.lapsCompleted,
+		Incidents:     g.incidents,
+		BestLapTimeS:  g.bestLapTimeS,
+
+		StartingPosition:     g.startingPosition,
+		FinishPosition:       g.finishPosition,
+		FinishClassPosition:  g.finishClassPosition,
+		QualifyPosition:      g.qualifyPosition,
+		QualifyClassPosition: g.qualifyClassPosition,
+		QualifyBestTimeS:     g.qualifyBestTimeS,
+		FieldSize:            g.fieldSize,
+
+		AIOpponentCount:    g.Class.AIOpponentCount,
+		ClassifySourceJSON: g.sourceJSON,
+		CaptureFile:        g.captureFile,
+	}
+
+	detection := string(g.Class.AIDetection)
+	rec.AIDetection = &detection
+
+	if g.incidentIsLive {
+		rec.IncidentSource = "live"
+	} else {
+		rec.IncidentSource = "yaml"
+	}
+	if g.endedAt != nil {
+		s := store.FormatTime(*g.endedAt)
+		rec.EndedAt = &s
+	}
+	if rec.ClassifySourceJSON == "" {
+		// NOT NULL in the schema, and an empty object is honest about
+		// having captured nothing rather than failing the write.
+		rec.ClassifySourceJSON = "{}"
+	}
+	return rec
+}
+
+// classifySourceJSON serialises the YAML subset the classification was
+// derived from.
+//
+// The FULL Drivers array is included, not just the local driver, because
+// AI detection is re-derived from it once the CarIsAI field is confirmed
+// (spec sections 6.4 and 6.5). Storing only the player's entry would make
+// re-classification impossible for exactly the case it exists to fix.
+func classifySourceJSON(info *sessionyaml.Info) (string, error) {
+	if info == nil {
+		return "{}", nil
+	}
+	b, err := json.Marshal(info)
+	if err != nil {
+		return "{}", fmt.Errorf("collector: marshal classification source: %w", err)
+	}
+	return string(b), nil
+}
+
+// intPtr returns a pointer to v, or nil when v is zero, so that "absent"
+// and "zero" stay distinguishable in the database.
+func intPtr(v int) *int {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
+// strPtrIfSet returns a pointer to v, or nil when v is empty.
+func strPtrIfSet(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/collector/ -run 'Segment|ApplyInfo|Note|Qualify|Incident|TooShort|End|ToStore|TimeCounters' -v`
+Expected: PASS. `TestClassifySourceJSONIncludesAllDrivers` still fails — it needs the JSON tags added in the next step.
+
+- [ ] **Step 5: Add JSON tags to the session YAML types**
+
+`classify_source_json` is round-tripped through `encoding/json`, so the
+types need explicit JSON tags. Relying on Go's default field-name
+marshalling would work today only because the field names happen to match
+the YAML keys, and would break silently the moment a field is renamed.
+
+In `internal/sessionyaml/types.go`, add a `json:` tag matching each
+existing `yaml:` tag on every struct field. For example:
+
+```go
+type Weekend struct {
+	TrackName             string `yaml:"TrackName" json:"TrackName"`
+	TrackID               int    `yaml:"TrackID" json:"TrackID"`
+	TrackDisplayName      string `yaml:"TrackDisplayName" json:"TrackDisplayName"`
+	// …and so on for every field in Weekend, Sessions, Session,
+	// ResultPosition, QualifyResults, QualifyResult, Drivers, Driver and Info.
+}
+```
+
+Apply the same pattern to all nine structs. Every field gets a `json:` tag
+whose value is identical to its `yaml:` tag value.
+
+- [ ] **Step 6: Verify the round trip and the whole package**
+
+Run: `go test ./internal/sessionyaml/ ./internal/classify/ ./internal/collector/ -v`
+Expected: PASS. `TestClassifySourceJSONIncludesAllDrivers` now passes, and the earlier YAML tests are unaffected since the `yaml:` tags were not changed.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add internal/collector/ internal/sessionyaml/
+git commit -m "Add session segment lifecycle and results extraction"
+```
