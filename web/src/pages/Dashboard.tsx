@@ -10,21 +10,32 @@ import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from '../com
 import { Card, Empty, ErrorNote, Legend, Loading, Stat } from '../components/ui'
 import { Filters } from '../components/Filters'
 import { StackedByCategory } from '../components/StackedByCategory'
+import { isEmptyArray, keepPrevious, viewState } from '../query'
 
 export function Dashboard() {
   const { filter } = useFilter()
   const theme = useTheme()
 
-  const totals = useQuery({ queryKey: ['totals', filter], queryFn: () => api.totals(filter) })
+  const totals = useQuery({
+    queryKey: ['totals', filter],
+    queryFn: () => api.totals(filter),
+    ...keepPrevious,
+  })
   const byCategory = useQuery({
     queryKey: ['summary', filter, 'month-category'],
     queryFn: () => api.summary(filter, 'typecontext'),
+    ...keepPrevious,
   })
   const byMonth = useQuery({
     queryKey: ['summary', filter, 'month'],
     queryFn: () => api.summary(filter, 'month'),
+    ...keepPrevious,
   })
-  const daily = useQuery({ queryKey: ['daily', filter], queryFn: () => api.daily(filter) })
+  const daily = useQuery({
+    queryKey: ['daily', filter],
+    queryFn: () => api.daily(filter),
+    ...keepPrevious,
+  })
 
   return (
     <>
@@ -72,12 +83,12 @@ export function Dashboard() {
           title="Driving hours per day"
           table={<DailyTable rows={daily.data ?? []} />}
         >
-          {daily.isLoading ? (
+          {viewState(daily, isEmptyArray) === 'loading' ? (
             <Loading />
-          ) : (daily.data?.length ?? 0) === 0 ? (
+          ) : viewState(daily, isEmptyArray) === 'empty' ? (
             <Empty>No sessions in this range.</Empty>
           ) : (
-            <CalendarHeatmap rows={daily.data!} theme={theme} />
+            <CalendarHeatmap rows={daily.data ?? []} theme={theme} />
           )}
         </Card>
       </div>
@@ -89,22 +100,22 @@ export function Dashboard() {
           title="Driving hours by category"
           table={<CategoryTable rows={byCategory.data ?? []} />}
         >
-          {byCategory.isLoading ? (
+          {viewState(byCategory, isEmptyArray) === 'loading' ? (
             <Loading />
-          ) : (byCategory.data?.length ?? 0) === 0 ? (
+          ) : viewState(byCategory, isEmptyArray) === 'empty' ? (
             <Empty>No sessions in this range.</Empty>
           ) : (
-            <CategoryBar rows={byCategory.data!} theme={theme} />
+            <CategoryBar rows={byCategory.data ?? []} theme={theme} />
           )}
         </Card>
 
         <Card title="Driving hours per month" table={<MonthTable rows={byMonth.data ?? []} />}>
-          {byMonth.isLoading ? (
+          {viewState(byMonth, isEmptyArray) === 'loading' ? (
             <Loading />
-          ) : (byMonth.data?.length ?? 0) === 0 ? (
+          ) : viewState(byMonth, isEmptyArray) === 'empty' ? (
             <Empty>No sessions in this range.</Empty>
           ) : (
-            <MonthBar rows={byMonth.data!} theme={theme} />
+            <MonthBar rows={byMonth.data ?? []} theme={theme} />
           )}
         </Card>
       </div>
@@ -476,6 +487,7 @@ function GridToFinish() {
         excludeAi: true,
         limit: 40,
       }),
+    ...keepPrevious,
   })
 
   const rows = useMemo(
@@ -566,7 +578,7 @@ function GridToFinish() {
 
   return (
     <Card title="Grid to finish, most recent races" table={<GridTable rows={rows} />}>
-      {races.isLoading ? (
+      {viewState(races) === 'loading' ? (
         <Loading />
       ) : rows.length === 0 ? (
         <Empty>No races with a qualifying result in this range.</Empty>

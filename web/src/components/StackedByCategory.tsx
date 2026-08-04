@@ -22,6 +22,7 @@ import {
 } from '../categories'
 import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from './Chart'
 import { Card, Empty, ErrorNote, Legend, Loading } from './ui'
+import { isEmptyArray, keepPrevious, viewState } from '../query'
 
 export interface StackedByCategoryProps {
   title: string
@@ -42,6 +43,7 @@ export function StackedByCategory({
   const query = useQuery({
     queryKey: ['breakdown', by, filter],
     queryFn: () => api.breakdown(filter, by),
+    ...keepPrevious,
   })
 
   const rows = query.data ?? []
@@ -57,9 +59,9 @@ export function StackedByCategory({
 
   return (
     <Card title={title} table={<StackTable groups={fullGroups} order={fullOrder} />}>
-      {query.isError ? (
+      {viewState(query, isEmptyArray) === 'error' ? (
         <ErrorNote error={query.error} />
-      ) : query.isLoading ? (
+      ) : viewState(query, isEmptyArray) === 'loading' ? (
         <Loading />
       ) : groups.length === 0 ? (
         <Empty>No sessions in this range.</Empty>
