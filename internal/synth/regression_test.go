@@ -5,6 +5,7 @@ import (
 	"io"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/blezek/lapdog/internal/capture"
 	"github.com/blezek/lapdog/internal/irsdk"
@@ -67,7 +68,15 @@ func TestCarIdxPositionIsPopulatedDuringRaces(t *testing.T) {
 func TestIncidentCounterNeverDropsWithinASession(t *testing.T) {
 	dir := fixtureDirFor(t)
 
-	for _, name := range []string{"official-race-weekend.lpd", "league-race-weekend.lpd"} {
+	// Checked across several fixtures and aggregated, because whether any single
+	// short session happens to accrue an incident depends on the seed. The
+	// invariant under test is that the counter never falls, which holds per file.
+	totalPeak := int32(0)
+
+	for _, name := range []string{
+		"official-race-weekend.lpd", "league-race-weekend.lpd",
+		"hosted-race.lpd", "offline-test-drive.lpd",
+	} {
 		var prev int32
 		var prevSession int32 = -1
 		peak := int32(0)
@@ -94,13 +103,15 @@ func TestIncidentCounterNeverDropsWithinASession(t *testing.T) {
 			prev = inc
 		})
 
-		if peak == 0 {
-			t.Errorf("%s: the incident counter never rises, so incident recording is untested", name)
-		}
+		totalPeak += peak
 		if drops > 0 {
 			t.Errorf("%s: the incident counter drops %d times within a session; "+
 				"the simulator's counter only ever rises", name, drops)
 		}
+	}
+
+	if totalPeak == 0 {
+		t.Error("no fixture accrues a single incident, so incident recording is untested")
 	}
 }
 
@@ -171,4 +182,49 @@ func fixtureDirFor(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return dir
+}
+
+// Regression: buildStartOrder put the local driver first for every non-race
+// session, so the synthetic driver qualified on pole for all 351 races in two
+// years of history. Grid positions must be spread across the field.
+func TestDriverDoesNotAlwaysQualifyOnPole(t *testing.T) {
+	schedule := BuildSchedule(ScheduleOptions{
+		End:  mustDay("2026-08-04"),
+		Seed: 20260804,
+	})
+
+	poles, races := 0, 0
+	for _, w := range schedule {
+		qi := w.qualifyIndex()
+		if qi < 0 {
+			continue
+		}
+		order := buildStartOrder(w, qi)
+		pos := indexOf(order, w.DriverCarIdx) + 1
+		races++
+		if pos == 1 {
+			poles++
+		}
+	}
+	if races < 50 {
+		t.Fatalf("only %d qualifying sessions in the schedule", races)
+	}
+	// Some poles are expected as the driver's rating climbs; all of them is a bug.
+	if poles == races {
+		t.Errorf("the driver starts first in all %d qualifying sessions; "+
+			"the field is not being ordered by pace", races)
+	}
+	if poles > races/2 {
+		t.Errorf("the driver starts first in %d of %d qualifying sessions, "+
+			"which is implausibly dominant", poles, races)
+	}
+}
+
+// mustDay parses a YYYY-MM-DD date or panics.
+func mustDay(s string) time.Time {
+	t, err := time.Parse("2006-01-02", s)
+	if err != nil {
+		panic(err)
+	}
+	return t.UTC()
 }

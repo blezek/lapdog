@@ -119,7 +119,11 @@ func WriteFixtures(dir string) ([]string, error) {
 		w.BaseLapS = w.Track.BaseLapS * w.Car.PaceFactor
 		// Pin pace so lap times are stable across regenerations.
 		w.PaceFactor = 1.02
-		w.IncidentRatePerHour = 3.0
+		// Deliberately higher than the realistic rate the two-year schedule uses.
+		// Fixtures are short, and at a realistic rate whether any incident occurred
+		// at all came down to the seed — which made incident coverage depend on
+		// luck rather than on the fixture set.
+		w.IncidentRatePerHour = 18.0
 
 		if fc.flavour == FlavourAI {
 			w.EmitCarIsAI = fc.emitCarIsAI && !fc.forceNoAI

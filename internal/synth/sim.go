@@ -180,6 +180,9 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 	}
 	order := buildStartOrder(w, sessionIdx)
 	driverPos := indexOf(order, w.DriverCarIdx) + 1
+	// The grid slot is the position the driver's pace justifies, and is the target
+	// the in-race drift model pulls toward.
+	startPos := driverPos
 
 	// Pit box before the green: in the car, physics live, but not driving.
 	pitFrames := int(s.PitSeconds / PollIntervalS)
@@ -277,7 +280,7 @@ func simulateSession(sw *writer, w *Weekend, sessionIdx int) error {
 			// source of silent misattribution.
 			if isRace {
 				advanceField(sw, w, cars, order, lap, pct)
-				maybeSwap(sw, w, cars, order, driverPos)
+				maybeSwap(sw, w, cars, order, driverPos, startPos)
 				driverPos = indexOf(order, w.DriverCarIdx) + 1
 			}
 			if err := setAllCars(sw, w, cars, order, surface); err != nil {

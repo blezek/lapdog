@@ -13,10 +13,13 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"time"
 
+	"github.com/blezek/lapdog/internal/api"
 	"github.com/blezek/lapdog/internal/capture"
 	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/config"
 	"github.com/blezek/lapdog/internal/source"
 	"github.com/blezek/lapdog/internal/store"
 	"github.com/blezek/lapdog/internal/version"
@@ -28,6 +31,7 @@ Usage:
   lapdogctl ingest <captures-dir> <lapdog.db>   replay captures into a database
   lapdogctl summary <lapdog.db>                 print what a database contains
   lapdogctl reclassify <lapdog.db>              re-derive classification from stored provenance
+  lapdogctl serve <lapdog.db> [port]            serve the API and interface over a database
   lapdogctl version
 `
 
@@ -71,6 +75,20 @@ func run(cmd string, args []string) error {
 		}
 		fmt.Printf("reclassified %d session(s)\n", n)
 		return nil
+
+	case "serve":
+		if len(args) < 1 || len(args) > 2 {
+			return fmt.Errorf("serve takes a database path and an optional port")
+		}
+		port := config.DefaultPort
+		if len(args) == 2 {
+			p, err := strconv.Atoi(args[1])
+			if err != nil {
+				return fmt.Errorf("invalid port %q: %w", args[1], err)
+			}
+			port = p
+		}
+		return serve(args[0], port)
 
 	case "version":
 		fmt.Println(version.String())
@@ -229,4 +247,45 @@ func summaryOf(s *store.Store) error {
 	fmt.Printf("  distinct cars   %d\n", len(facets.Cars))
 	fmt.Printf("  leagues         %d\n", len(facets.Leagues))
 	return nil
+}
+
+// idleStatus reports a collector that is not running.
+//
+// serve exists to browse an already-ingested database, so there is no live
+// telemetry to report. Saying so plainly is better than fabricating a connected
+// state the interface would then display.
+type idleStatus struct{}
+
+func (idleStatus) Status() collector.Status {
+	return collector.Status{Connected: false, IntervalSeconds: 1}
+}
+
+// serve runs the API and the embedded interface over an existing database.
+//
+// It is the development counterpart to the tray application: same handlers, same
+// embedded assets, no simulator and no tray. It is what makes the synthetic
+// dataset browsable.
+func serve(dbPath string, port int) error {
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+
+	// Settings are read and written against a scratch file rather than the real
+	// per-user config, so browsing a dataset cannot disturb an installed instance.
+	cfgPath := dbPath + ".serve-config.json"
+	cfgStore, err := config.NewStore(cfgPath)
+	if err != nil {
+		return err
+	}
+
+	log := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
+	srv := api.New(st, idleStatus{}, cfgStore, log)
+
+	if err := summaryOf(st); err != nil {
+		return err
+	}
+	fmt.Printf("\nServing http://127.0.0.1:%d — press Ctrl-C to stop\n", port)
+	return srv.ListenAndServe(port)
 }

@@ -5,22 +5,48 @@ import "math/rand"
 // buildStartOrder returns the car indices in starting-position order.
 //
 // For a race, qualifying decides the grid, so the order is taken from the
-// qualifying result when one exists. Otherwise cars are ordered by rating, which
-// is a reasonable stand-in for a practice or hosted session's classification.
+// qualifying result when one exists.
+//
+// Otherwise the field is ordered by rating. That matters more than it looks: an
+// earlier version put the local driver first unconditionally, so the driver
+// qualified on pole for every single event in two years of history. Ordering by
+// rating instead places them where their pace suggests, and because the synthetic
+// driver's rating climbs over the two years, their grid slots improve too.
 func buildStartOrder(w *Weekend, sessionIdx int) []int {
-	order := make([]int, 0, w.FieldSize())
-
-	qi := w.qualifyIndex()
-	if isRaceType(w.Sessions[sessionIdx].RawType) && qi >= 0 && len(w.QualifyResults) > 0 {
+	if isRaceType(w.Sessions[sessionIdx].RawType) && len(w.QualifyResults) > 0 {
+		order := make([]int, 0, len(w.QualifyResults))
 		for _, q := range w.QualifyResults {
 			order = append(order, q.CarIdx)
 		}
 		return order
 	}
 
-	order = append(order, w.DriverCarIdx)
-	for i := range w.Opponents {
-		order = append(order, w.carIdxFor(i))
+	type entry struct {
+		carIdx  int
+		iRating int
+	}
+	field := make([]entry, 0, w.FieldSize())
+	field = append(field, entry{carIdx: w.DriverCarIdx, iRating: w.DriverIRating})
+	for i, o := range w.Opponents {
+		rating := o.IRating
+		if rating == 0 {
+			// AI entries carry no rating. Spreading them either side of the driver
+			// keeps an AI field from handing the driver pole by default.
+			rating = w.DriverIRating + (i%7-3)*180
+		}
+		field = append(field, entry{carIdx: w.carIdxFor(i), iRating: rating})
+	}
+
+	// Faster first. Insertion sort keeps this deterministic and the field is small.
+	for i := 1; i < len(field); i++ {
+		for j := i; j > 0 && field[j].iRating > field[j-1].iRating; j-- {
+			field[j], field[j-1] = field[j-1], field[j]
+		}
+	}
+
+	order := make([]int, 0, len(field))
+	for _, e := range field {
+		order = append(order, e.carIdx)
 	}
 	return order
 }
@@ -89,7 +115,7 @@ func stateFor(cars []carState, carIdx int) *carState {
 // decide the cause, so no cause is assigned here — the generator only makes the
 // position change happen and leaves attribution to the collector, exactly as it
 // would with real telemetry.
-func maybeSwap(sw *writer, w *Weekend, cars []carState, order []int, driverPos int) (int, bool) {
+func maybeSwap(sw *writer, w *Weekend, cars []carState, order []int, driverPos, expectedPos int) (int, bool) {
 	di := driverPos - 1
 	if di < 0 || di >= len(order) {
 		return driverPos, false
@@ -115,18 +141,33 @@ func maybeSwap(sw *writer, w *Weekend, cars []carState, order []int, driverPos i
 		return swapWith(di - 1)
 	}
 
-	if sw.rng.Float64() > 0.004 {
+	if sw.rng.Float64() > 0.0022 {
 		return driverPos, false
 	}
 
-	// Gaining is somewhat more likely than losing as the driver improves, but both
-	// must occur or the pass/passed ratio would be degenerate.
+	// The direction is biased toward the position the driver's pace justifies,
+	// which is the slot they started from.
 	//
+	// Without this attractor the small forward bias compounded over thousands of
+	// frames and the driver finished around eight places ahead of where they
+	// qualified, in every race, for two years. A drift model keeps results
+	// scattered around the grid slot instead of marching to the front.
+	// A positive drift means the driver is running worse than their pace justifies,
+	// which makes moving forward more likely — not less.
+	drift := driverPos - expectedPos
+	forwardOdds := 0.5 + float64(drift)*0.06
+	if forwardOdds < 0.12 {
+		forwardOdds = 0.12
+	}
+	if forwardOdds > 0.88 {
+		forwardOdds = 0.88
+	}
+
 	// A car that is stopped never takes a place from the driver: you do not lose a
 	// position to someone sitting in the pit lane. Excluding that case is what
 	// keeps a loss from being attributed to OpponentPit or OpponentOffWorld, which
 	// would be nonsense.
-	forward := sw.rng.Float64() < 0.56
+	forward := sw.rng.Float64() < forwardOdds
 	canGain := di > 0
 	canLose := di < len(order)-1 && !stopped(order[di+1])
 

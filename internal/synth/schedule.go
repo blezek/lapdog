@@ -222,7 +222,11 @@ func buildWeekend(
 	// Pace improves over the two years, with week-to-week variation so the lap
 	// time trend is a believable downward scatter rather than a clean line.
 	pace := 1.048 - 0.052*progress + (rng.Float64()-0.5)*0.014
-	iRating := int(1450 + 1200*progress + float64(rng.Intn(90)-45))
+	// The climb stops short of dominating the field. Ending well above
+	// FieldStrength produced a driver who qualified second and won almost every
+	// race by the final season, which reads as a broken dataset rather than an
+	// improving one.
+	iRating := int(1450 + 780*progress + float64(rng.Intn(90)-45))
 	incidentRate := 4.6 - 3.1*progress + (rng.Float64()-0.5)*0.8
 	if incidentRate < 0.4 {
 		incidentRate = 0.4
@@ -253,7 +257,7 @@ func buildWeekend(
 		w.Official = 1
 		w.EventType = "Race"
 		w.DriverCarIdx = rng.Intn(12)
-		w.Opponents = humanField(rng, 15+rng.Intn(20), iRating)
+		w.Opponents = humanField(rng, 15+rng.Intn(20))
 		w.Sessions = raceWeekendSessions(rng, w, ev.driveSeconds, s.RaceLaps, "Practice", "Open Qualify")
 
 	case FlavourOfficialPractice:
@@ -264,7 +268,7 @@ func buildWeekend(
 		w.Official = 1
 		w.EventType = "Practice"
 		w.DriverCarIdx = rng.Intn(8)
-		w.Opponents = humanField(rng, 4+rng.Intn(12), iRating)
+		w.Opponents = humanField(rng, 4+rng.Intn(12))
 		w.Sessions = []Session{practiceSession(rng, w, 0, "Open Practice", ev.driveSeconds)}
 
 	case FlavourLeague:
@@ -275,7 +279,7 @@ func buildWeekend(
 		w.Official = 0
 		w.EventType = "Race"
 		w.DriverCarIdx = rng.Intn(10)
-		w.Opponents = humanField(rng, 12+rng.Intn(10), iRating)
+		w.Opponents = humanField(rng, 12+rng.Intn(10))
 		w.Sessions = raceWeekendSessions(rng, w, ev.driveSeconds, lg.RaceLaps, "Practice", "Lone Qualify")
 
 	case FlavourHosted:
@@ -284,7 +288,7 @@ func buildWeekend(
 		w.Official = 0
 		w.EventType = "Race"
 		w.DriverCarIdx = rng.Intn(8)
-		w.Opponents = humanField(rng, 6+rng.Intn(10), iRating)
+		w.Opponents = humanField(rng, 6+rng.Intn(10))
 		w.Sessions = raceWeekendSessions(rng, w, ev.driveSeconds, 12+rng.Intn(10), "Practice", "")
 
 	case FlavourAI:
@@ -437,8 +441,16 @@ func replayTime(rng *rand.Rand) float64 {
 	return 0
 }
 
+// FieldStrength is the rating the synthetic opponent pool is centred on.
+//
+// It is deliberately fixed rather than drawn around the local driver. Centring the
+// field on the driver would hold their relative position constant, so two years of
+// improving pace would produce no improvement in grid slots or results — which is
+// precisely what an earlier version did.
+const FieldStrength = 2050
+
 // humanField builds a field of human opponents with plausible ratings.
-func humanField(rng *rand.Rand, n, aroundIRating int) []Opponent {
+func humanField(rng *rand.Rand, n int) []Opponent {
 	if n > MaxCars-1 {
 		n = MaxCars - 1
 	}
@@ -447,7 +459,7 @@ func humanField(rng *rand.Rand, n, aroundIRating int) []Opponent {
 		out = append(out, Opponent{
 			Name:    opponentNames[(i*7+rng.Intn(5))%len(opponentNames)],
 			UserID:  400000 + rng.Intn(300000),
-			IRating: clampInt(aroundIRating+rng.Intn(1400)-700, 350, 6500),
+			IRating: clampInt(FieldStrength+rng.Intn(1600)-800, 350, 6500),
 			IsAI:    false,
 		})
 	}

@@ -1,0 +1,217 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/version"
+)
+
+// statusResponse is the collector status plus the process-level facts the settings
+// screen shows.
+type statusResponse struct {
+	collector.Status
+	Version      string `json:"version"`
+	DatabasePath string `json:"databasePath"`
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	var st collector.Status
+	if s.sp != nil {
+		st = s.sp.Status()
+	}
+	s.writeJSON(w, statusResponse{
+		Status:       st,
+		Version:      version.Version,
+		DatabasePath: s.st.Path(),
+	})
+}
+
+func (s *Server) handleTotals(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	t, err := s.st.Totals(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, t)
+}
+
+func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	groupBy := r.URL.Query().Get("group_by")
+	if groupBy == "" {
+		// The stacked bar is the primary consumer, so its grouping is the natural
+		// default rather than an error.
+		groupBy = "typecontext"
+	}
+	rows, err := s.st.Summary(f, groupBy)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		// An unrecognised grouping is a client mistake, not a server fault.
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleDaily(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.st.Daily(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+// listResponse wraps a page of rows with the total match count, so the interface
+// can paginate and still say "86 sessions matched".
+type listResponse struct {
+	Items any `json:"items"`
+	Total int `json:"total"`
+}
+
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, total, err := s.st.ListSessions(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, listResponse{Items: rows, Total: total})
+}
+
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.idOrFail(w, r)
+	if !ok {
+		return
+	}
+	rec, err := s.st.SessionByID(id)
+	if err != nil {
+		s.notFoundOr500(w, err)
+		return
+	}
+	s.writeJSON(w, rec)
+}
+
+func (s *Server) handleSessionLaps(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.idOrFail(w, r)
+	if !ok {
+		return
+	}
+	laps, err := s.st.LapsForSession(id)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, laps)
+}
+
+func (s *Server) handleSessionPositions(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.idOrFail(w, r)
+	if !ok {
+		return
+	}
+	evs, err := s.st.PositionEventsForSession(id)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, evs)
+}
+
+func (s *Server) handleLaps(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, total, err := s.st.ListLaps(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, listResponse{Items: rows, Total: total})
+}
+
+// facetsResponse adds the allowlisted grouping names, so the interface does not
+// have to hard-code a list the server owns.
+type facetsResponse struct {
+	store.Facets
+	GroupBy []string `json:"groupBy"`
+}
+
+func (s *Server) handleFacets(w http.ResponseWriter, r *http.Request) {
+	f, err := s.st.Facets()
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, facetsResponse{Facets: f, GroupBy: store.GroupByNames()})
+}
+
+// settingsResponse echoes the saved config and names the fields whose change needs
+// a restart, which the interface tells the user about.
+type settingsResponse struct {
+	Config          config.Config `json:"config"`
+	RestartRequired []string      `json:"restartRequired"`
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	if s.cfg == nil {
+		s.fail(w, http.StatusInternalServerError, errors.New("no configuration store"))
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		s.writeJSON(w, s.cfg.Get())
+
+	case http.MethodPut:
+		before := s.cfg.Get()
+		// Start from the current values so a partial body updates only what it
+		// names rather than silently zeroing everything it omits.
+		next := before
+		if err := json.NewDecoder(r.Body).Decode(&next); err != nil {
+			s.fail(w, http.StatusBadRequest, err)
+			return
+		}
+		// Validate rather than normalise: a value the user explicitly typed should
+		// be reported as wrong, not silently changed underneath them.
+		if err := next.Validate(); err != nil {
+			s.fail(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.cfg.Set(next); err != nil {
+			s.fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		var restart []string
+		if next.Port != before.Port {
+			restart = append(restart, "port")
+		}
+		s.writeJSON(w, settingsResponse{Config: next, RestartRequired: restart})
+
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		s.fail(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+	}
+}
