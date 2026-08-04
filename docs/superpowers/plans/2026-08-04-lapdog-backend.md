@@ -8307,3 +8307,429 @@ Expected: PASS. `TestClassifySourceJSONIncludesAllDrivers` now passes, and the e
 git add internal/collector/ internal/sessionyaml/
 git commit -m "Add session segment lifecycle and results extraction"
 ```
+
+---
+
+### Task 16: Collector — lap detection
+
+**Files:**
+- Create: `internal/collector/laps.go`
+- Test: `internal/collector/laps_test.go`
+
+**Interfaces:**
+- Consumes: Task 4's `irsdk.Row`; Task 12's `store.Lap`.
+- Produces:
+  - `type LapDetector struct { ... }`
+  - `func NewLapDetector() *LapDetector`
+  - `func (d *LapDetector) Observe(row irsdk.Row, incidents int, bestSoFar *float64) (*store.Lap, bool)`
+  - `func (d *LapDetector) Reset()`
+
+Detection rule, spec §8: a lap is recorded when `Lap` increments **and** `LapLastLapTime > 0`. The recorded `lap_number` is the `Lap` value *before* the increment — the lap that was just completed, not the one now starting.
+
+| Column | Derivation |
+|---|---|
+| `lap_time_s` | `LapLastLapTime` |
+| `delta_to_best_s` | `lap_time_s` minus the session best *before* this lap; nil if there was no previous best |
+| `fuel_used_l` | `FuelLevel` at the previous crossing minus now; **nil if fuel increased**, since a refuel makes the delta meaningless |
+| `fuel_level_end_l` | `FuelLevel` at the crossing |
+| `incidents_on_lap` | incident count delta over the lap |
+| `is_pit_lap` | `OnPitRoad` was true at any poll during the lap |
+| `position`, `class_position` | `PlayerCarPosition`, `PlayerCarClassPosition` at the crossing |
+
+The 1 Hz default means a crossing is detected up to one second late. This does not affect `lap_time_s`, which the sim computes, but it can misattribute an incident occurring within a second of the line to the wrong lap. Accepted, and it improves at faster poll rates.
+
+- [ ] **Step 1: Write the failing test**
+
+Create `internal/collector/laps_test.go`:
+
+```go
+package collector
+
+import (
+	"encoding/binary"
+	"math"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// lapRow builds a row with the variables the lap detector reads.
+func lapRow(lap int32, lastLapTime, fuel float64, onPitRoad bool, pos, classPos int32) irsdk.Row {
+	vars := []irsdk.VarHeader{
+		{Name: "Lap", Type: irsdk.VarInt, Offset: 0, Count: 1},
+		{Name: "LapLastLapTime", Type: irsdk.VarFloat, Offset: 4, Count: 1},
+		{Name: "FuelLevel", Type: irsdk.VarFloat, Offset: 8, Count: 1},
+		{Name: "OnPitRoad", Type: irsdk.VarBool, Offset: 12, Count: 1},
+		{Name: "PlayerCarPosition", Type: irsdk.VarInt, Offset: 13, Count: 1},
+		{Name: "PlayerCarClassPosition", Type: irsdk.VarInt, Offset: 17, Count: 1},
+	}
+	data := make([]byte, 21)
+	binary.LittleEndian.PutUint32(data[0:], uint32(lap))
+	binary.LittleEndian.PutUint32(data[4:], math.Float32bits(float32(lastLapTime)))
+	binary.LittleEndian.PutUint32(data[8:], math.Float32bits(float32(fuel)))
+	if onPitRoad {
+		data[12] = 1
+	}
+	binary.LittleEndian.PutUint32(data[13:], uint32(pos))
+	binary.LittleEndian.PutUint32(data[17:], uint32(classPos))
+	return irsdk.NewRow(vars, data)
+}
+
+// The first observation establishes a baseline and emits nothing: there is
+// no previous lap number to compare against.
+func TestLapDetectorFirstObservationEmitsNothing(t *testing.T) {
+	d := NewLapDetector()
+	if lap, ok := d.Observe(lapRow(1, 0, 50, false, 5, 3), 0, nil); ok {
+		t.Errorf("first Observe emitted %+v, want nothing", lap)
+	}
+}
+
+func TestLapDetectorEmitsOnIncrement(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(1, 0, 50.0, false, 5, 3), 0, nil)
+	lap, ok := d.Observe(lapRow(2, 102.5, 47.6, false, 4, 2), 0, nil)
+	if !ok {
+		t.Fatal("Observe on a lap increment emitted nothing")
+	}
+	// The completed lap is the number BEFORE the increment.
+	if lap.LapNumber != 1 {
+		t.Errorf("LapNumber = %d, want 1 — the lap just completed", lap.LapNumber)
+	}
+	if lap.LapTimeS == nil || math.Abs(*lap.LapTimeS-102.5) > 1e-4 {
+		t.Errorf("LapTimeS = %v, want 102.5", lap.LapTimeS)
+	}
+	if lap.FuelUsedL == nil || math.Abs(*lap.FuelUsedL-2.4) > 1e-3 {
+		t.Errorf("FuelUsedL = %v, want 2.4", lap.FuelUsedL)
+	}
+	if lap.FuelLevelEndL == nil || math.Abs(*lap.FuelLevelEndL-47.6) > 1e-3 {
+		t.Errorf("FuelLevelEndL = %v, want 47.6", lap.FuelLevelEndL)
+	}
+	if lap.Position == nil || *lap.Position != 4 {
+		t.Errorf("Position = %v, want 4", lap.Position)
+	}
+	if lap.ClassPosition == nil || *lap.ClassPosition != 2 {
+		t.Errorf("ClassPosition = %v, want 2", lap.ClassPosition)
+	}
+}
+
+// A lap increment with no valid time is the out-lap; nothing is emitted.
+func TestLapDetectorSkipsIncrementWithNoTime(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(0, 0, 50, false, 5, 3), 0, nil)
+	if lap, ok := d.Observe(lapRow(1, 0, 49, false, 5, 3), 0, nil); ok {
+		t.Errorf("emitted %+v for an increment with LapLastLapTime 0, want nothing", lap)
+	}
+	// The next real crossing must still work, and must not double-count.
+	lap, ok := d.Observe(lapRow(2, 100.0, 47, false, 5, 3), 0, nil)
+	if !ok {
+		t.Fatal("the following real crossing emitted nothing")
+	}
+	if lap.LapNumber != 1 {
+		t.Errorf("LapNumber = %d, want 1", lap.LapNumber)
+	}
+}
+
+// No increment means no lap, however many polls happen.
+func TestLapDetectorNoEmitWithoutIncrement(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(3, 100.0, 40, false, 5, 3), 0, nil)
+	for i := 0; i < 10; i++ {
+		if lap, ok := d.Observe(lapRow(3, 100.0, 39.5, false, 5, 3), 0, nil); ok {
+			t.Fatalf("emitted %+v without a lap increment", lap)
+		}
+	}
+}
+
+// Refuelling makes the fuel delta meaningless, so it must be nil rather
+// than a negative number.
+func TestLapDetectorRefuelYieldsNilFuelUsed(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(1, 0, 10.0, true, 5, 3), 0, nil)
+	lap, ok := d.Observe(lapRow(2, 105.0, 60.0, true, 5, 3), 0, nil)
+	if !ok {
+		t.Fatal("no lap emitted")
+	}
+	if lap.FuelUsedL != nil {
+		t.Errorf("FuelUsedL = %v, want nil after a refuel", lap.FuelUsedL)
+	}
+	if lap.FuelLevelEndL == nil || math.Abs(*lap.FuelLevelEndL-60.0) > 1e-3 {
+		t.Errorf("FuelLevelEndL = %v, want 60.0 — the level is still known", lap.FuelLevelEndL)
+	}
+}
+
+// OnPitRoad at any point during the lap marks it a pit lap.
+func TestLapDetectorPitLapFlag(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(1, 0, 50, false, 5, 3), 0, nil)
+	d.Observe(lapRow(1, 0, 49, true, 5, 3), 0, nil) // pit road mid-lap
+	d.Observe(lapRow(1, 0, 48, false, 5, 3), 0, nil)
+	lap, ok := d.Observe(lapRow(2, 130.0, 47, false, 5, 3), 0, nil)
+	if !ok {
+		t.Fatal("no lap emitted")
+	}
+	if !lap.IsPitLap {
+		t.Error("IsPitLap = false, want true — pit road was seen during the lap")
+	}
+
+	// The flag must reset for the following lap.
+	next, ok := d.Observe(lapRow(3, 102.0, 45, false, 5, 3), 0, nil)
+	if !ok {
+		t.Fatal("no lap emitted for lap 2")
+	}
+	if next.IsPitLap {
+		t.Error("IsPitLap = true on the following clean lap; the flag did not reset")
+	}
+}
+
+func TestLapDetectorIncidentDelta(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(1, 0, 50, false, 5, 3), 4, nil)
+	lap, ok := d.Observe(lapRow(2, 102.0, 48, false, 5, 3), 6, nil)
+	if !ok {
+		t.Fatal("no lap emitted")
+	}
+	if lap.IncidentsOnLap != 2 {
+		t.Errorf("IncidentsOnLap = %d, want 2", lap.IncidentsOnLap)
+	}
+
+	// A lap with no new incidents reports zero, not the running total.
+	clean, ok := d.Observe(lapRow(3, 101.0, 46, false, 5, 3), 6, nil)
+	if !ok {
+		t.Fatal("no lap emitted")
+	}
+	if clean.IncidentsOnLap != 0 {
+		t.Errorf("IncidentsOnLap = %d, want 0", clean.IncidentsOnLap)
+	}
+}
+
+func TestLapDetectorDeltaToBest(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(1, 0, 50, false, 5, 3), 0, nil)
+
+	// No previous best: delta is nil, not zero.
+	first, _ := d.Observe(lapRow(2, 102.5, 48, false, 5, 3), 0, nil)
+	if first.DeltaToBestS != nil {
+		t.Errorf("DeltaToBestS = %v on the first timed lap, want nil", first.DeltaToBestS)
+	}
+
+	best := 102.5
+	slower, _ := d.Observe(lapRow(3, 103.2, 46, false, 5, 3), 0, &best)
+	if slower.DeltaToBestS == nil || math.Abs(*slower.DeltaToBestS-0.7) > 1e-4 {
+		t.Errorf("DeltaToBestS = %v, want 0.7", slower.DeltaToBestS)
+	}
+
+	faster, _ := d.Observe(lapRow(4, 101.9, 44, false, 5, 3), 0, &best)
+	if faster.DeltaToBestS == nil || math.Abs(*faster.DeltaToBestS-(-0.6)) > 1e-4 {
+		t.Errorf("DeltaToBestS = %v, want -0.6 for a faster lap", faster.DeltaToBestS)
+	}
+}
+
+// A lap counter going backwards means a new session or a reset, not a lap.
+func TestLapDetectorIgnoresBackwardsLapCounter(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(10, 100.0, 40, false, 5, 3), 0, nil)
+	if lap, ok := d.Observe(lapRow(1, 100.0, 50, false, 5, 3), 0, nil); ok {
+		t.Errorf("emitted %+v when the lap counter went backwards", lap)
+	}
+	// It must re-baseline, so the next increment is detected normally.
+	lap, ok := d.Observe(lapRow(2, 101.0, 48, false, 5, 3), 0, nil)
+	if !ok {
+		t.Fatal("no lap emitted after re-baselining")
+	}
+	if lap.LapNumber != 1 {
+		t.Errorf("LapNumber = %d, want 1", lap.LapNumber)
+	}
+}
+
+// A multi-lap jump (a poll gap spanning a whole lap) emits one lap for the
+// most recently completed one rather than inventing the missed laps.
+func TestLapDetectorMultiLapJump(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(1, 0, 50, false, 5, 3), 0, nil)
+	lap, ok := d.Observe(lapRow(4, 102.0, 44, false, 5, 3), 0, nil)
+	if !ok {
+		t.Fatal("no lap emitted across a multi-lap jump")
+	}
+	if lap.LapNumber != 3 {
+		t.Errorf("LapNumber = %d, want 3 — LapLastLapTime describes the lap before the current one", lap.LapNumber)
+	}
+}
+
+func TestLapDetectorMissingVariables(t *testing.T) {
+	d := NewLapDetector()
+	bare := irsdk.NewRow([]irsdk.VarHeader{
+		{Name: "Something", Type: irsdk.VarInt, Offset: 0, Count: 1},
+	}, make([]byte, 4))
+	if _, ok := d.Observe(bare, 0, nil); ok {
+		t.Error("Observe on a row with no Lap variable emitted a lap")
+	}
+}
+
+func TestLapDetectorReset(t *testing.T) {
+	d := NewLapDetector()
+	d.Observe(lapRow(5, 100.0, 40, true, 5, 3), 3, nil)
+	d.Reset()
+	// After Reset the next observation is a baseline again.
+	if lap, ok := d.Observe(lapRow(6, 101.0, 38, false, 5, 3), 3, nil); ok {
+		t.Errorf("emitted %+v immediately after Reset, want a fresh baseline", lap)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/collector/ -run LapDetector -v`
+Expected: FAIL — `undefined: NewLapDetector`.
+
+- [ ] **Step 3: Write the lap detector**
+
+Create `internal/collector/laps.go`:
+
+```go
+package collector
+
+import (
+	"github.com/blezek/lapdog/internal/irsdk"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+// LapDetector turns a stream of telemetry rows into completed-lap records.
+//
+// A lap is recognised when the Lap counter increments and LapLastLapTime
+// holds a usable time. The lap recorded is the one just finished, which is
+// the counter value before the increment.
+type LapDetector struct {
+	haveBaseline bool
+	prevLap      int32
+	prevFuel     float64
+	haveFuel     bool
+	prevIncidents int
+	pitSeen      bool
+}
+
+// NewLapDetector returns a detector with no baseline.
+func NewLapDetector() *LapDetector { return &LapDetector{} }
+
+// Reset forgets the baseline, so the next observation establishes a new
+// one and emits nothing. Called when a session segment changes.
+func (d *LapDetector) Reset() { *d = LapDetector{} }
+
+// Observe consumes one row and returns a completed lap when one was
+// crossed.
+//
+// incidents is the running session incident count, used to attribute
+// incidents to the lap they happened on. bestSoFar is the session best
+// before this lap, used for the delta; nil means there is no best yet.
+func (d *LapDetector) Observe(row irsdk.Row, incidents int, bestSoFar *float64) (*store.Lap, bool) {
+	lapNow, ok := row.Int("Lap")
+	if !ok {
+		return nil, false
+	}
+
+	// Pit road at any point during the lap makes it a pit lap.
+	if onPit, ok := row.Bool("OnPitRoad"); ok && onPit {
+		d.pitSeen = true
+	}
+
+	fuelNow, haveFuelNow := row.Float("FuelLevel")
+
+	// The first observation establishes the reference point. There is no
+	// previous lap number to compare against, so no lap is emitted.
+	if !d.haveBaseline {
+		d.baseline(lapNow, fuelNow, haveFuelNow, incidents)
+		return nil, false
+	}
+
+	// A counter going backwards means a reset or a new session rather than
+	// a lap; re-baseline rather than emitting nonsense.
+	if lapNow < d.prevLap {
+		d.baseline(lapNow, fuelNow, haveFuelNow, incidents)
+		return nil, false
+	}
+	if lapNow == d.prevLap {
+		return nil, false
+	}
+
+	// The counter advanced. LapLastLapTime describes the lap immediately
+	// before the current one.
+	lastTime, haveTime := row.Float("LapLastLapTime")
+	completed := lapNow - 1
+
+	if !haveTime || lastTime <= 0 {
+		// An increment with no usable time is an out-lap. Advance the
+		// baseline so the next crossing is measured from here, and reset
+		// the per-lap flags.
+		d.advance(lapNow, fuelNow, haveFuelNow, incidents)
+		return nil, false
+	}
+
+	rec := &store.Lap{
+		LapNumber:      int(completed),
+		LapTimeS:       &lastTime,
+		IncidentsOnLap: incidents - d.prevIncidents,
+		IsPitLap:       d.pitSeen,
+	}
+	if rec.IncidentsOnLap < 0 {
+		rec.IncidentsOnLap = 0
+	}
+	if bestSoFar != nil {
+		delta := lastTime - *bestSoFar
+		rec.DeltaToBestS = &delta
+	}
+	if haveFuelNow {
+		end := fuelNow
+		rec.FuelLevelEndL = &end
+		// A fuel increase means a refuel happened, which makes the delta
+		// meaningless. Leave it nil rather than reporting negative usage.
+		if d.haveFuel && fuelNow <= d.prevFuel {
+			used := d.prevFuel - fuelNow
+			rec.FuelUsedL = &used
+		}
+	}
+	if p, ok := row.Int("PlayerCarPosition"); ok && p > 0 {
+		v := int(p)
+		rec.Position = &v
+	}
+	if p, ok := row.Int("PlayerCarClassPosition"); ok && p > 0 {
+		v := int(p)
+		rec.ClassPosition = &v
+	}
+
+	d.advance(lapNow, fuelNow, haveFuelNow, incidents)
+	return rec, true
+}
+
+// baseline establishes the reference point without emitting a lap.
+func (d *LapDetector) baseline(lap int32, fuel float64, haveFuel bool, incidents int) {
+	d.haveBaseline = true
+	d.advance(lap, fuel, haveFuel, incidents)
+}
+
+// advance moves the reference point forward and clears per-lap state.
+func (d *LapDetector) advance(lap int32, fuel float64, haveFuel bool, incidents int) {
+	d.prevLap = lap
+	if haveFuel {
+		d.prevFuel = fuel
+		d.haveFuel = true
+	}
+	d.prevIncidents = incidents
+	d.pitSeen = false
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run: `go test ./internal/collector/ -run LapDetector -v`
+Expected: PASS, eleven tests.
+
+- [ ] **Step 5: Run the whole collector suite**
+
+Run: `go test ./internal/collector/ -v`
+Expected: PASS, all tests from Tasks 14–16.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add internal/collector/
+git commit -m "Add lap detection with fuel, incident and pit attribution"
+```
