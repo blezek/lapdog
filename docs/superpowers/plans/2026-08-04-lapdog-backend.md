@@ -13212,3 +13212,606 @@ Expected: PASS. Every export test now returns real data instead of 501.
 git add internal/api/ internal/store/
 git commit -m "Add streaming CSV and JSON export"
 ```
+
+---
+
+### Task 22: Windows shared-memory reader and the live source
+
+**Files:**
+- Create: `internal/irsdk/live_windows.go`, `internal/irsdk/live_stub.go`, `internal/source/live.go`
+- Test: `internal/irsdk/live_test.go`
+
+**Interfaces:**
+- Consumes: Tasks 2–4's parsing and decoding.
+- Produces:
+  - `type Conn struct { ... }`
+  - `func Open() (*Conn, error)` — Windows only; the stub returns `ErrUnsupported`
+  - `func (c *Conn) Close() error`
+  - `func (c *Conn) Snapshot() (Header, []VarHeader, []byte, []byte, error)` — header, layout, latest untorn row, session YAML
+  - `var ErrUnsupported error`, `var ErrNotRunning error`
+  - `func NewLive() (source.Source, error)` in `internal/source`
+  - `func (s *live) SetInterval(time.Duration)` — satisfies `source.Paced`
+
+**This is the only Windows-specific code in the project, and the only code that cannot be fully tested on macOS.** It is kept deliberately thin — roughly 150 lines — because every line here is a line that needs a Windows machine to verify. All the parsing it depends on was already tested in Tasks 3 and 4 against synthetic buffers.
+
+The read procedure implements spec §5.2. Select the buffer with the highest `TickCount`, copy `BufLen` bytes, re-read the `VarBuf`, and discard the frame if `IsTorn` reports the copy was not self-consistent. Retry a bounded number of times, then give up for this poll rather than spinning.
+
+`live.Next` blocks for the poll interval and returns `source.ErrDisconnected` when the sim is not running, which the collector treats as the normal state rather than a failure.
+
+- [ ] **Step 1: Write the tests that run everywhere**
+
+Create `internal/irsdk/live_test.go`:
+
+```go
+package irsdk
+
+import (
+	"errors"
+	"runtime"
+	"testing"
+)
+
+// Off Windows, Open must fail cleanly with ErrUnsupported rather than
+// panicking or blocking. This is what lets the rest of the test suite run
+// on macOS.
+func TestOpenOffWindowsIsUnsupported(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("this asserts the non-Windows stub")
+	}
+	c, err := Open()
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("Open() = %v, want ErrUnsupported", err)
+	}
+	if c != nil {
+		t.Error("Open() returned a non-nil Conn alongside an error")
+	}
+}
+
+// On Windows without iRacing running, Open must report ErrNotRunning
+// rather than a generic failure, so the collector can treat it as the
+// normal idle state.
+func TestOpenOnWindowsWithoutSim(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("Windows only")
+	}
+	c, err := Open()
+	if err == nil {
+		// iRacing is running on this machine; that is a valid outcome.
+		c.Close()
+		t.Skip("iRacing appears to be running; nothing to assert")
+	}
+	if !errors.Is(err, ErrNotRunning) {
+		t.Errorf("Open() without the sim = %v, want ErrNotRunning", err)
+	}
+}
+
+// snapshotFrom is the pure part of the read path: given raw mapped bytes,
+// extract the layout, the newest row and the YAML. Testing it here means
+// the only untested-on-macOS code is the memory mapping itself.
+func TestSnapshotFromSyntheticMapping(t *testing.T) {
+	// Lay out a complete synthetic mapping: header, var headers, YAML, rows.
+	const (
+		numVars   = 2
+		bufLen    = 8
+		vhOffset  = HeaderSize
+		yamlOff   = vhOffset + numVars*VarHeaderSize
+		yamlText  = "WeekendInfo:\n TrackID: 18\n"
+		buf0Off   = 4096
+		buf1Off   = 8192
+	)
+	mapping := make([]byte, 12288)
+
+	putI := func(off int, v int32) {
+		mapping[off] = byte(v)
+		mapping[off+1] = byte(v >> 8)
+		mapping[off+2] = byte(v >> 16)
+		mapping[off+3] = byte(v >> 24)
+	}
+	// Header.
+	putI(0, 2)               // ver
+	putI(4, StatusConnected) // status
+	putI(8, 60)              // tickRate
+	putI(12, 3)              // sessionInfoUpdate
+	putI(16, len(yamlText))  // sessionInfoLen
+	putI(20, yamlOff)        // sessionInfoOffset
+	putI(24, numVars)
+	putI(28, vhOffset)
+	putI(32, 2) // numBuf
+	putI(36, bufLen)
+	putI(40, 200)
+	// varBuf[0]: older.
+	putI(48, 100)
+	putI(52, buf0Off)
+	putI(56, 100)
+	// varBuf[1]: newest.
+	putI(64, 200)
+	putI(68, buf1Off)
+	putI(72, 200)
+
+	// Var headers.
+	putI(vhOffset, int32(VarInt))
+	putI(vhOffset+4, 0)
+	putI(vhOffset+8, 1)
+	copy(mapping[vhOffset+16:], "Lap\x00")
+	putI(vhOffset+VarHeaderSize, int32(VarFloat))
+	putI(vhOffset+VarHeaderSize+4, 4)
+	putI(vhOffset+VarHeaderSize+8, 1)
+	copy(mapping[vhOffset+VarHeaderSize+16:], "Speed\x00")
+
+	copy(mapping[yamlOff:], yamlText)
+
+	// Rows: the newest buffer holds Lap 42.
+	putI(buf0Off, 7)
+	putI(buf1Off, 42)
+
+	hdr, vh, row, yaml, err := snapshotFrom(mapping)
+	if err != nil {
+		t.Fatalf("snapshotFrom: %v", err)
+	}
+	if !hdr.Connected() || hdr.TickRate != 60 {
+		t.Errorf("header = %+v", hdr)
+	}
+	if len(vh) != 2 || vh[0].Name != "Lap" || vh[1].Name != "Speed" {
+		t.Errorf("var headers = %+v", vh)
+	}
+	if string(yaml) != yamlText {
+		t.Errorf("yaml = %q", yaml)
+	}
+	if len(row) != bufLen {
+		t.Fatalf("row length = %d, want %d", len(row), bufLen)
+	}
+	// The newest buffer must win.
+	if lap, ok := NewRow(vh, row).Int("Lap"); !ok || lap != 42 {
+		t.Errorf("decoded Lap = %d, %v; want 42 from the newest buffer", lap, ok)
+	}
+}
+
+func TestSnapshotFromRejectsTruncatedMapping(t *testing.T) {
+	if _, _, _, _, err := snapshotFrom(make([]byte, HeaderSize-1)); err == nil {
+		t.Error("snapshotFrom on a mapping smaller than the header = nil, want an error")
+	}
+}
+
+// A header pointing past the end of the mapping must error rather than
+// panic on a slice out of range.
+func TestSnapshotFromRejectsOutOfRangeOffsets(t *testing.T) {
+	mapping := make([]byte, HeaderSize+64)
+	putI := func(off int, v int32) {
+		mapping[off] = byte(v)
+		mapping[off+1] = byte(v >> 8)
+		mapping[off+2] = byte(v >> 16)
+		mapping[off+3] = byte(v >> 24)
+	}
+	putI(0, 2)
+	putI(4, StatusConnected)
+	putI(24, 1)       // numVars
+	putI(28, 1000000) // varHeaderOffset well past the end
+	putI(32, 1)
+	putI(36, 8)
+	putI(48, 10)
+	putI(52, 900000) // bufOffset past the end
+	putI(56, 10)
+
+	if _, _, _, _, err := snapshotFrom(mapping); err == nil {
+		t.Error("snapshotFrom with out-of-range offsets = nil, want an error")
+	}
+}
+
+func TestSnapshotFromDisconnectedStatus(t *testing.T) {
+	mapping := make([]byte, 4096)
+	// ver set, status bit clear.
+	mapping[0] = 2
+	if _, _, _, _, err := snapshotFrom(mapping); !errors.Is(err, ErrNotRunning) {
+		t.Errorf("snapshotFrom with the connected bit clear = %v, want ErrNotRunning", err)
+	}
+}
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run: `go test ./internal/irsdk/ -run 'Open|snapshotFrom|Snapshot' -v`
+Expected: FAIL — `undefined: Open`, `undefined: snapshotFrom`, `undefined: ErrUnsupported`.
+
+- [ ] **Step 3: Write the platform-independent snapshot extraction**
+
+Create `internal/irsdk/live.go`. Putting `snapshotFrom` in a file with no
+build tag is the point: it means the byte-level logic is tested on every
+platform, and only the memory mapping itself needs Windows.
+
+```go
+package irsdk
+
+import (
+	"errors"
+	"fmt"
+)
+
+// ErrUnsupported indicates live telemetry is not available on this
+// platform. Only Windows can read the sim's shared memory.
+var ErrUnsupported = errors.New("irsdk: live telemetry is only available on Windows")
+
+// ErrNotRunning indicates the simulator is not currently running or has
+// not published a connected status. This is an expected state, not a fault.
+var ErrNotRunning = errors.New("irsdk: simulator not running")
+
+// maxTornRetries bounds how many times a single poll re-reads a buffer
+// that the sim overwrote mid-copy. Beyond this the poll is abandoned rather
+// than spinning; the next poll will try again.
+const maxTornRetries = 3
+
+// snapshotFrom extracts the layout, the newest self-consistent variable row
+// and the session YAML from a mapped region.
+//
+// This is deliberately separate from the mapping code so that all the
+// byte-level reasoning is testable on any operating system. Only the
+// mapping itself requires Windows.
+func snapshotFrom(mapping []byte) (Header, []VarHeader, []byte, []byte, error) {
+	hdr, err := ParseHeader(mapping)
+	if err != nil {
+		return Header{}, nil, nil, nil, err
+	}
+	if !hdr.Connected() {
+		return hdr, nil, nil, nil, ErrNotRunning
+	}
+
+	// Variable headers.
+	vhStart := int(hdr.VarHeaderOffset)
+	vhLen := int(hdr.NumVars) * VarHeaderSize
+	if vhStart < 0 || vhLen < 0 || vhStart+vhLen > len(mapping) {
+		return hdr, nil, nil, nil, fmt.Errorf(
+			"%w: var headers at %d+%d exceed the %d byte mapping",
+			ErrShortBuffer, vhStart, vhLen, len(mapping))
+	}
+	vh, err := ParseVarHeaders(mapping[vhStart:vhStart+vhLen], int(hdr.NumVars))
+	if err != nil {
+		return hdr, nil, nil, nil, err
+	}
+
+	// Newest variable row, copied out and then verified untorn.
+	row, err := readRow(mapping, hdr)
+	if err != nil {
+		return hdr, vh, nil, nil, err
+	}
+
+	// Session YAML.
+	yStart := int(hdr.SessionInfoOffset)
+	yLen := int(hdr.SessionInfoLen)
+	var yaml []byte
+	if yStart >= 0 && yLen > 0 && yStart+yLen <= len(mapping) {
+		yaml = make([]byte, yLen)
+		copy(yaml, mapping[yStart:yStart+yLen])
+		// The sim NUL-terminates the string inside the declared length.
+		yaml = trimNul(yaml)
+	}
+	return hdr, vh, row, yaml, nil
+}
+
+// readRow copies the newest variable row, retrying while the sim overwrites
+// it mid-copy.
+//
+// The sim writes TickCountBegin before a row and TickCount after it, which
+// is what makes a torn copy detectable. A torn frame is discarded entirely
+// rather than partially applied.
+func readRow(mapping []byte, hdr Header) ([]byte, error) {
+	bufLen := int(hdr.BufLen)
+	if bufLen <= 0 {
+		return nil, fmt.Errorf("irsdk: header declares bufLen %d", bufLen)
+	}
+
+	for attempt := 0; attempt < maxTornRetries; attempt++ {
+		before, ok := hdr.LatestBuf()
+		if !ok {
+			return nil, errors.New("irsdk: header declares no variable buffers")
+		}
+		start := int(before.BufOffset)
+		if start < 0 || start+bufLen > len(mapping) {
+			return nil, fmt.Errorf(
+				"%w: row at %d+%d exceeds the %d byte mapping",
+				ErrShortBuffer, start, bufLen, len(mapping))
+		}
+
+		row := make([]byte, bufLen)
+		copy(row, mapping[start:start+bufLen])
+
+		// Re-read the header to see whether the sim moved underneath us.
+		after, err := ParseHeader(mapping)
+		if err != nil {
+			return nil, err
+		}
+		afterBuf, ok := after.LatestBuf()
+		if !ok {
+			return nil, errors.New("irsdk: header declares no variable buffers")
+		}
+		if !IsTorn(before, afterBuf) {
+			return row, nil
+		}
+		hdr = after
+	}
+	return nil, errors.New("irsdk: could not obtain an untorn variable row")
+}
+
+// trimNul cuts a byte slice at its first NUL, if any.
+func trimNul(b []byte) []byte {
+	for i, c := range b {
+		if c == 0 {
+			return b[:i]
+		}
+	}
+	return b
+}
+```
+
+- [ ] **Step 4: Write the Windows mapping**
+
+Create `internal/irsdk/live_windows.go`:
+
+```go
+//go:build windows
+
+package irsdk
+
+import (
+	"fmt"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
+)
+
+// mappingSize is how much of the shared memory region to map.
+//
+// The sim does not publish the region's size, so a fixed window is mapped.
+// 2 MiB comfortably covers the header, the variable headers, the triple
+// buffers and a large session YAML string; the SDK's own samples use a
+// similar approach.
+const mappingSize = 2 << 20
+
+// Conn is an open view of the simulator's shared memory.
+type Conn struct {
+	handle windows.Handle
+	view   uintptr
+	buf    []byte
+}
+
+// Open maps the simulator's telemetry region.
+//
+// It returns ErrNotRunning when the sim is not running, which the collector
+// treats as the normal idle state rather than a failure.
+func Open() (*Conn, error) {
+	name, err := windows.UTF16PtrFromString(MemMapFileName)
+	if err != nil {
+		return nil, fmt.Errorf("irsdk: encode mapping name: %w", err)
+	}
+	h, err := windows.OpenFileMapping(windows.FILE_MAP_READ, false, name)
+	if err != nil {
+		// The mapping only exists while the sim is running.
+		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
+	}
+	view, err := windows.MapViewOfFile(h, windows.FILE_MAP_READ, 0, 0, mappingSize)
+	if err != nil {
+		windows.CloseHandle(h)
+		return nil, fmt.Errorf("irsdk: map view: %w", err)
+	}
+	return &Conn{
+		handle: h,
+		view:   view,
+		buf:    unsafe.Slice((*byte)(unsafe.Pointer(view)), mappingSize),
+	}, nil
+}
+
+// Snapshot reads the header, the variable layout, the newest untorn
+// variable row and the session YAML.
+func (c *Conn) Snapshot() (Header, []VarHeader, []byte, []byte, error) {
+	return snapshotFrom(c.buf)
+}
+
+// Close unmaps the view and releases the handle.
+func (c *Conn) Close() error {
+	var firstErr error
+	if c.view != 0 {
+		if err := windows.UnmapViewOfFile(c.view); err != nil {
+			firstErr = err
+		}
+		c.view = 0
+		c.buf = nil
+	}
+	if c.handle != 0 {
+		if err := windows.CloseHandle(c.handle); err != nil && firstErr == nil {
+			firstErr = err
+		}
+		c.handle = 0
+	}
+	return firstErr
+}
+```
+
+- [ ] **Step 5: Write the non-Windows stub**
+
+Create `internal/irsdk/live_stub.go`:
+
+```go
+//go:build !windows
+
+package irsdk
+
+// Conn is a placeholder on platforms without shared-memory telemetry.
+type Conn struct{}
+
+// Open always fails off Windows. Development and testing use the replay
+// source instead, which is why the rest of the package needs no stubbing.
+func Open() (*Conn, error) { return nil, ErrUnsupported }
+
+// Snapshot always fails off Windows.
+func (c *Conn) Snapshot() (Header, []VarHeader, []byte, []byte, error) {
+	return Header{}, nil, nil, nil, ErrUnsupported
+}
+
+// Close is a no-op off Windows.
+func (c *Conn) Close() error { return nil }
+```
+
+- [ ] **Step 6: Write the live source**
+
+Create `internal/source/live.go`:
+
+```go
+package source
+
+import (
+	"sync"
+	"time"
+
+	"github.com/blezek/lapdog/internal/capture"
+	"github.com/blezek/lapdog/internal/irsdk"
+)
+
+// live reads frames from the running simulator.
+//
+// Pacing lives here rather than in the collector: Next blocks for the poll
+// interval. That is what lets the collector's loop be timer-free and lets
+// the replay source run as fast as the CPU allows.
+type live struct {
+	mu       sync.Mutex
+	interval time.Duration
+
+	conn *irsdk.Conn
+	meta capture.Meta
+
+	lastUpdate uint32
+	lastYAML   []byte
+	haveYAML   bool
+}
+
+// NewLive returns a Source reading the running simulator. It does not fail
+// when the sim is absent: connection is attempted lazily in Next, because
+// the sim not running is the normal state.
+func NewLive() (Source, error) {
+	return &live{interval: time.Second}, nil
+}
+
+// SetInterval changes the poll rate, satisfying Paced.
+func (s *live) SetInterval(d time.Duration) {
+	if d <= 0 {
+		return
+	}
+	s.mu.Lock()
+	s.interval = d
+	s.mu.Unlock()
+}
+
+// Meta returns the variable layout most recently observed. It is empty
+// until the first successful read.
+func (s *live) Meta() capture.Meta {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.meta
+}
+
+// Next waits one poll interval and then reads a frame.
+//
+// It returns ErrDisconnected when the sim is not running. The collector
+// treats that as an expected state, so the tray stays alive and the UI
+// keeps serving.
+func (s *live) Next() (Frame, error) {
+	s.mu.Lock()
+	interval := s.interval
+	s.mu.Unlock()
+	time.Sleep(interval)
+
+	if s.conn == nil {
+		conn, err := irsdk.Open()
+		if err != nil {
+			return Frame{}, ErrDisconnected
+		}
+		s.conn = conn
+	}
+
+	hdr, vh, row, yaml, err := s.conn.Snapshot()
+	if err != nil {
+		// A failed read after the mapping existed usually means the sim
+		// exited. Drop the mapping so the next poll reopens it.
+		s.conn.Close()
+		s.conn = nil
+		return Frame{}, ErrDisconnected
+	}
+
+	s.mu.Lock()
+	s.meta = capture.Meta{
+		TickRate:   hdr.TickRate,
+		NumVars:    hdr.NumVars,
+		BufLen:     hdr.BufLen,
+		VarHeaders: vh,
+	}
+	s.mu.Unlock()
+
+	update := uint32(hdr.SessionInfoUpdate)
+	changed := !s.haveYAML || update != s.lastUpdate
+	if changed && len(yaml) > 0 {
+		s.lastYAML = yaml
+		s.lastUpdate = update
+		s.haveYAML = true
+	}
+
+	// Frame time is seconds since the sim session started, which is what
+	// the accounting measures intervals against.
+	t := 0.0
+	r := irsdk.NewRow(vh, row)
+	if v, ok := r.Float("SessionTime"); ok {
+		t = v
+	}
+
+	return Frame{
+		T:             t,
+		TickCount:     uint32(hdr.CurBufTickCount),
+		Row:           r,
+		SessionYAML:   s.lastYAML,
+		SessionUpdate: s.lastUpdate,
+		YAMLChanged:   changed,
+	}, nil
+}
+
+// Close releases the shared memory mapping.
+func (s *live) Close() error {
+	if s.conn != nil {
+		err := s.conn.Close()
+		s.conn = nil
+		return err
+	}
+	return nil
+}
+
+// compile-time assertions that live satisfies both interfaces.
+var (
+	_ Source = (*live)(nil)
+	_ Paced  = (*live)(nil)
+)
+```
+
+- [ ] **Step 7: Run the tests on macOS**
+
+Run: `go test ./internal/irsdk/ ./internal/source/ -v`
+Expected: PASS. `TestOpenOffWindowsIsUnsupported` runs; `TestOpenOnWindowsWithoutSim` skips.
+
+- [ ] **Step 8: Verify both platforms compile**
+
+```bash
+CGO_ENABLED=0 go build ./...
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
+CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build ./...
+```
+
+Expected: no output from any, exit 0. The Windows builds are the first to compile `live_windows.go`, so this is where a `golang.org/x/sys/windows` API mistake surfaces.
+
+- [ ] **Step 9: Run the full suite**
+
+```bash
+go test -race ./...
+```
+
+Expected: PASS with no race reports.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/irsdk/ internal/source/
+git commit -m "Add Windows shared-memory reader and live telemetry source"
+```
