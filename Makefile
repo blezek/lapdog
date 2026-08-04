@@ -7,7 +7,20 @@ LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -s -w
 # cross-compiled from macOS with no mingw toolchain.
 export CGO_ENABLED=0
 
-.PHONY: help test vet build-windows build-ctl build-gen fixtures dataset validate clean
+DIST    := dist
+EXE     := $(DIST)/lapdog.exe
+ZIP     := $(DIST)/lapdog-$(VERSION)-windows-amd64.zip
+SETUP   := $(DIST)/lapdog-$(VERSION)-setup.exe
+
+# Authenticode signing is optional. Absent a certificate the release still
+# builds and emits unsigned artefacts with a warning, because a missing
+# certificate must not block a development build.
+SIGN_PKCS12   ?=
+SIGN_PASSWORD ?=
+TIMESTAMP_URL ?= http://timestamp.digicert.com
+
+.PHONY: help test vet build-windows build-ctl build-gen fixtures dataset validate \
+        portable installer sign release tools clean
 
 help:
 	@echo "test           run the unit tests"
@@ -18,6 +31,11 @@ help:
 	@echo "fixtures       regenerate the committed test fixtures (~1.7 MB)"
 	@echo "dataset        generate the full two-year dataset into .dataset (~250 MB, gitignored)"
 	@echo "validate       replay .dataset back through decode, parse and classify"
+	@echo "portable       zip the self-contained executable"
+	@echo "installer      build the NSIS installer (needs: brew install makensis)"
+	@echo "sign           Authenticode-sign the exe and installer (needs SIGN_PKCS12)"
+	@echo "release        test, build, portable, installer, sign, checksums"
+	@echo "tools          install the macOS packaging toolchain via brew"
 
 test:
 	go test ./...
@@ -51,6 +69,50 @@ dataset: build-gen
 
 validate: build-gen
 	./dist/lapdog-gen -validate -dir .dataset
+
+# The whole Windows toolchain runs on macOS, which is why the release needs no
+# Windows machine. See the packaging spec, section 4.1.
+tools:
+	brew install makensis msitools osslsigncode
+
+# The executable is genuinely self-contained, so a zip is a legitimate
+# distribution channel rather than a degraded one.
+portable: build-windows
+	cd $(DIST) && zip -q -9 $(notdir $(ZIP)) lapdog.exe
+	@echo "portable: $(ZIP)"
+
+installer: build-windows
+	@command -v makensis >/dev/null || { echo "makensis not found; run 'make tools'"; exit 1; }
+	makensis -NOCD -V2 \
+	  -DVERSION=$(VERSION) \
+	  -DSRCEXE="$(CURDIR)/$(EXE)" \
+	  -DOUTFILE="$(CURDIR)/$(SETUP)" \
+	  packaging/windows/lapdog.nsi
+	@echo "installer: $(SETUP)"
+
+# Both the executable and the installer are signed. Signing the inner binary
+# matters because someone running it from the portable zip never sees the
+# installer's signature.
+sign:
+	@if [ -z "$(SIGN_PKCS12)" ]; then \
+	  echo "WARNING: SIGN_PKCS12 is not set; leaving artefacts unsigned."; \
+	  echo "         Unsigned installers trigger SmartScreen warnings."; \
+	  exit 0; \
+	fi
+	@command -v osslsigncode >/dev/null || { echo "osslsigncode not found; run 'make tools'"; exit 1; }
+	for f in $(EXE) $(SETUP); do \
+	  [ -f "$$f" ] || continue; \
+	  osslsigncode sign -pkcs12 "$(SIGN_PKCS12)" -pass "$(SIGN_PASSWORD)" \
+	    -n "LapDog" -i "https://github.com/blezek/lapdog" \
+	    -ts "$(TIMESTAMP_URL)" -in "$$f" -out "$$f.signed" && mv "$$f.signed" "$$f"; \
+	done
+	@echo "signed: $(EXE) $(SETUP)"
+
+release: test vet build-windows portable installer sign
+	cd $(DIST) && shasum -a 256 lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) > SHA256SUMS
+	@echo
+	@echo "Release artefacts in $(DIST):"
+	@cd $(DIST) && ls -lh lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) SHA256SUMS
 
 clean:
 	rm -rf dist .dataset

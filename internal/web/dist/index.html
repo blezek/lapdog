@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LapDog</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --surface: #fcfcfb;
+    --plane: #f9f9f7;
+    --ink: #0b0b0b;
+    --ink2: #52514e;
+    --muted: #898781;
+    --line: #e1e0d9;
+    --accent: #2a78d6;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --surface: #1a1a19;
+      --plane: #0d0d0d;
+      --ink: #ffffff;
+      --ink2: #c3c2b7;
+      --line: #2c2c2a;
+      --accent: #3987e5;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh;
+    display: grid; place-items: center;
+    background: var(--plane); color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 28px 32px;
+    max-width: 34rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,.04);
+  }
+  h1 {
+    font-size: 1.05rem; margin: 0 0 .35rem;
+    display: flex; align-items: center; gap: .5rem;
+  }
+  h1 svg { width: 22px; height: 22px; fill: var(--accent); }
+  p { font-size: .85rem; color: var(--ink2); line-height: 1.65; margin: .6rem 0 0; }
+  code {
+    background: var(--plane); border: 1px solid var(--line);
+    padding: 1px 5px; border-radius: 3px; font-size: .78rem;
+  }
+  ul { font-size: .85rem; color: var(--ink2); line-height: 1.8; padding-left: 1.1rem; margin: .5rem 0 0; }
+  .row { display: flex; gap: 14px; margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--line); }
+  .row svg { width: 20px; height: 20px; fill: var(--muted); }
+  .lbl { font-size: .68rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+</style>
+</head>
+<body>
+<main>
+  <h1>
+    <svg viewBox="0 0 24 24" aria-hidden="true"><use href="/icons/racing-helmet.svg#mdi-racing-helmet"/></svg>
+    LapDog is running
+  </h1>
+  <p>
+    The backend is recording and serving. This placeholder ships inside the
+    executable; the full interface replaces it.
+  </p>
+  <ul>
+    <li><code>/api/status</code> — connection state and the active session</li>
+    <li><code>/api/totals</code> — headline hours, laps and incidents</li>
+    <li><code>/api/sessions</code> — filtered session list</li>
+    <li><code>/api/export?scope=sessions&amp;format=csv</code> — CSV export</li>
+    <li><code>/icons/</code> — the embedded icon set</li>
+  </ul>
+  <div class="row">
+    <div>
+      <div class="lbl">Embedded iconography</div>
+      <svg viewBox="0 0 24 24"><use href="/icons/flag-checkered.svg#mdi-flag-checkered"/></svg>
+      <svg viewBox="0 0 24 24"><use href="/icons/car-sports.svg#mdi-car-sports"/></svg>
+      <svg viewBox="0 0 24 24"><use href="/icons/podium.svg#mdi-podium"/></svg>
+      <svg viewBox="0 0 24 24"><use href="/icons/speedometer.svg#mdi-speedometer"/></svg>
+      <svg viewBox="0 0 24 24"><use href="/icons/timer-outline.svg#mdi-timer-outline"/></svg>
+      <svg viewBox="0 0 24 24"><use href="/icons/tire.svg#mdi-tire"/></svg>
+    </div>
+  </div>
+</main>
+</body>
+</html>
