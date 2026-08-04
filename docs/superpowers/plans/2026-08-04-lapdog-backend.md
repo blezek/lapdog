@@ -11426,3 +11426,1195 @@ Expected: PASS. That test already asserts the collector's own capture is replaya
 git add internal/capture/ internal/store/ cmd/lapdogctl/
 git commit -m "Add NDJSON capture codec and lapdogctl development CLI"
 ```
+
+---
+
+### Task 20: HTTP API — server, filter parsing and read endpoints
+
+**Files:**
+- Create: `internal/web/embed.go`, `internal/web/dist/index.html`, `internal/api/server.go`, `internal/api/filter.go`, `internal/api/handlers.go`
+- Test: `internal/api/filter_test.go`, `internal/api/handlers_test.go`
+
+**Interfaces:**
+- Consumes: Task 13's `store.Filter` and query methods; Task 18's `collector.Status`; Task 9's `config.Config`.
+- Produces:
+  - `type StatusProvider interface { Status() collector.Status }`
+  - `type ConfigStore interface { Get() config.Config; Set(config.Config) error }`
+  - `type Server struct { ... }`
+  - `func New(st *store.Store, sp StatusProvider, cs ConfigStore, log *slog.Logger) *Server`
+  - `func (s *Server) Handler() http.Handler`
+  - `func (s *Server) ListenAndServe(port int) error` — binds `127.0.0.1` only
+  - `func parseFilter(q url.Values) (store.Filter, error)`
+  - `var ErrBadRequest error`
+
+Endpoints in this task (export is Task 21):
+
+| Method | Path | Returns |
+|---|---|---|
+| GET | `/api/status` | `collector.Status` plus version and database path |
+| GET | `/api/totals` | `store.Totals` |
+| GET | `/api/summary?group_by=` | `[]store.SummaryRow` |
+| GET | `/api/daily` | `[]store.DailyRow` |
+| GET | `/api/sessions` | `{items, total}` |
+| GET | `/api/sessions/{id}` | one session |
+| GET | `/api/sessions/{id}/laps` | `[]store.Lap` |
+| GET | `/api/sessions/{id}/positions` | `[]store.PositionEvent` |
+| GET | `/api/laps` | `{items, total}` |
+| GET | `/api/facets` | `store.Facets` |
+| GET | `/api/settings` | `config.Config` |
+| PUT | `/api/settings` | updated config plus which fields need a restart |
+| GET | `/*` | the embedded SPA |
+
+**The listener binds `127.0.0.1` and the address is not configurable.** Loopback-only binding *is* the security model, so there is no authentication; making the bind address settable would let a user expose their data without realising it. A test asserts the bind address.
+
+Filter parsing shares one function across every endpoint, which is what lets an export honour exactly what the UI is showing.
+
+- [ ] **Step 1: Create the placeholder SPA and embed it**
+
+Create `internal/web/dist/index.html`. Plan 2 replaces this file with the Vite build output.
+
+```html
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LapDog</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+         background: #f9f9f7; color: #0b0b0b; margin: 0;
+         display: grid; place-items: center; min-height: 100vh; }
+  main { background: #fcfcfb; border: 1px solid rgba(11,11,11,.1);
+         border-radius: 6px; padding: 28px 32px; max-width: 30rem; }
+  h1 { font-size: 1.1rem; margin: 0 0 .5rem; }
+  p { font-size: .85rem; color: #52514e; line-height: 1.6; margin: .5rem 0 0; }
+  code { background: #f0efec; padding: 1px 4px; border-radius: 2px; font-size: .8rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>LapDog is running</h1>
+  <p>The backend is recording. The user interface is not built yet.</p>
+  <p>Try <code>/api/status</code>, <code>/api/totals</code> or <code>/api/sessions</code>.</p>
+</main>
+</body>
+</html>
+```
+
+Create `internal/web/embed.go`:
+
+```go
+// Package web serves the embedded single-page application.
+package web
+
+import (
+	"embed"
+	"io/fs"
+)
+
+//go:embed dist
+var distFS embed.FS
+
+// FS returns the built frontend rooted at dist, so paths are served
+// without the dist prefix.
+func FS() fs.FS {
+	sub, err := fs.Sub(distFS, "dist")
+	if err != nil {
+		// dist is embedded at compile time, so this cannot fail at runtime.
+		panic("web: dist directory missing from the binary: " + err.Error())
+	}
+	return sub
+}
+```
+
+- [ ] **Step 2: Write the failing filter test**
+
+Create `internal/api/filter_test.go`:
+
+```go
+package api
+
+import (
+	"net/url"
+	"testing"
+)
+
+func mustValues(t *testing.T, raw string) url.Values {
+	t.Helper()
+	v, err := url.ParseQuery(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return v
+}
+
+func TestParseFilterEmpty(t *testing.T) {
+	f, err := parseFilter(mustValues(t, ""))
+	if err != nil {
+		t.Fatalf("parseFilter: %v", err)
+	}
+	if f.From != "" || f.To != "" || f.TrackID != nil || f.ExcludeAI {
+		t.Errorf("empty query produced %+v, want a zero filter", f)
+	}
+}
+
+func TestParseFilterAllFields(t *testing.T) {
+	f, err := parseFilter(mustValues(t,
+		"from=2026-07-01T00:00:00Z&to=2026-08-01T00:00:00Z"+
+			"&session_type=Race&session_type=Qualify"+
+			"&event_context=League"+
+			"&track_id=341&car_id=173&league_id=4242"+
+			"&exclude_ai=true&limit=50&offset=100"))
+	if err != nil {
+		t.Fatalf("parseFilter: %v", err)
+	}
+	if f.From != "2026-07-01T00:00:00Z" || f.To != "2026-08-01T00:00:00Z" {
+		t.Errorf("dates = %q / %q", f.From, f.To)
+	}
+	if len(f.SessionType) != 2 {
+		t.Errorf("SessionType = %v, want two values", f.SessionType)
+	}
+	if len(f.EventContext) != 1 || f.EventContext[0] != "League" {
+		t.Errorf("EventContext = %v", f.EventContext)
+	}
+	if f.TrackID == nil || *f.TrackID != 341 {
+		t.Errorf("TrackID = %v", f.TrackID)
+	}
+	if f.CarID == nil || *f.CarID != 173 {
+		t.Errorf("CarID = %v", f.CarID)
+	}
+	if f.LeagueID == nil || *f.LeagueID != 4242 {
+		t.Errorf("LeagueID = %v", f.LeagueID)
+	}
+	if !f.ExcludeAI {
+		t.Error("ExcludeAI = false, want true")
+	}
+	if f.Limit != 50 || f.Offset != 100 {
+		t.Errorf("limit=%d offset=%d", f.Limit, f.Offset)
+	}
+}
+
+// Comma-separated lists are accepted as well as repeated parameters, since
+// both forms are natural from a browser query string.
+func TestParseFilterCommaSeparatedList(t *testing.T) {
+	f, err := parseFilter(mustValues(t, "session_type=Race,Qualify,Practice"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.SessionType) != 3 {
+		t.Errorf("SessionType = %v, want three values", f.SessionType)
+	}
+}
+
+func TestParseFilterRejectsBadValues(t *testing.T) {
+	for _, raw := range []string{
+		"track_id=notanumber",
+		"limit=abc",
+		"offset=-5",
+		"limit=-1",
+		"from=yesterday",
+		"to=2026-13-45",
+	} {
+		if _, err := parseFilter(mustValues(t, raw)); err == nil {
+			t.Errorf("parseFilter(%q) = nil error, want a rejection", raw)
+		}
+	}
+}
+
+func TestParseFilterExcludeAIForms(t *testing.T) {
+	for _, raw := range []string{"exclude_ai=true", "exclude_ai=1"} {
+		f, err := parseFilter(mustValues(t, raw))
+		if err != nil {
+			t.Fatalf("parseFilter(%q): %v", raw, err)
+		}
+		if !f.ExcludeAI {
+			t.Errorf("parseFilter(%q) ExcludeAI = false", raw)
+		}
+	}
+	f, _ := parseFilter(mustValues(t, "exclude_ai=false"))
+	if f.ExcludeAI {
+		t.Error("exclude_ai=false produced ExcludeAI true")
+	}
+}
+
+// A limit above the cap is clamped rather than rejected, so a UI bug cannot
+// ask for a million rows.
+func TestParseFilterClampsLimit(t *testing.T) {
+	f, err := parseFilter(mustValues(t, "limit=999999"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Limit != MaxLimit {
+		t.Errorf("Limit = %d, want it clamped to %d", f.Limit, MaxLimit)
+	}
+}
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `go test ./internal/api/ -v`
+Expected: FAIL — build error, `undefined: parseFilter`.
+
+- [ ] **Step 4: Write the filter parser**
+
+Create `internal/api/filter.go`:
+
+```go
+// Package api serves LapDog's JSON API and the embedded user interface.
+package api
+
+import (
+	"errors"
+	"fmt"
+	"net/url"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/blezek/lapdog/internal/store"
+)
+
+// ErrBadRequest indicates a malformed query parameter.
+var ErrBadRequest = errors.New("api: bad request")
+
+// MaxLimit caps how many rows one request may ask for. Exceeding it is
+// clamped rather than rejected, so a UI bug degrades instead of failing.
+const MaxLimit = 5000
+
+// parseFilter builds a store.Filter from query parameters.
+//
+// Every list and aggregate endpoint uses this one function, which is what
+// lets an export honour exactly the filter the UI is displaying.
+func parseFilter(q url.Values) (store.Filter, error) {
+	var f store.Filter
+
+	for _, key := range []string{"from", "to"} {
+		raw := strings.TrimSpace(q.Get(key))
+		if raw == "" {
+			continue
+		}
+		if _, err := time.Parse(time.RFC3339, raw); err != nil {
+			return f, fmt.Errorf("%w: %s must be RFC3339: %v", ErrBadRequest, key, err)
+		}
+		if key == "from" {
+			f.From = raw
+		} else {
+			f.To = raw
+		}
+	}
+
+	f.SessionType = listParam(q, "session_type")
+	f.EventContext = listParam(q, "event_context")
+
+	var err error
+	if f.TrackID, err = intParam(q, "track_id"); err != nil {
+		return f, err
+	}
+	if f.CarID, err = intParam(q, "car_id"); err != nil {
+		return f, err
+	}
+	if f.LeagueID, err = intParam(q, "league_id"); err != nil {
+		return f, err
+	}
+
+	switch strings.ToLower(q.Get("exclude_ai")) {
+	case "", "false", "0":
+	case "true", "1":
+		f.ExcludeAI = true
+	default:
+		return f, fmt.Errorf("%w: exclude_ai must be true or false", ErrBadRequest)
+	}
+
+	if raw := q.Get("limit"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 0 {
+			return f, fmt.Errorf("%w: limit must be a non-negative integer", ErrBadRequest)
+		}
+		if n > MaxLimit {
+			n = MaxLimit
+		}
+		f.Limit = n
+	}
+	if raw := q.Get("offset"); raw != "" {
+		n, convErr := strconv.Atoi(raw)
+		if convErr != nil || n < 0 {
+			return f, fmt.Errorf("%w: offset must be a non-negative integer", ErrBadRequest)
+		}
+		f.Offset = n
+	}
+	return f, nil
+}
+
+// listParam collects a parameter given either as repeated keys or as a
+// single comma-separated value; both forms are natural in a query string.
+func listParam(q url.Values, key string) []string {
+	var out []string
+	for _, raw := range q[key] {
+		for _, part := range strings.Split(raw, ",") {
+			if p := strings.TrimSpace(part); p != "" {
+				out = append(out, p)
+			}
+		}
+	}
+	return out
+}
+
+// intParam parses an optional integer parameter.
+func intParam(q url.Values, key string) (*int, error) {
+	raw := strings.TrimSpace(q.Get(key))
+	if raw == "" {
+		return nil, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s must be an integer", ErrBadRequest, key)
+	}
+	return &n, nil
+}
+```
+
+- [ ] **Step 5: Run the filter test to verify it passes**
+
+Run: `go test ./internal/api/ -run ParseFilter -v`
+Expected: PASS, six tests.
+
+- [ ] **Step 6: Write the failing handler test**
+
+Create `internal/api/handlers_test.go`:
+
+```go
+package api
+
+import (
+	"encoding/json"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"sync"
+	"testing"
+
+	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/store"
+)
+
+type fakeStatus struct{ s collector.Status }
+
+func (f fakeStatus) Status() collector.Status { return f.s }
+
+type fakeConfig struct {
+	mu sync.Mutex
+	c  config.Config
+}
+
+func (f *fakeConfig) Get() config.Config {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.c
+}
+
+func (f *fakeConfig) Set(c config.Config) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.c = c
+	return nil
+}
+
+// newTestServer seeds a store with one practice session and two laps.
+func newTestServer(t *testing.T) (http.Handler, *store.Store, *fakeConfig) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	trackID, carID := 18, 173
+	trackName, carName := "Watkins Glen International", "Porsche 911 GT3 R"
+	best := 102.5
+	rec := &store.Session{
+		SessionKey: "900001/0", SubsessionID: 900001, SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt: "2026-07-01T10:00:00Z",
+		ConnectedSeconds: 3600, InCarSeconds: 2400, DrivingSeconds: 2000,
+		LapsCompleted: 2, Incidents: 1, BestLapTimeS: &best,
+		TrackID: &trackID, TrackName: &trackName,
+		CarID: &carID, CarName: &carName,
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	}
+	id, err := st.UpsertSession(rec)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n := 1; n <= 2; n++ {
+		lt := best + float64(n)*0.1
+		if _, err := st.InsertLap(&store.Lap{SessionID: id, LapNumber: n, LapTimeS: &lt}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.InsertPositionEvent(&store.PositionEvent{
+		SessionID: id, LapNumber: 1, SessionTimeS: 100,
+		FromPosition: 5, ToPosition: 4, Cause: store.CauseOnTrack,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := &fakeConfig{c: config.Default()}
+	sp := fakeStatus{s: collector.Status{
+		Connected: true, IntervalSeconds: 1,
+		SessionLabel: "Public Practice", TrackName: trackName,
+	}}
+	srv := New(st, sp, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return srv.Handler(), st, cfg
+}
+
+// get performs a request and decodes the JSON body into v.
+func get(t *testing.T, h http.Handler, path string, v any) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+	if v != nil && rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+			t.Fatalf("%s: body is not JSON: %v\n%s", path, err, rec.Body.String())
+		}
+	}
+	return rec
+}
+
+func TestStatusEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body struct {
+		Connected       bool    `json:"connected"`
+		SessionLabel    string  `json:"sessionLabel"`
+		IntervalSeconds float64 `json:"intervalSeconds"`
+		Version         string  `json:"version"`
+		DatabasePath    string  `json:"databasePath"`
+	}
+	rec := get(t, h, "/api/status", &body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !body.Connected || body.SessionLabel != "Public Practice" {
+		t.Errorf("body = %+v", body)
+	}
+	if body.Version == "" || body.DatabasePath == "" {
+		t.Errorf("version=%q dbPath=%q, both must be reported", body.Version, body.DatabasePath)
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q", ct)
+	}
+}
+
+func TestTotalsEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body store.Totals
+	if rec := get(t, h, "/api/totals", &body); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if body.Sessions != 1 || body.Laps != 2 {
+		t.Errorf("totals = %+v", body)
+	}
+	if body.DrivingHours == 0 || body.Utilisation == 0 {
+		t.Errorf("DrivingHours=%v Utilisation=%v", body.DrivingHours, body.Utilisation)
+	}
+	if body.PassesMade != 1 {
+		t.Errorf("PassesMade = %d, want 1", body.PassesMade)
+	}
+}
+
+func TestSummaryEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body []store.SummaryRow
+	if rec := get(t, h, "/api/summary?group_by=type", &body); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if len(body) != 1 || body[0].Key != "Practice" {
+		t.Errorf("summary = %+v", body)
+	}
+}
+
+// An unknown group_by must be a 400, not a 500: it is a client error.
+func TestSummaryRejectsUnknownGroupBy(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/summary?group_by=nonsense", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestSummaryDefaultsGroupBy(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body []store.SummaryRow
+	if rec := get(t, h, "/api/summary", &body); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want a sensible default rather than an error", rec.Code)
+	}
+	if len(body) == 0 {
+		t.Error("default grouping returned no rows")
+	}
+}
+
+func TestDailyEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body []store.DailyRow
+	get(t, h, "/api/daily", &body)
+	if len(body) != 1 || body[0].Day != "2026-07-01" {
+		t.Errorf("daily = %+v", body)
+	}
+}
+
+func TestSessionsEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body struct {
+		Items []store.Session `json:"items"`
+		Total int             `json:"total"`
+	}
+	get(t, h, "/api/sessions", &body)
+	if body.Total != 1 || len(body.Items) != 1 {
+		t.Fatalf("body = %+v", body)
+	}
+	if body.Items[0].SessionKey != "900001/0" {
+		t.Errorf("SessionKey = %q", body.Items[0].SessionKey)
+	}
+}
+
+// An empty result must be an empty array, not null, or the UI has to
+// special-case it.
+func TestSessionsEmptyResultIsArray(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/sessions?track_id=9999", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var body map[string]json.RawMessage
+	json.Unmarshal(rec.Body.Bytes(), &body)
+	if string(body["items"]) != "[]" {
+		t.Errorf("items = %s, want []", body["items"])
+	}
+}
+
+func TestSessionByIDAndChildren(t *testing.T) {
+	h, st, _ := newTestServer(t)
+	rows, _, _ := st.ListSessions(store.Filter{})
+	id := rows[0].ID
+
+	var sess store.Session
+	if rec := get(t, h, "/api/sessions/"+itoaTest(id), &sess); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if sess.SessionKey != "900001/0" {
+		t.Errorf("SessionKey = %q", sess.SessionKey)
+	}
+
+	var laps []store.Lap
+	get(t, h, "/api/sessions/"+itoaTest(id)+"/laps", &laps)
+	if len(laps) != 2 {
+		t.Errorf("laps = %d, want 2", len(laps))
+	}
+
+	var evs []store.PositionEvent
+	get(t, h, "/api/sessions/"+itoaTest(id)+"/positions", &evs)
+	if len(evs) != 1 {
+		t.Errorf("position events = %d, want 1", len(evs))
+	}
+}
+
+func TestSessionNotFoundIs404(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	if rec := get(t, h, "/api/sessions/999999", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+func TestSessionBadIDIs400(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	if rec := get(t, h, "/api/sessions/notanumber", nil); rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestLapsEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body struct {
+		Items []store.LapRow `json:"items"`
+		Total int            `json:"total"`
+	}
+	get(t, h, "/api/laps", &body)
+	if body.Total != 2 {
+		t.Errorf("total = %d, want 2", body.Total)
+	}
+	if body.Items[0].TrackName != "Watkins Glen International" {
+		t.Errorf("TrackName = %q, want the joined session context", body.Items[0].TrackName)
+	}
+}
+
+func TestFacetsEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body store.Facets
+	get(t, h, "/api/facets", &body)
+	if len(body.Tracks) != 1 || len(body.Cars) != 1 {
+		t.Errorf("facets = %+v", body)
+	}
+}
+
+func TestGetSettings(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var body config.Config
+	get(t, h, "/api/settings", &body)
+	if body.Port != config.DefaultPort || body.PollIntervalSeconds != 1 {
+		t.Errorf("settings = %+v", body)
+	}
+}
+
+func TestPutSettings(t *testing.T) {
+	h, _, cfg := newTestServer(t)
+	rec := httptest.NewRecorder()
+	body := `{"pollIntervalSeconds":2.5,"minSessionSeconds":30,"captureEnabled":false,` +
+		`"captureMaxBytes":1073741824,"port":47047,"startWithWindows":true,` +
+		`"units":"imperial","theme":"dark"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", stringReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d\n%s", rec.Code, rec.Body.String())
+	}
+	if got := cfg.Get(); got.PollIntervalSeconds != 2.5 || got.Theme != "dark" || got.CaptureEnabled {
+		t.Errorf("stored config = %+v", got)
+	}
+
+	var out struct {
+		Config         config.Config `json:"config"`
+		RestartRequired []string     `json:"restartRequired"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if out.Config.PollIntervalSeconds != 2.5 {
+		t.Errorf("echoed config = %+v", out.Config)
+	}
+}
+
+// A port change needs a restart and the response must say so, since the UI
+// tells the user.
+func TestPutSettingsReportsRestartRequired(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	body := `{"pollIntervalSeconds":1,"minSessionSeconds":30,"captureEnabled":true,` +
+		`"captureMaxBytes":2147483648,"port":48000,"startWithWindows":true,` +
+		`"units":"metric","theme":"system"}`
+	req := httptest.NewRequest(http.MethodPut, "/api/settings", stringReader(body))
+	h.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var out struct {
+		RestartRequired []string `json:"restartRequired"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	found := false
+	for _, f := range out.RestartRequired {
+		if f == "port" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("restartRequired = %v, want it to name port", out.RestartRequired)
+	}
+}
+
+func TestPutSettingsRejectsInvalid(t *testing.T) {
+	h, _, cfg := newTestServer(t)
+	before := cfg.Get()
+	rec := httptest.NewRecorder()
+	body := `{"pollIntervalSeconds":999,"port":47047,"units":"metric","theme":"system"}`
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/settings", stringReader(body)))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+	if cfg.Get() != before {
+		t.Error("an invalid update mutated the stored config")
+	}
+}
+
+func TestPutSettingsRejectsMalformedJSON(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/settings", stringReader("{not json")))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+func TestSettingsRejectsWrongMethod(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/settings", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestUnknownAPIPathIs404(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	if rec := get(t, h, "/api/nope", nil); rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+}
+
+// Non-API paths must serve the SPA so client-side routing works.
+func TestRootServesTheUI(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if body := rec.Body.String(); !containsTest(body, "LapDog") {
+		t.Errorf("root did not serve the UI:\n%s", body)
+	}
+}
+
+func TestBadFilterIs400(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	if rec := get(t, h, "/api/sessions?track_id=abc", nil); rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+```
+
+Add these small helpers at the bottom of the file, with `"strconv"`, `"strings"` and `"io"` imported:
+
+```go
+func itoaTest(id int64) string        { return strconv.FormatInt(id, 10) }
+func stringReader(s string) io.Reader { return strings.NewReader(s) }
+func containsTest(h, n string) bool   { return strings.Contains(h, n) }
+```
+
+- [ ] **Step 7: Write the server and handlers**
+
+Create `internal/api/server.go`:
+
+```go
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/web"
+)
+
+// StatusProvider supplies the collector's current state.
+type StatusProvider interface {
+	Status() collector.Status
+}
+
+// ConfigStore reads and persists user settings.
+type ConfigStore interface {
+	Get() config.Config
+	Set(config.Config) error
+}
+
+// Server serves the JSON API and the embedded user interface.
+type Server struct {
+	st  *store.Store
+	sp  StatusProvider
+	cfg ConfigStore
+	log *slog.Logger
+}
+
+// New returns a Server.
+func New(st *store.Store, sp StatusProvider, cfg ConfigStore, log *slog.Logger) *Server {
+	return &Server{st: st, sp: sp, cfg: cfg, log: log}
+}
+
+// Handler returns the routed handler.
+func (s *Server) Handler() http.Handler {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/totals", s.handleTotals)
+	mux.HandleFunc("GET /api/summary", s.handleSummary)
+	mux.HandleFunc("GET /api/daily", s.handleDaily)
+	mux.HandleFunc("GET /api/sessions", s.handleSessions)
+	mux.HandleFunc("GET /api/sessions/{id}", s.handleSession)
+	mux.HandleFunc("GET /api/sessions/{id}/laps", s.handleSessionLaps)
+	mux.HandleFunc("GET /api/sessions/{id}/positions", s.handleSessionPositions)
+	mux.HandleFunc("GET /api/laps", s.handleLaps)
+	mux.HandleFunc("GET /api/facets", s.handleFacets)
+	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("GET /api/export", s.handleExport)
+
+	// Anything not under /api is the SPA. Unmatched /api paths must 404
+	// rather than falling through to index.html, which would turn a typo
+	// into a confusing HTML response.
+	ui := http.FileServer(http.FS(web.FS()))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if len(r.URL.Path) >= 4 && r.URL.Path[:4] == "/api" {
+			s.fail(w, http.StatusNotFound, errors.New("no such endpoint"))
+			return
+		}
+		ui.ServeHTTP(w, r)
+	})
+	return mux
+}
+
+// ListenAndServe binds the loopback interface only.
+//
+// Loopback-only binding IS the security model: the server holds the user's
+// personal racing history with no authentication, so it must not be
+// reachable from another machine. The address is deliberately not
+// configurable — making it settable would let a user expose their data
+// without realising it.
+func (s *Server) ListenAndServe(port int) error {
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	srv := &http.Server{
+		Addr:              addr,
+		Handler:           s.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("api: cannot listen on %s: %w", addr, err)
+	}
+	s.log.Info("serving user interface", "url", "http://"+addr)
+	return srv.Serve(ln)
+}
+
+// writeJSON sends v as JSON with a 200 status.
+func (s *Server) writeJSON(w http.ResponseWriter, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	// The UI is served from the same origin and the data is local, so
+	// caching would only ever serve stale figures.
+	w.Header().Set("Cache-Control", "no-store")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		s.log.Error("response encoding failed", "err", err)
+	}
+}
+
+// fail sends a JSON error body with the given status.
+func (s *Server) fail(w http.ResponseWriter, code int, err error) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(code)
+	json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+}
+
+// filterOrFail parses the request filter, writing a 400 on failure.
+func (s *Server) filterOrFail(w http.ResponseWriter, r *http.Request) (store.Filter, bool) {
+	f, err := parseFilter(r.URL.Query())
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return store.Filter{}, false
+	}
+	return f, true
+}
+
+// idOrFail parses the {id} path value, writing a 400 on failure.
+func (s *Server) idOrFail(w http.ResponseWriter, r *http.Request) (int64, bool) {
+	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, fmt.Errorf("%w: id must be an integer", ErrBadRequest))
+		return 0, false
+	}
+	return id, true
+}
+```
+
+Create `internal/api/handlers.go`:
+
+```go
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"net/http"
+
+	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/version"
+)
+
+// statusResponse is the collector status plus process-level facts the
+// settings screen shows.
+type statusResponse struct {
+	collector.Status
+	Version      string `json:"version"`
+	DatabasePath string `json:"databasePath"`
+}
+
+func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
+	s.writeJSON(w, statusResponse{
+		Status:       s.sp.Status(),
+		Version:      version.Version,
+		DatabasePath: s.st.Path(),
+	})
+}
+
+func (s *Server) handleTotals(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	t, err := s.st.Totals(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, t)
+}
+
+func (s *Server) handleSummary(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	groupBy := r.URL.Query().Get("group_by")
+	if groupBy == "" {
+		// The stacked bar is the primary consumer, so its grouping is the
+		// natural default.
+		groupBy = "typecontext"
+	}
+	rows, err := s.st.Summary(f, groupBy)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleDaily(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.st.Daily(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+// listResponse wraps a page of rows with the total match count so the UI
+// can paginate and show "86 sessions matched".
+type listResponse struct {
+	Items any `json:"items"`
+	Total int `json:"total"`
+}
+
+func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, total, err := s.st.ListSessions(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, listResponse{Items: rows, Total: total})
+}
+
+func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.idOrFail(w, r)
+	if !ok {
+		return
+	}
+	rec, err := s.st.SessionByID(id)
+	if errors.Is(err, store.ErrNotFound) {
+		s.fail(w, http.StatusNotFound, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rec)
+}
+
+func (s *Server) handleSessionLaps(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.idOrFail(w, r)
+	if !ok {
+		return
+	}
+	laps, err := s.st.LapsForSession(id)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, laps)
+}
+
+func (s *Server) handleSessionPositions(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.idOrFail(w, r)
+	if !ok {
+		return
+	}
+	evs, err := s.st.PositionEventsForSession(id)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, evs)
+}
+
+func (s *Server) handleLaps(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, total, err := s.st.ListLaps(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, listResponse{Items: rows, Total: total})
+}
+
+func (s *Server) handleFacets(w http.ResponseWriter, r *http.Request) {
+	f, err := s.st.Facets()
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, f)
+}
+
+// settingsResponse echoes the saved config and names the fields whose
+// change needs a restart, which the UI tells the user about.
+type settingsResponse struct {
+	Config          config.Config `json:"config"`
+	RestartRequired []string      `json:"restartRequired"`
+}
+
+func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		s.writeJSON(w, s.cfg.Get())
+
+	case http.MethodPut:
+		before := s.cfg.Get()
+		var next config.Config
+		if err := json.NewDecoder(r.Body).Decode(&next); err != nil {
+			s.fail(w, http.StatusBadRequest, err)
+			return
+		}
+		// Validate rather than normalise: a value the user explicitly typed
+		// should be reported as wrong, not silently changed underneath them.
+		if err := next.Validate(); err != nil {
+			s.fail(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.cfg.Set(next); err != nil {
+			s.fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		var restart []string
+		if next.Port != before.Port {
+			restart = append(restart, "port")
+		}
+		s.writeJSON(w, settingsResponse{Config: next, RestartRequired: restart})
+
+	default:
+		w.Header().Set("Allow", "GET, PUT")
+		s.fail(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+	}
+}
+```
+
+- [ ] **Step 8: Add a temporary export stub**
+
+`Handler` routes `/api/export`, which Task 21 implements. Add a stub to
+`internal/api/handlers.go` so this task compiles and its tests run:
+
+```go
+// handleExport is implemented in export.go (Task 21).
+func (s *Server) handleExport(w http.ResponseWriter, r *http.Request) {
+	s.fail(w, http.StatusNotImplemented, errors.New("export is not implemented yet"))
+}
+```
+
+- [ ] **Step 9: Run the tests**
+
+Run: `go test ./internal/api/ -v`
+Expected: PASS, all tests.
+
+- [ ] **Step 10: Extract the bind address so it can be asserted directly**
+
+Testing loopback-only binding by probing sockets is environment-dependent.
+Instead, extract the address construction and test it as a pure function.
+
+In `internal/api/server.go`, add:
+
+```go
+// LoopbackHost is the only interface the server ever binds.
+//
+// This is the security model, not a default: the server exposes the user's
+// entire racing history with no authentication, so it must be unreachable
+// from any other machine. There is deliberately no way to change it.
+const LoopbackHost = "127.0.0.1"
+
+// listenAddr returns the address the server binds for a given port.
+func listenAddr(port int) string {
+	return net.JoinHostPort(LoopbackHost, strconv.Itoa(port))
+}
+```
+
+and change `ListenAndServe`'s first line from
+
+```go
+	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+```
+
+to
+
+```go
+	addr := listenAddr(port)
+```
+
+- [ ] **Step 11: Add the bind address test**
+
+Append to `internal/api/handlers_test.go`:
+
+```go
+// The server must only ever bind loopback. There is no authentication
+// because the data is unreachable off the machine, so this is load-bearing.
+func TestListenAddrIsLoopbackOnly(t *testing.T) {
+	if LoopbackHost != "127.0.0.1" {
+		t.Fatalf("LoopbackHost = %q, want 127.0.0.1", LoopbackHost)
+	}
+	got := listenAddr(config.DefaultPort)
+	if got != "127.0.0.1:47047" {
+		t.Errorf("listenAddr(47047) = %q, want 127.0.0.1:47047", got)
+	}
+	for _, bad := range []string{"0.0.0.0", "::", "[::]"} {
+		if containsTest(got, bad) {
+			t.Errorf("listenAddr produced %q, which contains the routable host %q", got, bad)
+		}
+	}
+}
+```
+
+- [ ] **Step 12: Run the tests and commit**
+
+```bash
+go test ./internal/api/ -v
+git add internal/api/ internal/web/
+git commit -m "Add HTTP API server, filter parsing and read endpoints"
+```
+
+Expected: PASS, all API tests.
