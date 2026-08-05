@@ -621,6 +621,293 @@ func TestConsistencyDeltaAccompaniesPercentage(t *testing.T) {
 // 100 and are dropped as outliers wholesale, so the slow session vanishes from
 // the average entirely and the result silently collapses to the fast session's
 // figure alone (~99.88%, above the assertion's ceiling below).
+// decoyProgressionSession inserts one lap for a car/track pair in the given
+// month, fast enough that it would win the MIN() if either the car_id or
+// track_id filter leaked it into the aggregate for car 173 / track 18.
+func decoyProgressionSession(t *testing.T, s *Store, key string, carID, trackID int, started string, lapTimeS float64) {
+	t.Helper()
+	id, err := s.UpsertSession(&Session{
+		SessionKey: key, SubsessionID: 1, SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt: started, DrivingSeconds: 600, LapsCompleted: 1,
+		TrackID: intp(trackID), TrackName: strp("Decoy track"),
+		CarID: intp(carID), CarName: strp("Decoy car"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertLap(&Lap{SessionID: id, LapNumber: 1, LapTimeS: f64p(lapTimeS)}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestEntityProgressionByMonth(t *testing.T) {
+	s := openTemp(t)
+	seedPace(t, s, "p1/0", "2026-06-10T10:00:00Z",
+		[]float64{105.0, 103.0, 103.2, 103.1, 103.0, 103.4}, false)
+	seedPace(t, s, "p2/0", "2026-07-10T10:00:00Z",
+		[]float64{104.0, 101.0, 101.2, 101.1, 101.0, 101.4}, false)
+
+	// Decoy A: a different car (991) at the real track (18), with a lap far
+	// faster than car 173's real bests. If the car_id filter were dropped
+	// from the query, this would leak in and pull both months' MIN down to
+	// ~90/~85 rather than ~103/~101.
+	decoyProgressionSession(t, s, "decoy-car/0", 991, 18, "2026-06-15T10:00:00Z", 90.0)
+	decoyProgressionSession(t, s, "decoy-car/1", 991, 18, "2026-07-15T10:00:00Z", 85.0)
+	// Decoy B: the real car (173) at a different track (992), also faster
+	// than the real bests. If the track_id filter were dropped, this would
+	// leak in and pull both months' MIN down to ~80/~75.
+	decoyProgressionSession(t, s, "decoy-track/0", 173, 992, "2026-06-20T10:00:00Z", 80.0)
+	decoyProgressionSession(t, s, "decoy-track/1", 173, 992, "2026-07-20T10:00:00Z", 75.0)
+
+	rows, err := s.EntityProgression(Filter{}, "car", 173, 18)
+	if err != nil {
+		t.Fatalf("EntityProgression: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("got %d months, want 2: %+v", len(rows), rows)
+	}
+	if rows[0].Month != "2026-06" || rows[1].Month != "2026-07" {
+		t.Errorf("months = %q, %q; want 2026-06 then 2026-07 in ascending order",
+			rows[0].Month, rows[1].Month)
+	}
+	// June's best is 103.0, July's 101.0: the driver improved. Pinned to
+	// absolute values (not just relative order) so that either decoy leaking
+	// in — which would lower both months together — is caught rather than
+	// passing because the ordering happens to survive.
+	if rows[0].BestLapS < 102.9 || rows[0].BestLapS > 103.1 {
+		t.Errorf("June BestLapS = %.3f, want ~103.0 (a decoy car or track may be leaking in)", rows[0].BestLapS)
+	}
+	if rows[1].BestLapS < 100.9 || rows[1].BestLapS > 101.1 {
+		t.Errorf("July BestLapS = %.3f, want ~101.0 (a decoy car or track may be leaking in)", rows[1].BestLapS)
+	}
+	if rows[0].BestLapS <= rows[1].BestLapS {
+		t.Errorf("June %.3f should be slower than July %.3f", rows[0].BestLapS, rows[1].BestLapS)
+	}
+	if rows[1].Laps != 6 {
+		t.Errorf("July laps = %d, want 6", rows[1].Laps)
+	}
+}
+
+// Pit laps are not attempts at a fast lap, so they cannot set a monthly best.
+func TestEntityProgressionExcludesPitLaps(t *testing.T) {
+	s := openTemp(t)
+	seedPace(t, s, "p1/0", "2026-07-10T10:00:00Z",
+		[]float64{105.0, 103.0, 103.2, 103.1, 103.0, 40.0}, true)
+
+	rows, err := s.EntityProgression(Filter{}, "car", 173, 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows: %+v", len(rows), rows)
+	}
+	if rows[0].BestLapS < 100 {
+		t.Errorf("BestLapS = %.3f, want ~103 — the 40 s pit lap set the best", rows[0].BestLapS)
+	}
+}
+
+func TestRivalsCountsOnlyOnTrackPasses(t *testing.T) {
+	s := openTemp(t)
+	id, err := s.UpsertSession(&Session{
+		SessionKey: "r1/2", SubsessionID: 5001, SessionNum: 2,
+		SessionType: "Race", EventContext: "OfficialRace",
+		StartedAt: "2026-07-10T18:00:00Z", DrivingSeconds: 1800, LapsCompleted: 10,
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range []PositionEvent{
+		// Two on-track passes of Larson, one loss to them.
+		{LapNumber: 2, SessionTimeS: 10, FromPosition: 6, ToPosition: 5,
+			OpponentName: strp("K. Larson"), Cause: CauseOnTrack},
+		{LapNumber: 3, SessionTimeS: 20, FromPosition: 6, ToPosition: 5,
+			OpponentName: strp("K. Larson"), Cause: CauseOnTrack},
+		{LapNumber: 4, SessionTimeS: 30, FromPosition: 5, ToPosition: 6,
+			OpponentName: strp("K. Larson"), Cause: CauseOnTrack},
+		// Inheriting a place because they pitted is not overtaking.
+		{LapNumber: 5, SessionTimeS: 40, FromPosition: 6, ToPosition: 5,
+			OpponentName: strp("M. Andretti"), Cause: CauseOpponentPit},
+	} {
+		ev.SessionID = id
+		if _, err := s.InsertPositionEvent(&ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := s.Rivals(Filter{})
+	if err != nil {
+		t.Fatalf("Rivals: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rivals, want only Larson: %+v", len(rows), rows)
+	}
+	r := rows[0]
+	if r.Name != "K. Larson" {
+		t.Errorf("Name = %q", r.Name)
+	}
+	if r.PassedThem != 2 || r.LostTo != 1 || r.Net != 1 {
+		t.Errorf("got passed=%d lost=%d net=%d, want 2/1/1", r.PassedThem, r.LostTo, r.Net)
+	}
+}
+
+func TestRivalsExcludesAIByDefaultWhenAsked(t *testing.T) {
+	s := openTemp(t)
+	id, err := s.UpsertSession(&Session{
+		SessionKey: "ai/2", SubsessionID: 6001, SessionNum: 2,
+		SessionType: "Race", EventContext: "AI",
+		StartedAt: "2026-07-11T18:00:00Z", DrivingSeconds: 900, LapsCompleted: 5,
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev := PositionEvent{SessionID: id, LapNumber: 2, SessionTimeS: 10,
+		FromPosition: 4, ToPosition: 3, OpponentName: strp("AI Driver"),
+		Cause: CauseOnTrack}
+	if _, err := s.InsertPositionEvent(&ev); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := s.Rivals(Filter{ExcludeAI: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("got %+v, want no rivals when AI is excluded", rows)
+	}
+}
+
+// Race pace against qualifying pace, paired within one race weekend.
+//
+// The pair must come from the same subsession, or a qualifying session at one track
+// would be compared against a race at another.
+func TestQualifyingVsRacePairsWithinASubsession(t *testing.T) {
+	s := openTemp(t)
+	mk := func(key string, subsession, num, carID int, st string, best float64, quali *float64) {
+		t.Helper()
+		if _, err := s.UpsertSession(&Session{
+			SessionKey: key, SubsessionID: subsession, SessionNum: num,
+			SessionType: st, EventContext: "OfficialRace",
+			StartedAt: "2026-07-12T18:00:00Z", DrivingSeconds: 600, LapsCompleted: 5,
+			TrackID: intp(18), TrackName: strp("Watkins Glen"),
+			CarID: intp(carID), CarName: strp("Porsche 911 GT3 R"),
+			BestLapTimeS: f64p(best), QualifyBestTimeS: quali,
+			ClassifySourceJSON: "{}", IncidentSource: "yaml",
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Qualifying best 100.0, race best 101.5: race pace is 1.5 s slower, which is
+	// the normal direction — lower fuel and a clear track in qualifying.
+	mk("7001/1", 7001, 1, 173, "Qualify", 100.0, f64p(100.0))
+	mk("7001/2", 7001, 2, 173, "Race", 101.5, nil)
+	// Decoy: a different car (500) sharing the same subsession (7001), the way a
+	// multiclass field would — one subsession, several cars. Its times are far
+	// faster than the real car's, so if the car_id filter were dropped from
+	// either CTE the MIN() for subsession 7001 would pick up the decoy's time
+	// instead of car 173's, dragging AvgDeltaS far outside the 1.49-1.51 window.
+	//
+	// A decoy placed in a *different* subsession does not exercise this: the
+	// join's `ON r.ss = q.ss` already isolates one car per subsession whenever
+	// each subsession contains only one car's sessions, so dropping the car_id
+	// filter would not leak anything cross-subsession in that shape. Sharing the
+	// subsession is what makes the entity filter the only thing keeping the two
+	// cars' bests apart.
+	mk("7001/3", 7001, 3, 500, "Qualify", 10.0, f64p(10.0))
+	mk("7001/4", 7001, 4, 500, "Race", 20.0, nil)
+
+	got, err := s.QualifyingVsRace(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("QualifyingVsRace: %v", err)
+	}
+	if got.Pairs != 1 {
+		t.Fatalf("Pairs = %d, want 1", got.Pairs)
+	}
+	if got.AvgDeltaS == nil {
+		t.Fatal("AvgDeltaS is nil")
+	}
+	if *got.AvgDeltaS < 1.49 || *got.AvgDeltaS > 1.51 {
+		t.Errorf("AvgDeltaS = %.3f, want 1.50 (race minus qualifying)", *got.AvgDeltaS)
+	}
+}
+
+// A weekend with no qualifying session contributes nothing rather than zero.
+func TestQualifyingVsRaceWithNoQualifying(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.UpsertSession(&Session{
+		SessionKey: "8001/0", SubsessionID: 8001, SessionNum: 0,
+		SessionType: "Race", EventContext: "OfficialRace",
+		StartedAt: "2026-07-13T18:00:00Z", DrivingSeconds: 600, LapsCompleted: 5,
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		BestLapTimeS:       f64p(101.0),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.QualifyingVsRace(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Pairs != 0 || got.AvgDeltaS != nil {
+		t.Errorf("got %+v, want no pairs and a nil delta", got)
+	}
+}
+
+// TestQualifyingVsRaceDoesNotCrossSubsessions is not from the task-5 brief. The
+// brief's own fixtures never seed a Qualify session in one subsession alongside a
+// Race session in a different one, so they cannot tell a correct per-subsession
+// join apart from a broken implementation that aggregates qualifying and race bests
+// globally and then pairs them regardless of which weekend they came from.
+//
+// Subsession 9101 has a Qualify session only; subsession 9102 has a Race session
+// only, at a different (fictitious) point in the season. Neither subsession has
+// both halves of a pair, so a correct implementation must report zero pairs. A
+// global-aggregate implementation would instead pair 9101's qualifying best against
+// 9102's race best and report one pair with a large, wrong delta.
+func TestQualifyingVsRaceDoesNotCrossSubsessions(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.UpsertSession(&Session{
+		SessionKey: "9101/0", SubsessionID: 9101, SessionNum: 0,
+		SessionType: "Qualify", EventContext: "OfficialRace",
+		StartedAt: "2026-07-14T18:00:00Z", DrivingSeconds: 300, LapsCompleted: 3,
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		QualifyBestTimeS:   f64p(110.0),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpsertSession(&Session{
+		SessionKey: "9102/0", SubsessionID: 9102, SessionNum: 0,
+		SessionType: "Race", EventContext: "OfficialRace",
+		StartedAt: "2026-07-21T18:00:00Z", DrivingSeconds: 1800, LapsCompleted: 10,
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		BestLapTimeS:       f64p(95.0),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.QualifyingVsRace(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("QualifyingVsRace: %v", err)
+	}
+	if got.Pairs != 0 || got.AvgDeltaS != nil {
+		t.Errorf("got %+v, want zero pairs — 9101's qualifying and 9102's race "+
+			"belong to different weekends and must not be paired", got)
+	}
+}
+
 func TestConsistencyOutlierBaselineIsPerSession(t *testing.T) {
 	s := openTemp(t)
 	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",

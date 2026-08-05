@@ -388,3 +388,157 @@ ORDER BY sess.laps DESC, sess.oname`
 	}
 	return out, rows.Err()
 }
+
+// ProgressionRow is one month's best lap, for the improvement chart.
+type ProgressionRow struct {
+	Month    string  `json:"month"`
+	BestLapS float64 `json:"bestLapS"`
+	Laps     int     `json:"laps"`
+}
+
+// EntityProgression returns the best lap per calendar month for one entity at one
+// value of the opposite dimension.
+//
+// Both ids are required because a line mixing tracks would be meaningless: it would
+// rise and fall with which circuit was driven rather than with the driver's pace.
+// This is the closest LapDog gets to the reference-lap comparison that coaching
+// tools are built on, the reference being the driver's own earlier self.
+func (s *Store) EntityProgression(f Filter, by string, id, otherID int) ([]ProgressionRow, error) {
+	d, err := dimOrErr(by)
+	if err != nil {
+		return nil, err
+	}
+	pred, args := f.where()
+
+	q := `
+SELECT substr(s.started_at, 1, 7) AS month,
+       MIN(l.lap_time_s),
+       COUNT(*)
+FROM laps l JOIN sessions s ON s.id = l.session_id
+WHERE ` + pred + ` AND ` + d.idCol + ` = ? AND ` + d.otherID + ` = ?
+  AND l.lap_time_s > 0 AND l.is_pit_lap = 0
+GROUP BY month
+ORDER BY month`
+
+	rows, err := s.reader.Query(q, append(append(args, id), otherID)...)
+	if err != nil {
+		return nil, fmt.Errorf("store: entity progression by %s: %w", by, err)
+	}
+	defer rows.Close()
+
+	out := []ProgressionRow{}
+	for rows.Next() {
+		var r ProgressionRow
+		if err := rows.Scan(&r.Month, &r.BestLapS, &r.Laps); err != nil {
+			return nil, fmt.Errorf("store: scan progression row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// RivalRow is a head-to-head record against one named opponent.
+type RivalRow struct {
+	Name       string `json:"name"`
+	PassedThem int    `json:"passedThem"`
+	LostTo     int    `json:"lostTo"`
+	Net        int    `json:"net"`
+}
+
+// Rivals returns per-opponent pass records, most-contested first.
+//
+// Only CauseOnTrack counts. Inheriting a place because the other car pitted or left
+// the world is not overtaking, and counting it would flatter the record.
+//
+// Opponent names are returned as recorded. Other drivers are never anonymised: a
+// race is not a race without who was in it.
+func (s *Store) Rivals(f Filter) ([]RivalRow, error) {
+	pred, args := f.where()
+
+	q := `
+SELECT pe.opponent_name,
+       SUM(CASE WHEN pe.to_position < pe.from_position THEN 1 ELSE 0 END) AS passed,
+       SUM(CASE WHEN pe.to_position > pe.from_position THEN 1 ELSE 0 END) AS lost
+FROM position_events pe
+JOIN sessions s ON s.id = pe.session_id
+WHERE ` + pred + `
+  AND pe.cause = ?
+  AND pe.opponent_name IS NOT NULL AND pe.opponent_name <> ''
+GROUP BY pe.opponent_name
+ORDER BY (passed + lost) DESC, pe.opponent_name`
+
+	rows, err := s.reader.Query(q, append(args, string(CauseOnTrack))...)
+	if err != nil {
+		return nil, fmt.Errorf("store: rivals: %w", err)
+	}
+	defer rows.Close()
+
+	out := []RivalRow{}
+	for rows.Next() {
+		var r RivalRow
+		if err := rows.Scan(&r.Name, &r.PassedThem, &r.LostTo); err != nil {
+			return nil, fmt.Errorf("store: scan rival row: %w", err)
+		}
+		r.Net = r.PassedThem - r.LostTo
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// QualiPace is how much slower race pace is than qualifying pace.
+//
+// AvgDeltaS is nil rather than zero when no weekend has both sessions. Zero would
+// claim the two are identical, which is a much stronger statement than "unknown".
+type QualiPace struct {
+	Pairs     int      `json:"pairs"`
+	AvgDeltaS *float64 `json:"avgDeltaS"`
+}
+
+// QualifyingVsRace returns the mean of (race best lap - qualifying best lap).
+//
+// The two sessions are paired on subsession_id, which is what keeps a qualifying
+// session at one track from being compared against a race at another: a subsession
+// is one event at one track in one car.
+//
+// A positive delta is the normal direction. Qualifying is run on low fuel with a
+// clear track, so race pace is expected to be slower; a negative value is worth
+// noticing rather than assuming to be a bug.
+func (s *Store) QualifyingVsRace(f Filter, by string, id int) (QualiPace, error) {
+	d, err := dimOrErr(by)
+	if err != nil {
+		return QualiPace{}, err
+	}
+	pred, args := f.where()
+
+	q := `
+WITH q AS (
+  SELECT s.subsession_id AS ss, MIN(s.qualify_best_time_s) AS qt
+  FROM sessions s
+  WHERE ` + pred + ` AND ` + d.idCol + ` = ?
+    AND s.session_type = 'Qualify' AND s.qualify_best_time_s > 0
+    AND s.subsession_id <> 0
+  GROUP BY s.subsession_id
+),
+r AS (
+  SELECT s.subsession_id AS ss, MIN(s.best_lap_time_s) AS rt
+  FROM sessions s
+  WHERE ` + pred + ` AND ` + d.idCol + ` = ?
+    AND s.session_type = 'Race' AND s.best_lap_time_s > 0
+    AND s.subsession_id <> 0
+  GROUP BY s.subsession_id
+)
+SELECT COUNT(*), AVG(r.rt - q.qt)
+FROM q JOIN r ON r.ss = q.ss`
+
+	qargs := make([]any, 0, len(args)*2+2)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, id)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, id)
+
+	var out QualiPace
+	if err := s.reader.QueryRow(q, qargs...).Scan(&out.Pairs, &out.AvgDeltaS); err != nil {
+		return QualiPace{}, fmt.Errorf("store: qualifying vs race by %s: %w", by, err)
+	}
+	return out, nil
+}
