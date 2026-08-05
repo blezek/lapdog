@@ -535,16 +535,22 @@ func TestConsistencySuppressedBelowMinimumLaps(t *testing.T) {
 
 func TestConsistencyExcludesPitLaps(t *testing.T) {
 	s := openTemp(t)
-	// A slow final lap marked as a pit lap must not drag consistency down.
+	// The pit lap is deliberately faster than the rest of the field, not slower. A
+	// slow pit lap would already sit beyond the 110% outlier threshold and get
+	// dropped by that rule alone, so the test would pass whether or not the
+	// pit-lap exclusion existed. A fast in-lap that falls inside the threshold is
+	// the only fixture that isolates is_pit_lap = 0 as the thing doing the work —
+	// do not "fix" this back to a slow pit lap; that would silently remove the
+	// coverage.
 	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
-		[]float64{105.0, 100.0, 100.1, 100.2, 100.1, 100.0, 100.1, 140.0}, true)
+		[]float64{105.0, 100.0, 100.1, 100.2, 100.1, 100.0, 100.1, 90.0}, true)
 
 	got := consistencyOf(t, s, Filter{})
 	if got == nil {
 		t.Fatal("consistency is nil")
 	}
 	if *got < 99.7 {
-		t.Errorf("consistency = %.2f%%, want >= 99.7 — the 140 s pit lap is being "+
+		t.Errorf("consistency = %.2f%%, want >= 99.7 — the fast 90 s pit lap is being "+
 			"counted", *got)
 	}
 }
@@ -599,5 +605,41 @@ func TestConsistencyDeltaAccompaniesPercentage(t *testing.T) {
 	// Best 100.0, the other five laps all 100.5, so the delta is 0.5 s.
 	if *r.ConsistencyDeltaS < 0.49 || *r.ConsistencyDeltaS > 0.51 {
 		t.Errorf("ConsistencyDeltaS = %.3f, want 0.50", *r.ConsistencyDeltaS)
+	}
+}
+
+// TestConsistencyOutlierBaselineIsPerSession guards the outlier rule's baseline:
+// a lap is compared against its own session's best, not the entity's all-time
+// best. Every other fixture in this file uses sessions of similar pace, which
+// gives the same answer under either baseline. Here the two sessions are
+// deliberately far apart: a fast one around 100 s and a slow one around 140 s.
+//
+// Measured per-session, each session's own laps are compared to its own best and
+// both contribute a normal, unremarkable consistency figure. Measured against an
+// entity-wide baseline, the fast session's ~100 s best becomes the threshold
+// anchor for both sessions: the slow session's laps are all well beyond 110% of
+// 100 and are dropped as outliers wholesale, so the slow session vanishes from
+// the average entirely and the result silently collapses to the fast session's
+// figure alone (~99.88%, above the assertion's ceiling below).
+func TestConsistencyOutlierBaselineIsPerSession(t *testing.T) {
+	s := openTemp(t)
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{105.0, 100.0, 100.1, 100.2, 100.1, 100.0, 100.2}, false)
+	seedPace(t, s, "p2/0", "2026-07-02T10:00:00Z",
+		[]float64{148.0, 140.0, 141.0, 141.0, 141.0, 140.0, 141.0}, false)
+
+	got := consistencyOf(t, s, Filter{})
+	if got == nil {
+		t.Fatal("consistency is nil; both sessions have six laps after the first")
+	}
+	// Correctly averaged per session this comes to about 99.57% (the fast
+	// session near 99.85% and the slow session near 99.29%, averaged). Under an
+	// entity-wide baseline the slow session's laps are dropped as outliers
+	// entirely and only the fast session's ~99.85% would remain, so this ceiling
+	// sits between the two readings.
+	if *got >= 99.7 {
+		t.Errorf("consistency = %.2f%%, want < 99.7 — the slow session's laps are "+
+			"likely being measured against the fast session's best rather than "+
+			"its own", *got)
 	}
 }
