@@ -7,16 +7,20 @@
  * is what keeps the metric definitions from drifting apart.
  */
 
+import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 
-import { api } from '../api'
-import { hours, num } from '../format'
+import { api, type Filter, type PaceRow } from '../api'
+import { hours, lapTime, num, pct } from '../format'
 import { useFilter } from '../useFilter'
-import { Empty, ErrorNote, Loading } from '../components/ui'
+import { useTheme, type Theme } from '../theme'
+import { Card, Empty, ErrorNote, Loading, Stat } from '../components/ui'
 import { Filters } from '../components/Filters'
+import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from '../components/Chart'
+import { StackedByCategory } from '../components/StackedByCategory'
 import { isEmptyArray, keepPrevious, viewState } from '../query'
-import { dimensionLabel, type Dimension } from '../entity'
+import { consistencyBand, dimensionLabel, otherLabel, type Dimension } from '../entity'
 
 export function EntityPage({ dimension }: { dimension: Dimension }) {
   const { filter } = useFilter()
@@ -107,16 +111,328 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
   )
 }
 
-/** Review is the right-hand pane. Task 8 fills it in. */
 function Review({ dimension, id }: { dimension: Dimension; id: number }) {
   const { filter } = useFilter()
+  const theme = useTheme()
+
   const stats = useQuery({
     queryKey: ['entity', dimension, id, filter],
     queryFn: () => api.entity(filter, dimension, id),
     ...keepPrevious,
   })
+  const pace = useQuery({
+    queryKey: ['pace', dimension, id, filter],
+    queryFn: () => api.pace(filter, dimension, id),
+    ...keepPrevious,
+  })
+  // Race pace against qualifying pace. A positive delta is normal: qualifying runs
+  // on low fuel with a clear track.
+  const quali = useQuery({
+    queryKey: ['quali-pace', dimension, id, filter],
+    queryFn: () => api.qualiPace(filter, dimension, id),
+    ...keepPrevious,
+  })
+
+  // The progression chart needs one value of the opposite dimension, because a
+  // line mixing tracks would rise and fall with the circuit rather than the pace.
+  const [other, setOther] = useState<number | null>(null)
+  const paceRows = pace.data ?? []
+  const otherId = other ?? paceRows[0]?.otherId ?? null
 
   if (stats.isError) return <ErrorNote error={stats.error} />
   if (!stats.data) return <Loading />
-  return <div className="card">{stats.data.name}</div>
+  const s = stats.data
+
+  // The entity's own dimension is fixed by the selection, so the filter passed to
+  // the shared breakdown must carry it.
+  const scoped: Filter = { ...filter, [dimension === 'car' ? 'carId' : 'trackId']: id }
+
+  return (
+    <>
+      <div className="card" style={{ marginBottom: 14 }}>
+        <strong style={{ fontSize: 15 }}>{s.name}</strong>
+        <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 3 }}>
+          {hours(s.drivingHours)} driving · {num(s.sessions)} sessions ·{' '}
+          {num(s.laps)} laps · {num(Math.round(s.distanceKm))} km
+        </div>
+      </div>
+
+      <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
+        <Stat
+          label="Clean laps"
+          value={s.cleanLapPct == null ? '—' : pct(s.cleanLapPct / 100)}
+          note="no incident on the lap"
+        />
+        <Stat
+          label="Incident points / 100 km"
+          value={s.incidentPointsPer100Km == null ? '—' : s.incidentPointsPer100Km.toFixed(2)}
+          note={`${num(s.incidentPoints)} points total`}
+        />
+        <Stat
+          label="Positions gained"
+          value={s.avgPositionsGained == null ? '—' : s.avgPositionsGained.toFixed(2)}
+          note={`${num(s.races)} races`}
+        />
+        <Stat
+          label="Wins / podiums"
+          value={`${num(s.wins)} / ${num(s.podiums)}`}
+          // The store counts every race with a recorded finish, AI included, so the
+          // note says that rather than "human races" — a label must not claim more
+          // than the query supports, the same reason the incident counter below is
+          // "incident points" rather than "incidents".
+          note="all races, incl. AI"
+        />
+        <Stat
+          label="Race vs qualifying"
+          value={
+            quali.data?.avgDeltaS == null ? '—' : `+${quali.data.avgDeltaS.toFixed(2)}s`
+          }
+          note={
+            quali.data == null || quali.data.pairs === 0
+              ? 'no paired weekends'
+              : `${num(quali.data.pairs)} weekends`
+          }
+        />
+      </div>
+
+      <div className="grid" style={{ marginTop: 14, marginBottom: 14 }}>
+        <Card
+          title={`Pace by ${otherLabel(dimension).toLowerCase()}`}
+          table={<PaceTable rows={paceRows} dimension={dimension} />}
+        >
+          {viewState(pace, isEmptyArray) === 'loading' ? (
+            <Loading />
+          ) : paceRows.length === 0 ? (
+            <Empty>No timed laps in this range.</Empty>
+          ) : (
+            <PaceTable rows={paceRows} dimension={dimension} />
+          )}
+        </Card>
+      </div>
+
+      {otherId != null && (
+        <div className="grid" style={{ marginBottom: 14 }}>
+          <Progression
+            dimension={dimension}
+            id={id}
+            otherId={otherId}
+            rows={paceRows}
+            onPick={setOther}
+            theme={theme}
+          />
+        </div>
+      )}
+
+      <StackedByCategory
+        title="Driving time by category"
+        by={dimension === 'car' ? 'track' : 'car'}
+        filter={scoped}
+      />
+
+      <div className="grid" style={{ marginTop: 14 }}>
+        <RivalsPanel filter={scoped} />
+      </div>
+    </>
+  )
+}
+
+/**
+ * PaceTable is both the chart and the table view for pace.
+ *
+ * It is a table in both slots deliberately: the values are a mix of times,
+ * percentages and counts across many rows, which a bar chart cannot carry without
+ * either dropping columns or needing two axes.
+ */
+function PaceTable({ rows, dimension }: { rows: PaceRow[]; dimension: Dimension }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th className="no-sort">{otherLabel(dimension)}</th>
+            <th className="no-sort num">Personal best</th>
+            <th className="no-sort num">Best in range</th>
+            <th className="no-sort num">Consistency</th>
+            <th className="no-sort num">Laps</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const band = consistencyBand(r.consistencyPct)
+            return (
+              <tr key={r.otherId}>
+                <td>{r.otherName}</td>
+                <td className="num">{lapTime(r.personalBestS)}</td>
+                <td className="num">{lapTime(r.bestInRangeS)}</td>
+                <td className={`num cons-${band}`}>
+                  {r.consistencyPct == null ? '—' : `${r.consistencyPct.toFixed(2)}%`}
+                </td>
+                <td className="num">{num(r.laps)}</td>
+              </tr>
+            )
+          })}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+function Progression({
+  dimension,
+  id,
+  otherId,
+  rows,
+  onPick,
+  theme,
+}: {
+  dimension: Dimension
+  id: number
+  otherId: number
+  rows: PaceRow[]
+  onPick: (id: number) => void
+  theme: Theme
+}) {
+  const { filter } = useFilter()
+  const q = useQuery({
+    queryKey: ['progression', dimension, id, otherId, filter],
+    queryFn: () => api.progression(filter, dimension, id, otherId),
+    ...keepPrevious,
+  })
+  const data = q.data ?? []
+
+  const option = useMemo(
+    () => ({
+      grid: baseGrid,
+      tooltip: {
+        trigger: 'axis',
+        ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
+        formatter: (ps: { name: string; value: number }[]) => {
+          const p = ps[0]
+          return p ? `${p.name}<br/><strong>${lapTime(p.value)}</strong> best lap` : ''
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: data.map((r) => r.month),
+        ...axisStyle(theme.textMuted, theme.baseline),
+      },
+      // Lower is better for a lap time, so the axis is inverted: a line rising on
+      // screen means improvement, which is the direction a reader expects.
+      yAxis: { type: 'value', inverse: true, ...valueAxisStyle(theme.textMuted, theme.line) },
+      series: [
+        {
+          type: 'line',
+          data: data.map((r) => Number(r.bestLapS.toFixed(3))),
+          smooth: false,
+          symbolSize: 8,
+          lineStyle: { width: 2, color: theme.accent },
+          itemStyle: { color: theme.accent },
+        },
+      ],
+    }),
+    [data, theme],
+  )
+
+  return (
+    <Card
+      title="Best lap by month"
+      table={
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th className="no-sort">Month</th>
+                <th className="no-sort num">Best lap</th>
+                <th className="no-sort num">Laps</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.map((r) => (
+                <tr key={r.month}>
+                  <td>{r.month}</td>
+                  <td className="num">{lapTime(r.bestLapS)}</td>
+                  <td className="num">{num(r.laps)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      }
+    >
+      <div style={{ marginBottom: 8 }}>
+        <select
+          value={otherId}
+          onChange={(e) => onPick(Number(e.target.value))}
+          aria-label={`Choose a ${otherLabel(dimension).toLowerCase()}`}
+        >
+          {rows.map((r) => (
+            <option key={r.otherId} value={r.otherId}>
+              {r.otherName}
+            </option>
+          ))}
+        </select>
+      </div>
+      {viewState(q, isEmptyArray) === 'loading' ? (
+        <Loading />
+      ) : data.length === 0 ? (
+        <Empty>No timed laps here in this range.</Empty>
+      ) : (
+        <Chart option={option} ariaLabel="Best lap time per month" />
+      )}
+    </Card>
+  )
+}
+
+function RivalsPanel({ filter }: { filter: Filter }) {
+  // Human races only: the store counts AI opponents in a pass/passed tally that
+  // is not a meaningful rivalry, so this panel follows the Dashboard's
+  // grid-to-finish precedent and opts into excludeAi explicitly rather than
+  // relying on a default the API does not apply.
+  const rivalFilter: Filter = { ...filter, excludeAi: true }
+  const q = useQuery({
+    queryKey: ['rivals', rivalFilter],
+    queryFn: () => api.rivals(rivalFilter),
+    ...keepPrevious,
+  })
+  const rows = (q.data ?? []).slice(0, 12)
+
+  const table = (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th className="no-sort">Driver</th>
+            <th className="no-sort num">Passed them</th>
+            <th className="no-sort num">Lost to</th>
+            <th className="no-sort num">Net</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.name}>
+              <td>{r.name}</td>
+              <td className="num">{num(r.passedThem)}</td>
+              <td className="num">{num(r.lostTo)}</td>
+              <td className="num">{r.net > 0 ? `+${r.net}` : num(r.net)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+
+  return (
+    <Card title="Rivals" table={table}>
+      {viewState(q, isEmptyArray) === 'loading' ? (
+        <Loading />
+      ) : rows.length === 0 ? (
+        <Empty>
+          No on-track passes against a named opponent in this range. Practice and AI
+          sessions do not contribute.
+        </Empty>
+      ) : (
+        table
+      )}
+    </Card>
+  )
 }

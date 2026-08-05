@@ -766,3 +766,10 @@ tbody tr.selected td {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+/* Consistency bands. The number is always visible, so colour is a second signal
+   rather than the only one. */
+.cons-good { color: var(--status-good); }
+.cons-fair { color: var(--status-warning); }
+.cons-poor { color: var(--status-serious); }
+.cons-none { color: var(--text-muted); }
