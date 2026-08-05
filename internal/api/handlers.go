@@ -275,6 +275,26 @@ func dimension(q url.Values) string {
 	return "car"
 }
 
+// requiredDimension reads a required by parameter, writing a 400 when it is
+// absent.
+//
+// /api/breakdown can default by to car because by only changes how the response
+// is grouped: a caller who forgets it sees the wrong shape and can tell. On the
+// id-scoped endpoints (/api/entity, /api/pace, /api/progression,
+// /api/quali-pace), by also selects which id space id is looked up in. Car ids
+// and track ids are independent iRacing integers with no guaranteed disjoint
+// ranges, so defaulting by there would let an id meant for one dimension resolve,
+// silently and with a 200, against the other. There the same default that is a
+// convenience on /api/breakdown would hide a client mistake instead.
+func (s *Server) requiredDimension(w http.ResponseWriter, q url.Values) (string, bool) {
+	by := q.Get("by")
+	if by == "" {
+		s.fail(w, http.StatusBadRequest, fmt.Errorf("%w: by is required", ErrBadRequest))
+		return "", false
+	}
+	return by, true
+}
+
 func (s *Server) handleEntities(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.filterOrFail(w, r)
 	if !ok {
@@ -302,7 +322,11 @@ func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	st, err := s.st.EntityStats(f, dimension(q), id)
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	st, err := s.st.EntityStats(f, by, id)
 	if errors.Is(err, store.ErrBadGroupBy) {
 		s.fail(w, http.StatusBadRequest, err)
 		return
@@ -324,7 +348,11 @@ func (s *Server) handlePace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := s.st.EntityPace(f, dimension(q), id)
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityPace(f, by, id)
 	if errors.Is(err, store.ErrBadGroupBy) {
 		s.fail(w, http.StatusBadRequest, err)
 		return
@@ -350,7 +378,11 @@ func (s *Server) handleProgression(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	rows, err := s.st.EntityProgression(f, dimension(q), id, other)
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityProgression(f, by, id, other)
 	if errors.Is(err, store.ErrBadGroupBy) {
 		s.fail(w, http.StatusBadRequest, err)
 		return
@@ -385,7 +417,11 @@ func (s *Server) handleQualiPace(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	got, err := s.st.QualifyingVsRace(f, dimension(q), id)
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	got, err := s.st.QualifyingVsRace(f, by, id)
 	if errors.Is(err, store.ErrBadGroupBy) {
 		s.fail(w, http.StatusBadRequest, err)
 		return

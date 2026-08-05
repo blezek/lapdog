@@ -890,3 +890,49 @@ func TestRivalsEndpoint(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 }
+
+// The four id-scoped endpoints require by explicitly: car ids and track ids are
+// independent iRacing integers with no guaranteed disjoint ranges, so defaulting
+// by would let an id meant for one dimension silently resolve against the other.
+
+func TestEntityEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entity?id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestPaceEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/pace?id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestProgressionEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/progression?id=173&other=18", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestQualiPaceEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/quali-pace?id=173&range=all", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+// /api/entities takes no id, so a defaulted dimension is a sensible answer
+// rather than a wrong one — this pins that asymmetry deliberately.
+func TestEntitiesDefaultsDimensionWhenAbsent(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entities", nil)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 when by is absent on /api/entities", rec.Code)
+	}
+}
