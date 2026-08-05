@@ -809,3 +809,191 @@ func TestFacetsAdvertisesBreakdownDimensions(t *testing.T) {
 		t.Errorf("breakdownBy = %v, want it to include car", f.BreakdownBy)
 	}
 }
+
+func TestEntitiesEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entities?by=car", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var rows []store.EntityRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestEntitiesRejectsUnknownDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entities?by=driver", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for an unknown dimension", rec.Code)
+	}
+}
+
+func TestEntityEndpointRequiresID(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entity?by=car", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when id is absent", rec.Code)
+	}
+}
+
+func TestEntityEndpointUnknownIDIs404(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entity?by=car&id=999999", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaceEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/pace?by=car&id=173", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var rows []store.PaceRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestProgressionEndpointRequiresBothIDs(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/progression?by=car&id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 without the other id — a line mixing tracks "+
+			"would be meaningless", rec.Code)
+	}
+}
+
+func TestQualiPaceEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/quali-pace?by=car&id=173&range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got store.QualiPace
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestRivalsEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/rivals?range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var rows []store.RivalRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestCombosEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/combos?range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var cells []store.ComboCell
+	if err := json.Unmarshal(rec.Body.Bytes(), &cells); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestCombosRejectsNonNumericLimit(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/combos?top=ten", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
+// The four id-scoped endpoints require by explicitly: car ids and track ids are
+// independent iRacing integers with no guaranteed disjoint ranges, so defaulting
+// by would let an id meant for one dimension silently resolve against the other.
+
+func TestEntityEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entity?id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestPaceEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/pace?id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestProgressionEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/progression?id=173&other=18", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestQualiPaceEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/quali-pace?id=173&range=all", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+// /api/entities takes no id, so a defaulted dimension is a sensible answer
+// rather than a wrong one — this pins that asymmetry deliberately.
+func TestEntitiesDefaultsDimensionWhenAbsent(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entities", nil)
+	if rec.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 when by is absent on /api/entities", rec.Code)
+	}
+}
+
+// The racecraft endpoint carries the §5.6 figures. The seeded race has one
+// on-track pass and one place inherited when an opponent pitted, so asserting the
+// pass count also pins that the store's cause filter reached the response: without
+// it the inherited place would be counted as an overtake too.
+func TestRacecraftEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/racecraft?by=car&id=173&range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got store.Racecraft
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PassesMade != 1 {
+		t.Errorf("passesMade = %d, want 1 — the OpponentPit event is an inherited "+
+			"place, not an overtake", got.PassesMade)
+	}
+	// The seeded race records a finish but no grid position, so the averages have
+	// nothing to average and must be null rather than zero.
+	if got.Races != 0 || got.AvgStartPosition != nil {
+		t.Errorf("got %+v, want no races counted: the fixture records no grid position", got)
+	}
+}
+
+func TestRacecraftEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/racecraft?id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestRacecraftEndpointRequiresID(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/racecraft?by=car", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when id is absent", rec.Code)
+	}
+}

@@ -11,7 +11,20 @@ import { rangePresets, useFilter } from '../useFilter'
  * All of them write to the URL, so the same state drives the charts, the tables
  * and the export.
  */
-export function Filters({ matched }: { matched?: string }) {
+export function Filters({
+  matched,
+  hide,
+}: {
+  matched?: string
+  /**
+   * hide suppresses a dimension's dropdown.
+   *
+   * The Cars and Tracks pages set their own dimension from the selected entity, so
+   * showing a second control for the same thing invites the two to disagree about
+   * what the page is about.
+   */
+  hide?: ('car' | 'track')[]
+}) {
   const { state, update, clear, active } = useFilter()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
 
@@ -65,35 +78,39 @@ export function Filters({ matched }: { matched?: string }) {
         </select>
       </label>
 
-      <label className={`control${state.trackId != null ? ' control-active' : ''}`}>
-        <select
-          value={state.trackId ?? ''}
-          onChange={(e) => update({ track: e.target.value || undefined })}
-          aria-label="Track"
-        >
-          <option value="">All tracks</option>
-          {(facets?.tracks ?? []).map((t) => (
-            <option key={t.id} value={t.id}>
-              {t.name} ({t.sessions})
-            </option>
-          ))}
-        </select>
-      </label>
+      {!hide?.includes('track') && (
+        <label className={`control${state.trackId != null ? ' control-active' : ''}`}>
+          <select
+            value={state.trackId ?? ''}
+            onChange={(e) => update({ track: e.target.value || undefined })}
+            aria-label="Track"
+          >
+            <option value="">All tracks</option>
+            {(facets?.tracks ?? []).map((t) => (
+              <option key={t.id} value={t.id}>
+                {t.name} ({t.sessions})
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
-      <label className={`control${state.carId != null ? ' control-active' : ''}`}>
-        <select
-          value={state.carId ?? ''}
-          onChange={(e) => update({ car: e.target.value || undefined })}
-          aria-label="Car"
-        >
-          <option value="">All cars</option>
-          {(facets?.cars ?? []).map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.name} ({c.sessions})
-            </option>
-          ))}
-        </select>
-      </label>
+      {!hide?.includes('car') && (
+        <label className={`control${state.carId != null ? ' control-active' : ''}`}>
+          <select
+            value={state.carId ?? ''}
+            onChange={(e) => update({ car: e.target.value || undefined })}
+            aria-label="Car"
+          >
+            <option value="">All cars</option>
+            {(facets?.cars ?? []).map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.name} ({c.sessions})
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
 
       {/* AI results are not comparable to human ones, so excluding them is a
           first-class control rather than buried in the context filter. */}

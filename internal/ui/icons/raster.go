@@ -100,14 +100,14 @@ func ICO(name string, tint color.Color, sizes ...int) ([]byte, error) {
 		if e.size == 256 {
 			dim = 0
 		}
-		buf.WriteByte(dim)                                              // width
-		buf.WriteByte(dim)                                              // height
-		buf.WriteByte(0)                                                // palette size
-		buf.WriteByte(0)                                                // reserved
-		binary.Write(&buf, binary.LittleEndian, uint16(1))              // colour planes
-		binary.Write(&buf, binary.LittleEndian, uint16(32))             // bits per pixel
-		binary.Write(&buf, binary.LittleEndian, uint32(len(e.png)))     // byte size
-		binary.Write(&buf, binary.LittleEndian, uint32(offset))          // byte offset
+		buf.WriteByte(dim)                                          // width
+		buf.WriteByte(dim)                                          // height
+		buf.WriteByte(0)                                            // palette size
+		buf.WriteByte(0)                                            // reserved
+		binary.Write(&buf, binary.LittleEndian, uint16(1))          // colour planes
+		binary.Write(&buf, binary.LittleEndian, uint16(32))         // bits per pixel
+		binary.Write(&buf, binary.LittleEndian, uint32(len(e.png))) // byte size
+		binary.Write(&buf, binary.LittleEndian, uint32(offset))     // byte offset
 		offset += len(e.png)
 	}
 	for _, e := range entries {

@@ -37,6 +37,8 @@ const (
 	Trophy        = "trophy"
 	Speedometer   = "speedometer"
 	Timer         = "timer-outline"
+	// RoadVariant marks the Tracks page. The set had no road or map glyph.
+	RoadVariant = "road-variant"
 
 	ChartLine     = "chart-line"
 	ChartBar      = "chart-bar"
@@ -61,7 +63,7 @@ const (
 // and by tests to assert nothing referenced is missing.
 var All = []string{
 	RacingHelmet, FlagCheckered, CarSports, GoKart, Steering, Tire,
-	Podium, Trophy, Speedometer, Timer,
+	Podium, Trophy, Speedometer, Timer, RoadVariant,
 	ChartLine, ChartBar, CalendarMonth, TableLarge, FilterVariant, Magnify,
 	Cog, Download, FolderOpen, OpenInNew, Pause, Dot,
 	AlertCircle, CheckCircle, InfoCircle,

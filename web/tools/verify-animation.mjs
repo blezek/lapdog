@@ -1,5 +1,5 @@
 /*
- * Verifies that dashboard charts tween between filters instead of snapping.
+ * Verifies that a page's charts tween between filters instead of snapping.
  *
  * Reasoning about merge modes is not evidence. This drives a real browser, changes a
  * filter, and samples the rendered canvas part way through the transition. A chart
@@ -13,13 +13,21 @@
  *
  * No dependencies: Node's built-in WebSocket speaks the DevTools protocol directly.
  *
- *   node tools/verify-animation.mjs [http://127.0.0.1:47047]
+ * The page and the card it probes are both parameters rather than only the
+ * dashboard's, because the Cars and Tracks pages carry the same keepPrevious
+ * discipline on five queries and were never exercised by this tool. The card
+ * title has to be passed alongside the path: each page names its chart-bearing
+ * card differently, and there is no way to infer one from the other.
+ *
+ *   node tools/verify-animation.mjs [baseUrl] [pagePath] [cardTitle]
+ *   node tools/verify-animation.mjs http://127.0.0.1:47047 /cars?range=90 "BEST LAP BY MONTH"
  */
 
 import { spawn } from 'node:child_process'
 import { rmSync } from 'node:fs'
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:47047'
+const PAGE_PATH = process.argv[3] ?? '/dashboard?range=90'
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const PROFILE = '/tmp/chrome-lapdog-verify'
 const PORT = 9333
@@ -168,7 +176,7 @@ const MEASURE = `
 })()
 `
 
-const TITLE = 'DRIVING HOURS BY CATEGORY'
+const TITLE = (process.argv[4] ?? 'DRIVING HOURS BY CATEGORY').toUpperCase()
 
 async function main() {
   const chrome = await launch()
@@ -177,7 +185,7 @@ async function main() {
   try {
     await send('Page.enable')
     await send('Runtime.enable')
-    await send('Page.navigate', { url: `${BASE}/dashboard?range=90` })
+    await send('Page.navigate', { url: `${BASE}${PAGE_PATH}` })
     await sleep(3500)
 
     await evaluate(MEASURE)

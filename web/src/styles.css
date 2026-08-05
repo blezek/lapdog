@@ -548,6 +548,11 @@ tbody tr.selected td {
   }
 }
 
+/* Cars and Tracks reuse the explorer layout with no facet sidebar. */
+.explorer.two {
+  grid-template-columns: 260px 1fr;
+}
+
 .facet-group {
   margin-bottom: 14px;
 }
@@ -761,3 +766,10 @@ tbody tr.selected td {
   flex-wrap: wrap;
   justify-content: flex-end;
 }
+
+/* Consistency bands. The number is always visible, so colour is a second signal
+   rather than the only one. */
+.cons-good { color: var(--status-good); }
+.cons-fair { color: var(--status-warning); }
+.cons-poor { color: var(--status-serious); }
+.cons-none { color: var(--text-muted); }

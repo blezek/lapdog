@@ -33,7 +33,7 @@ SIGN_PKCS12   ?=
 SIGN_PASSWORD ?=
 TIMESTAMP_URL ?= http://timestamp.digicert.com
 
-.PHONY: help test test-ci vet ui ui-clean ui-dev ci verify-embed run-ctl dataset-db \
+.PHONY: help test test-ci vet fmt-check ui ui-clean ui-dev ci verify-embed run-ctl dataset-db \
         build-windows build-ctl build-gen \
         fixtures dataset validate portable installer sign release tools clean
 
@@ -41,9 +41,10 @@ help:
 	@echo "test           run the Go unit tests"
 	@echo "test-ci        run the Go tests with the frontend bundle required"
 	@echo "vet            run go vet"
+	@echo "fmt-check      fail if any file is not gofmt-formatted"
 	@echo "ui             build the frontend into internal/web/dist"
 	@echo "ui-clean       rebuild the frontend from scratch"
-	@echo "ci             what CI runs: vet, frontend, both test suites, cross-build"
+	@echo "ci             what CI runs: fmt check, vet, frontend, both test suites, cross-build"
 	@echo "verify-embed   prove the interface is inside a Windows binary"
 	@echo "ui-dev         run the Vite dev server against a local API"
 	@echo "run-ctl        serve $(DEV_DB) on port $(DEV_PORT) for local testing"
@@ -72,6 +73,17 @@ test-ci: $(BUNDLE)
 
 vet:
 	go vet ./...
+
+# gofmt -l lists unformatted files and exits 0 regardless, so the failure has to
+# come from the output being non-empty rather than from the exit code. This is
+# what would have caught the unformatted files that reached main unnoticed.
+fmt-check:
+	@files="$$(gofmt -l ./internal ./cmd)"; \
+	if [ -n "$$files" ]; then \
+	  echo "fmt-check: these files are not gofmt-formatted:"; \
+	  echo "$$files"; \
+	  exit 1; \
+	fi
 
 # The frontend bundle is generated, not committed: it is about a megabyte of
 # minified JavaScript that changes wholesale on every UI edit, so committing it
@@ -243,7 +255,7 @@ verify-embed: build-windows
 	@echo "verify-embed: $(EXE) is windows/amd64 with the interface and icons inside"
 
 # Mirrors .github/workflows/ci.yml so the same checks can be run before pushing.
-ci: vet test-ci verify-embed
+ci: fmt-check vet test-ci verify-embed
 	cd web && npm run typecheck && npm run test
 	GOOS=windows GOARCH=amd64 go build ./...
 	@echo "ci: ok"

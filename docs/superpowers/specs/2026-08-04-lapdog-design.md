@@ -766,7 +766,7 @@ As an *import* path none of that is disqualifying, because lap times and the fie
 
 - True overtake detection from `CarIdxLapDistPct` ordering rather than position deltas, which would survive sub-second multi-car shuffles.
 - AI difficulty and roster detail once §6.5 is resolved, if the YAML exposes a skill level. Would let AI results be compared to each other meaningfully rather than only excluded.
-- Per-opponent head-to-head records, since `position_events.opponent_name` is already stored.
+- ~~Per-opponent head-to-head records, since `position_events.opponent_name` is already stored.~~ **Delivered 2026-08-05**; see `2026-08-05-lapdog-cars-tracks-design.md` §5.7.
 - Sector times from `SplitTimeInfo.Sectors[]`.
 - Setup tracking via `DriverSetupName` and `DriverSetupIsModified`.
 - Weather correlation using `TrackTemp`, `AirTemp`, `TrackWetness`.

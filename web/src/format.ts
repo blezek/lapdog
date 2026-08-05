@@ -10,6 +10,7 @@ import {
   dateCompact,
   dateFull,
   formatDayKey,
+  monthAndYear,
   numberGrouped,
   parseWhen,
   todayLocal,
@@ -75,6 +76,24 @@ export function day(iso: string): string {
 export function dayShort(iso: string): string {
   const d = parseWhen(iso)
   return d ? dateCompact(d) : iso.slice(0, 10)
+}
+
+/**
+ * monthLabel renders a "YYYY-MM" key in the viewer's locale.
+ *
+ * The key is a sort-stable database value, not something to show: "2026-08" reads
+ * as a date to nobody. The day is fixed at the first so the month cannot roll over.
+ *
+ * Shared rather than private to a page. It began as a helper inside the dashboard
+ * while the entity pages rendered the raw key beside it, so the same value appeared
+ * as "Aug 2026" on one screen and "2026-08" on another. One definition is what
+ * stops the two diverging again.
+ */
+export function monthLabel(key: string): string {
+  const m = /^(\d{4})-(\d{2})$/.exec(key)
+  if (!m) return key
+  const [, y, mo] = m
+  return monthAndYear(new Date(Number(y), Number(mo) - 1, 1))
 }
 
 /** dateTime renders an instant as a date and a clock time. */

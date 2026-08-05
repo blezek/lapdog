@@ -3,7 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
@@ -243,4 +246,241 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, PUT")
 		s.fail(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 	}
+}
+
+// requiredInt reads a required integer query parameter.
+//
+// Absent and unparseable are both client mistakes, and both must be 400 rather than
+// a zero that would silently query entity 0.
+func (s *Server) requiredInt(w http.ResponseWriter, q url.Values, key string) (int, bool) {
+	raw := q.Get(key)
+	if raw == "" {
+		s.fail(w, http.StatusBadRequest, fmt.Errorf("%w: %s is required", ErrBadRequest, key))
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest,
+			fmt.Errorf("%w: %s must be an integer", ErrBadRequest, key))
+		return 0, false
+	}
+	return v, true
+}
+
+// dimension reads the by parameter, defaulting to car as /api/breakdown does.
+func dimension(q url.Values) string {
+	if by := q.Get("by"); by != "" {
+		return by
+	}
+	return "car"
+}
+
+// requiredDimension reads a required by parameter, writing a 400 when it is
+// absent.
+//
+// /api/breakdown can default by to car because by only changes how the response
+// is grouped: a caller who forgets it sees the wrong shape and can tell. On the
+// id-scoped endpoints (/api/entity, /api/pace, /api/progression,
+// /api/quali-pace), by also selects which id space id is looked up in. Car ids
+// and track ids are independent iRacing integers with no guaranteed disjoint
+// ranges, so defaulting by there would let an id meant for one dimension resolve,
+// silently and with a 200, against the other. There the same default that is a
+// convenience on /api/breakdown would hide a client mistake instead.
+func (s *Server) requiredDimension(w http.ResponseWriter, q url.Values) (string, bool) {
+	by := q.Get("by")
+	if by == "" {
+		s.fail(w, http.StatusBadRequest, fmt.Errorf("%w: by is required", ErrBadRequest))
+		return "", false
+	}
+	return by, true
+}
+
+func (s *Server) handleEntities(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityList(f, dimension(r.URL.Query()))
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	st, err := s.st.EntityStats(f, by, id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.notFoundOr500(w, err)
+		return
+	}
+	s.writeJSON(w, st)
+}
+
+func (s *Server) handlePace(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityPace(f, by, id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleProgression(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	other, ok := s.requiredInt(w, q, "other")
+	if !ok {
+		return
+	}
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityProgression(f, by, id, other)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleRivals(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.st.Rivals(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleRacecraft(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	got, err := s.st.Racecraft(f, by, id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, got)
+}
+
+func (s *Server) handleQualiPace(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	got, err := s.st.QualifyingVsRace(f, by, id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, got)
+}
+
+func (s *Server) handleCombos(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	// top is optional; the store clamps a missing or non-positive value. Named
+	// "top" rather than "limit" on the wire: Filter already has its own "limit"
+	// for pagination, and reusing the key would let the two silently collide.
+	limit := 0
+	if raw := r.URL.Query().Get("top"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			s.fail(w, http.StatusBadRequest,
+				fmt.Errorf("%w: top must be an integer", ErrBadRequest))
+			return
+		}
+		limit = v
+	}
+	cells, err := s.st.TopCombos(f, limit)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, cells)
 }
