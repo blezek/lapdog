@@ -206,7 +206,11 @@ Every query in this set was prototyped against the 1,331-session development dat
 | `GET /api/progression?by=&id=&other=` | Best lap per month at one track |
 | `GET /api/rivals` | Opponent head-to-head rows |
 
-The category split reuses `GET /api/breakdown`. All accept the existing filter parameters and, like every current read endpoint, default `ExcludeAI` on for pace and pass metrics, because AI results are not comparable to human ones.
+The category split reuses `GET /api/breakdown`. All accept the existing filter parameters.
+
+**Correction, 2026-08-05.** An earlier draft of this section claimed the endpoints default `ExcludeAI` on "like every current read endpoint". That was wrong about the existing code: `exclude_ai` parses to false by default, no store query hard-codes the exclusion, and it is surfaced as a user checkbox that starts off. Exactly one caller opts in — the dashboard's grid-to-finish panel — and `lapdogctl summary` computes a separate human-only total, which is where the "AI excluded" wording in its output comes from.
+
+The new endpoints follow that same architecture: the caller decides. Where the spec says a metric is human-only — the rivals panel in §5.7 and the racecraft figures in §5.6 — the frontend passes `excludeAi` explicitly, as the dashboard already does for its races panel. Putting the exclusion inside the query instead would make the parameter a lie, and changing the API-wide default would silently alter existing endpoints.
 
 Small endpoints rather than one aggregate response, for a specific reason: the frontend keeps previous data as placeholder data per query, which is what stops charts unmounting and therefore what makes them animate across a filter change. One fat endpoint would collapse five independently-cached queries into one and lose that.
 
