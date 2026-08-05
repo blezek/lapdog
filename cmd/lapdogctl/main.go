@@ -29,6 +29,7 @@ const usage = `lapdogctl — LapDog development tool
 
 Usage:
   lapdogctl ingest <captures-dir> <lapdog.db>   replay captures into a database
+  lapdogctl inspect [flags] <file.lpd>          read a capture: session YAML, or frames
   lapdogctl summary <lapdog.db>                 print what a database contains
   lapdogctl reclassify <lapdog.db>              re-derive classification from stored provenance
   lapdogctl serve <lapdog.db> [port]            serve the API and interface over a database
@@ -59,6 +60,9 @@ func run(cmd string, args []string) error {
 			return fmt.Errorf("summary takes a database path")
 		}
 		return summary(args[0])
+
+	case "inspect":
+		return inspectCapture(args)
 
 	case "reclassify":
 		if len(args) != 1 {
