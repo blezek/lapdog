@@ -103,13 +103,14 @@ func TestEntityListHoursSumToTotal(t *testing.T) {
 func TestEntityListRenamedEntityStaysOneRow(t *testing.T) {
 	s := openTemp(t)
 
-	for _, r := range []struct {
+	sessions := []struct {
 		key, name, started string
 		subsession, drive  int
 	}{
 		{"9001/0", "Porsche 911 GT3 R", "2026-06-01T10:00:00Z", 9001, 1000},
 		{"9002/0", "Porsche 911 GT3 R (992)", "2026-07-01T10:00:00Z", 9002, 2000},
-	} {
+	}
+	for _, r := range sessions {
 		rec := &Session{
 			SessionKey: r.key, SubsessionID: r.subsession, SessionNum: 0,
 			SessionType: "Race", EventContext: "OfficialRace",
@@ -133,6 +134,18 @@ func TestEntityListRenamedEntityStaysOneRow(t *testing.T) {
 	}
 	if want := float64(1000+2000) / 3600.0; rows[0].DrivingHours < want-0.0001 || rows[0].DrivingHours > want+0.0001 {
 		t.Errorf("DrivingHours = %.4f, want %.4f (the sum of both sessions, not divided between two rows)", rows[0].DrivingHours, want)
+	}
+	// The arbitrary-name defect itself has no test: for a fixed query and
+	// dataset, SQLite's MAX picks the same value every time, so a test cannot
+	// force that choice to vary. This assertion pins the replacement contract
+	// instead — the entity list reports the MAX of the names a renamed entity
+	// has carried, chosen for stability rather than recency.
+	wantName := sessions[0].name
+	if sessions[1].name > wantName {
+		wantName = sessions[1].name
+	}
+	if rows[0].Name != wantName {
+		t.Errorf("Name = %q, want %q (the MAX of the names this car has carried, chosen for stability rather than recency)", rows[0].Name, wantName)
 	}
 	if rows[0].Sessions != 2 {
 		t.Errorf("Sessions = %d, want 2", rows[0].Sessions)
