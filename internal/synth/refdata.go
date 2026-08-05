@@ -9,10 +9,10 @@ package synth
 
 // Track is a circuit the synthetic driver visits.
 type Track struct {
-	ID        int
-	Name      string
-	Config    string
-	LengthKm  float64
+	ID       int
+	Name     string
+	Config   string
+	LengthKm float64
 	// BaseLapS is a reference lap time in seconds for a GT3-class car. Other
 	// classes scale it by their PaceFactor.
 	BaseLapS float64

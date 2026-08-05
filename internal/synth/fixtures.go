@@ -55,8 +55,8 @@ var FixtureCases = []FixtureCase{
 	},
 	{
 		Name: "hosted-race", flavour: FlavourHosted,
-		Why:        "unofficial, non-league, online session falls through to Hosted",
-		carIndex:   2, trackIndex: 3, driveSecs: 1800,
+		Why:      "unofficial, non-league, online session falls through to Hosted",
+		carIndex: 2, trackIndex: 3, driveSecs: 1800,
 	},
 	{
 		Name: "ai-race-field-present", flavour: FlavourAI,
@@ -70,13 +70,13 @@ var FixtureCases = []FixtureCase{
 	},
 	{
 		Name: "offline-test-drive", flavour: FlavourOfflineTest,
-		Why:        "Offline Testing normalises to OfflineTest and always counts, with no setting to disable it",
-		carIndex:   4, trackIndex: 6, driveSecs: 2100,
+		Why:      "Offline Testing normalises to OfflineTest and always counts, with no setting to disable it",
+		carIndex: 4, trackIndex: 6, driveSecs: 2100,
 	},
 	{
 		Name: "time-trial", flavour: FlavourTimeTrial,
-		Why:        "Time Trial gets its own context and label rather than being folded into practice",
-		carIndex:   3, trackIndex: 7, driveSecs: 1200,
+		Why:      "Time Trial gets its own context and label rather than being folded into practice",
+		carIndex: 3, trackIndex: 7, driveSecs: 1200,
 	},
 	{
 		Name: "short-session", flavour: FlavourOfficialPractice,

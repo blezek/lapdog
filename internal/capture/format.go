@@ -36,10 +36,10 @@ const (
 // Meta describes the variable layout the capture was recorded against. It is
 // needed to decode any KindVars record.
 type Meta struct {
-	TickRate   int32              `json:"tickRate"`
-	NumVars    int32              `json:"numVars"`
-	BufLen     int32              `json:"bufLen"`
-	VarHeaders []irsdk.VarHeader  `json:"varHeaders"`
+	TickRate   int32             `json:"tickRate"`
+	NumVars    int32             `json:"numVars"`
+	BufLen     int32             `json:"bufLen"`
+	VarHeaders []irsdk.VarHeader `json:"varHeaders"`
 }
 
 // Record is one decoded capture record. Which fields are populated depends on
