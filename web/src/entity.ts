@@ -5,8 +5,31 @@
  * two pages cannot disagree about what a band means.
  */
 
+import type { Filter } from './api'
+
 /** Dimension is which entity a page is about. */
 export type Dimension = 'car' | 'track'
+
+/**
+ * pageFilter drops the page's own dimension from the shared filter.
+ *
+ * The page's dimension is chosen by the left-hand list, and the filter bar hides
+ * its dropdown for exactly that reason. Hiding the control does not clear the
+ * value, though: a bookmarked or hand-edited `/cars?car=105` still parses to
+ * carId, which collapsed the list to the single car being chosen from with no
+ * visible control to undo it — the only escape was the generic Clear button,
+ * which also discarded the range.
+ *
+ * Stripping it here means the list always offers every entity, and the selected
+ * entity's own panels scope themselves by id instead. The *other* dimension is
+ * left alone, so "this car, at this track" stays expressible.
+ */
+export function pageFilter(f: Filter, d: Dimension): Filter {
+  const out = { ...f }
+  if (d === 'car') delete out.carId
+  else delete out.trackId
+  return out
+}
 
 /** dimensionLabel names the entity itself. */
 export function dimensionLabel(d: Dimension): string {

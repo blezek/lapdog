@@ -2,8 +2,18 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api, type ComboCell, type DailyRow, type SummaryRow } from '../api'
-import { hours, labelForKey, num, pct, position, day, dayShort, lapTime } from '../format'
-import { monthAndYear, monthNames, weekdayNames } from '../locale'
+import {
+  hours,
+  labelForKey,
+  monthLabel,
+  num,
+  pct,
+  position,
+  day,
+  dayShort,
+  lapTime,
+} from '../format'
+import { monthNames, weekdayNames } from '../locale'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { categoryColour, categoryOrderAll, totalsFromSummary } from '../categories'
@@ -863,19 +873,6 @@ function weekStart(iso: string): string {
   const d = new Date(`${iso}T00:00:00Z`)
   d.setUTCDate(d.getUTCDate() - d.getUTCDay())
   return d.toISOString().slice(0, 10)
-}
-
-/**
- * monthLabel renders a "YYYY-MM" summary key in the viewer's locale.
- *
- * The key is a sort-stable database value, not something to show: "2026-08" read as
- * a date to nobody. The day is fixed at the first so the month cannot roll over.
- */
-function monthLabel(key: string): string {
-  const m = /^(\d{4})-(\d{2})$/.exec(key)
-  if (!m) return key
-  const [, y, mo] = m
-  return monthAndYear(new Date(Number(y), Number(mo) - 1, 1))
 }
 
 /** weekEnd returns the Saturday on or after an ISO date. */

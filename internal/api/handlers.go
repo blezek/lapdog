@@ -407,6 +407,32 @@ func (s *Server) handleRivals(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, rows)
 }
 
+func (s *Server) handleRacecraft(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	by, ok := s.requiredDimension(w, q)
+	if !ok {
+		return
+	}
+	got, err := s.st.Racecraft(f, by, id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, got)
+}
+
 func (s *Server) handleQualiPace(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.filterOrFail(w, r)
 	if !ok {

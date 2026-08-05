@@ -492,6 +492,93 @@ ORDER BY (passed + lost) DESC, pe.opponent_name`
 	return out, rows.Err()
 }
 
+// Racecraft is the overtaking and results record for one entity.
+//
+// The position figures are pointers because they have no meaning with no races in
+// the range: rendering "grid 0.0 → finish 0.0" would claim a driver started and
+// finished every race on the same non-existent position, which is a much stronger
+// statement than "no races here".
+//
+// Only Races is a count of sessions; PassesMade and TimesPassed count events. The
+// two are deliberately not divided by one another here — a passes-per-race ratio
+// is the interface's business, and it can only be honest while both numerators
+// share the Races denominator, which they do not: a race with no recorded finish
+// still contributes its on-track passes.
+type Racecraft struct {
+	PassesMade  int `json:"passesMade"`
+	TimesPassed int `json:"timesPassed"`
+
+	// Races counts race sessions with both a grid and a finish position, which is
+	// the set the two averages below are taken over. A race the sim never logged
+	// positions for cannot contribute to either average, so counting it here would
+	// make the denominator disagree with the numbers beside it.
+	Races             int      `json:"races"`
+	AvgStartPosition  *float64 `json:"avgStartPosition"`
+	AvgFinishPosition *float64 `json:"avgFinishPosition"`
+}
+
+// Racecraft returns the pass record and the average grid-to-finish for one entity.
+//
+// Two separate queries, deliberately. position_events is per event and sessions is
+// per session, and joining them into one aggregate would multiply each session's
+// positions by its number of position changes — the same fan-out that reported
+// 28,895 driving hours against a true 1,242.6 when laps were joined into
+// EntityStats. See the note on EntityStats.
+//
+// Both halves are restricted to race sessions. A practice pass is not racecraft,
+// and the averages are only defined for a race in the first place.
+//
+// AI races are *not* excluded here. The caller decides, via Filter.ExcludeAI, the
+// way the dashboard's grid-to-finish panel does: exclude_ai is a user-visible
+// checkbox that starts off, so hard-coding the exclusion inside the query would
+// make the parameter a lie. The spec calls these figures human-only, and the
+// frontend panel therefore passes ExcludeAI explicitly.
+func (s *Store) Racecraft(f Filter, by string, id int) (Racecraft, error) {
+	d, err := dimOrErr(by)
+	if err != nil {
+		return Racecraft{}, err
+	}
+	pred, args := f.where()
+
+	var out Racecraft
+
+	// Event-level: only CauseOnTrack counts. Inheriting a place because the other
+	// car pitted or left the world is not overtaking, and counting it would
+	// flatter the record. This matches Totals, which the dashboard uses.
+	evQ := `
+SELECT COALESCE(SUM(CASE WHEN pe.to_position < pe.from_position THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN pe.to_position > pe.from_position THEN 1 ELSE 0 END), 0)
+FROM position_events pe
+JOIN sessions s ON s.id = pe.session_id
+WHERE ` + pred + ` AND ` + d.idCol + ` = ?
+  AND s.session_type = 'Race'
+  AND pe.cause = ?`
+
+	evArgs := append(append([]any{}, args...), id, string(CauseOnTrack))
+	if err := s.reader.QueryRow(evQ, evArgs...).Scan(&out.PassesMade, &out.TimesPassed); err != nil {
+		return Racecraft{}, fmt.Errorf("store: racecraft passes by %s: %w", by, err)
+	}
+
+	// Session-level, separately. AVG over no rows is NULL, which is what leaves the
+	// two averages nil rather than zero.
+	sessQ := `
+SELECT COUNT(*),
+       AVG(s.starting_position),
+       AVG(s.finish_position)
+FROM sessions s
+WHERE ` + pred + ` AND ` + d.idCol + ` = ?
+  AND s.session_type = 'Race'
+  AND s.starting_position > 0 AND s.finish_position > 0`
+
+	sessArgs := append(append([]any{}, args...), id)
+	if err := s.reader.QueryRow(sessQ, sessArgs...).Scan(
+		&out.Races, &out.AvgStartPosition, &out.AvgFinishPosition,
+	); err != nil {
+		return Racecraft{}, fmt.Errorf("store: racecraft positions by %s: %w", by, err)
+	}
+	return out, nil
+}
+
 // QualiPace is how much slower race pace is than qualifying pace.
 //
 // AvgDeltaS is nil rather than zero when no weekend has both sessions. Zero would

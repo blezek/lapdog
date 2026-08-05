@@ -170,6 +170,14 @@ export interface RivalRow {
   net: number
 }
 
+export interface Racecraft {
+  passesMade: number
+  timesPassed: number
+  races: number
+  avgStartPosition: number | null
+  avgFinishPosition: number | null
+}
+
 export interface QualiPace {
   pairs: number
   avgDeltaS: number | null
@@ -317,6 +325,8 @@ export const api = {
       `/api/progression?${toQuery(f, { by, id: String(id), other: String(other) })}`,
     ),
   rivals: (f: Filter) => get<RivalRow[]>(`/api/rivals?${toQuery(f)}`),
+  racecraft: (f: Filter, by: string, id: number) =>
+    get<Racecraft>(`/api/racecraft?${toQuery(f, { by, id: String(id) })}`),
   qualiPace: (f: Filter, by: string, id: number) =>
     get<QualiPace>(`/api/quali-pace?${toQuery(f, { by, id: String(id) })}`),
   // The heatmap's row cap is sent as `top`, not `limit`: Filter already has its

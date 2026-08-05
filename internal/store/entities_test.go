@@ -609,19 +609,6 @@ func TestConsistencyDeltaAccompaniesPercentage(t *testing.T) {
 	}
 }
 
-// TestConsistencyOutlierBaselineIsPerSession guards the outlier rule's baseline:
-// a lap is compared against its own session's best, not the entity's all-time
-// best. Every other fixture in this file uses sessions of similar pace, which
-// gives the same answer under either baseline. Here the two sessions are
-// deliberately far apart: a fast one around 100 s and a slow one around 140 s.
-//
-// Measured per-session, each session's own laps are compared to its own best and
-// both contribute a normal, unremarkable consistency figure. Measured against an
-// entity-wide baseline, the fast session's ~100 s best becomes the threshold
-// anchor for both sessions: the slow session's laps are all well beyond 110% of
-// 100 and are dropped as outliers wholesale, so the slow session vanishes from
-// the average entirely and the result silently collapses to the fast session's
-// figure alone (~99.88%, above the assertion's ceiling below).
 // decoyProgressionSession inserts one lap for a car/track pair in the given
 // month, fast enough that it would win the MIN() if either the car_id or
 // track_id filter leaked it into the aggregate for car 173 / track 18.
@@ -909,6 +896,19 @@ func TestQualifyingVsRaceDoesNotCrossSubsessions(t *testing.T) {
 	}
 }
 
+// TestConsistencyOutlierBaselineIsPerSession guards the outlier rule's baseline:
+// a lap is compared against its own session's best, not the entity's all-time
+// best. Every other fixture in this file uses sessions of similar pace, which
+// gives the same answer under either baseline. Here the two sessions are
+// deliberately far apart: a fast one around 100 s and a slow one around 140 s.
+//
+// Measured per-session, each session's own laps are compared to its own best and
+// both contribute a normal, unremarkable consistency figure. Measured against an
+// entity-wide baseline, the fast session's ~100 s best becomes the threshold
+// anchor for both sessions: the slow session's laps are all well beyond 110% of
+// 100 and are dropped as outliers wholesale, so the slow session vanishes from
+// the average entirely and the result silently collapses to the fast session's
+// figure alone (~99.88%, above the assertion's ceiling below).
 func TestConsistencyOutlierBaselineIsPerSession(t *testing.T) {
 	s := openTemp(t)
 	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
@@ -1104,5 +1104,279 @@ func TestTopCombosRejectsNonPositiveLimit(t *testing.T) {
 	}
 	if len(cells) == 0 {
 		t.Error("a limit of 0 returned nothing; it should clamp to the default")
+	}
+}
+
+// ------------------------------------------------------- distance and exposure
+
+// seedDistance inserts one session with a track length recorded, which is what
+// makes DistanceKm — and therefore the per-100-km incident rate — computable.
+//
+// No other fixture in this package or in internal/api sets TrackLengthKm, so
+// before this helper existed DistanceKm was always 0 and IncidentPointsPer100Km
+// always nil: the whole rate branch went unexecuted across the entire suite, and
+// inverting the ratio, dividing by hours or dropping the ×100 would each have left
+// every test green.
+func seedDistance(t *testing.T, s *Store, key, started string,
+	trackID int, trackName string, lengthKm float64, laps, incidents int,
+) {
+	t.Helper()
+	_, err := s.UpsertSession(&Session{
+		SessionKey: key, SubsessionID: 1, SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt: started, DrivingSeconds: 3600,
+		LapsCompleted: laps, Incidents: incidents,
+		TrackID: intp(trackID), TrackName: strp(trackName),
+		TrackLengthKm: f64p(lengthKm),
+		CarID:         intp(173), CarName: strp("Porsche 911 GT3 R"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The incident rate is per 100 km, not per hour and not a rate of kilometres per
+// point. Safety Rating normalises incidents by corners driven, which LapDog cannot
+// reproduce without per-track corner counts; distance is the closest available
+// proxy for exposure and is far better than time, which would punish a driver for a
+// long practice stint at a slow track.
+//
+// The fixture's numbers are chosen so that every plausible way of getting the
+// arithmetic wrong lands somewhere else: the correct answer is 20.00, the inverted
+// ratio gives 500, per driving hour gives 12.5, and dropping the ×100 gives 0.20.
+func TestEntityStatsIncidentRatePer100Km(t *testing.T) {
+	s := openTemp(t)
+	// 20 laps of a 5.0 km track is 100 km; 10 laps of a 2.5 km track is 25 km.
+	seedDistance(t, s, "d1/0", "2026-07-01T10:00:00Z", 18, "Watkins Glen", 5.0, 20, 5)
+	seedDistance(t, s, "d2/0", "2026-07-02T10:00:00Z", 341, "Spa", 2.5, 10, 20)
+
+	got, err := s.EntityStats(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityStats: %v", err)
+	}
+	if got.DistanceKm < 124.999 || got.DistanceKm > 125.001 {
+		t.Errorf("DistanceKm = %.4f, want 125 (20×5.0 + 10×2.5)", got.DistanceKm)
+	}
+	if got.IncidentPoints != 25 {
+		t.Fatalf("IncidentPoints = %d, want 25", got.IncidentPoints)
+	}
+	if got.IncidentPointsPer100Km == nil {
+		t.Fatal("IncidentPointsPer100Km is nil with 125 km driven; the rate is " +
+			"only suppressed at zero exposure")
+	}
+	// 100 × 25 / 125 = 20.00 points per 100 km.
+	if *got.IncidentPointsPer100Km < 19.999 || *got.IncidentPointsPer100Km > 20.001 {
+		t.Errorf("IncidentPointsPer100Km = %.4f, want 20.00 — 100 × 25 points / 125 km",
+			*got.IncidentPointsPer100Km)
+	}
+}
+
+// A track with no recorded length contributes no distance, so the rate stays
+// suppressed rather than being computed against a partial denominator.
+func TestEntityStatsRateSuppressedWithoutTrackLength(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	got, err := s.EntityStats(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityStats: %v", err)
+	}
+	if got.DistanceKm != 0 {
+		t.Errorf("DistanceKm = %v, want 0 — the shared seed records no track length", got.DistanceKm)
+	}
+	if got.IncidentPointsPer100Km != nil {
+		t.Errorf("IncidentPointsPer100Km = %v, want nil at zero exposure — a rate of "+
+			"0.00 would claim a clean record the data cannot support",
+			*got.IncidentPointsPer100Km)
+	}
+}
+
+// ------------------------------------------------------------------- racecraft
+
+// seedRacecraftRace inserts one race with a grid and finish position, plus its
+// position events.
+//
+// A nil start or finish means the sim never logged it, which is a real state: a
+// race can be recorded without either.
+func seedRacecraftRace(t *testing.T, s *Store, key, ctx, started string,
+	carID, trackID int, sessionType string, start, finish *int, evs []PositionEvent,
+) {
+	t.Helper()
+	id, err := s.UpsertSession(&Session{
+		SessionKey: key, SubsessionID: 1, SessionNum: 0,
+		SessionType: sessionType, EventContext: ctx,
+		StartedAt: started, DrivingSeconds: 1800, LapsCompleted: 10,
+		TrackID: intp(trackID), TrackName: strp("Watkins Glen"),
+		CarID: intp(carID), CarName: strp("Porsche 911 GT3 R"),
+		StartingPosition: start, FinishPosition: finish,
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range evs {
+		ev.SessionID = id
+		if _, err := s.InsertPositionEvent(&ev); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Only cause = 'OnTrack' counts as a pass. Inheriting a place because the other car
+// pitted or left the world is not overtaking, and counting it would flatter the
+// record — which is exactly what the decoy events here would do if the cause
+// predicate were removed.
+func TestRacecraftCountsOnlyOnTrackPasses(t *testing.T) {
+	s := openTemp(t)
+	seedRacecraftRace(t, s, "r1/2", "OfficialRace", "2026-07-08T18:45:00Z",
+		173, 18, "Race", intp(6), intp(3), []PositionEvent{
+			// Two real passes and one real loss.
+			{LapNumber: 2, SessionTimeS: 100, FromPosition: 6, ToPosition: 5, Cause: CauseOnTrack},
+			{LapNumber: 3, SessionTimeS: 150, FromPosition: 5, ToPosition: 4, Cause: CauseOnTrack},
+			{LapNumber: 4, SessionTimeS: 200, FromPosition: 4, ToPosition: 5, Cause: CauseOnTrack},
+			// Decoys: a place inherited because someone else stopped, and one
+			// because they left the world. Both move the position forwards, so
+			// dropping the cause predicate silently counts them as passes.
+			{LapNumber: 5, SessionTimeS: 250, FromPosition: 5, ToPosition: 4, Cause: CauseOpponentPit},
+			{LapNumber: 6, SessionTimeS: 300, FromPosition: 4, ToPosition: 3, Cause: CauseOpponentOffWorld},
+		})
+
+	got, err := s.Racecraft(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("Racecraft: %v", err)
+	}
+	if got.PassesMade != 2 {
+		t.Errorf("PassesMade = %d, want 2 — the OpponentPit and OpponentOffWorld "+
+			"events are inherited places, not overtakes", got.PassesMade)
+	}
+	if got.TimesPassed != 1 {
+		t.Errorf("TimesPassed = %d, want 1", got.TimesPassed)
+	}
+}
+
+// The averages are taken over races with both positions recorded, and Races is the
+// count of that same set, so the denominator cannot disagree with the numbers
+// beside it. A qualifying session and a race missing its grid position are both
+// present here to pin that.
+func TestRacecraftGridToFinish(t *testing.T) {
+	s := openTemp(t)
+	seedRacecraftRace(t, s, "r1/2", "OfficialRace", "2026-07-08T18:45:00Z",
+		173, 18, "Race", intp(8), intp(3), nil)
+	seedRacecraftRace(t, s, "r2/2", "OfficialRace", "2026-07-15T18:45:00Z",
+		173, 18, "Race", intp(4), intp(2), nil)
+	// A race the sim never logged a grid position for: it cannot contribute to
+	// either average, so it must not inflate Races either.
+	seedRacecraftRace(t, s, "r3/2", "OfficialRace", "2026-07-22T18:45:00Z",
+		173, 18, "Race", nil, intp(9), nil)
+	// A qualifying session with both positions set. Qualifying is not racecraft,
+	// and its P1 would drag the grid average from 6.0 down to 4.33 if the
+	// session-type predicate were dropped.
+	seedRacecraftRace(t, s, "r4/1", "OfficialRace", "2026-07-22T18:15:00Z",
+		173, 18, "Qualify", intp(1), intp(1), nil)
+
+	got, err := s.Racecraft(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("Racecraft: %v", err)
+	}
+	if got.Races != 2 {
+		t.Errorf("Races = %d, want 2 — only races with both a grid and a finish "+
+			"position count, and qualifying is not a race", got.Races)
+	}
+	if got.AvgStartPosition == nil || got.AvgFinishPosition == nil {
+		t.Fatalf("averages are nil with two qualifying races: %+v", got)
+	}
+	if *got.AvgStartPosition < 5.999 || *got.AvgStartPosition > 6.001 {
+		t.Errorf("AvgStartPosition = %.3f, want 6.0 ((8+4)/2)", *got.AvgStartPosition)
+	}
+	if *got.AvgFinishPosition < 2.499 || *got.AvgFinishPosition > 2.501 {
+		t.Errorf("AvgFinishPosition = %.3f, want 2.5 ((3+2)/2)", *got.AvgFinishPosition)
+	}
+}
+
+// With no race in range the averages are nil rather than zero. Zero would render as
+// "grid 0.0 → finish 0.0", claiming a position that does not exist.
+func TestRacecraftNilWithoutRaces(t *testing.T) {
+	s := openTemp(t)
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{105.0, 100.0, 100.1, 100.2, 100.1, 100.0}, false)
+
+	got, err := s.Racecraft(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("Racecraft: %v", err)
+	}
+	if got.Races != 0 || got.AvgStartPosition != nil || got.AvgFinishPosition != nil {
+		t.Errorf("got %+v, want zero races and nil averages for a car that only practised", got)
+	}
+	if got.PassesMade != 0 || got.TimesPassed != 0 {
+		t.Errorf("got %+v, want no passes", got)
+	}
+}
+
+// Racecraft is scoped to one entity and honours the filter. The AI race here is
+// counted by default and dropped under ExcludeAI, which is what proves the
+// exclusion belongs to the caller rather than being hard-coded in the query — the
+// spec calls these figures human-only and the frontend panel opts in explicitly.
+func TestRacecraftScopesToEntityAndHonoursFilter(t *testing.T) {
+	s := openTemp(t)
+	onTrackGain := []PositionEvent{
+		{LapNumber: 2, SessionTimeS: 100, FromPosition: 6, ToPosition: 5, Cause: CauseOnTrack},
+	}
+	// The entity under test: one human race with one pass.
+	seedRacecraftRace(t, s, "r1/2", "OfficialRace", "2026-07-08T18:45:00Z",
+		173, 18, "Race", intp(6), intp(5), onTrackGain)
+	// A different car at the same track, with two passes. If the entity predicate
+	// were dropped these would be added to car 173's record.
+	seedRacecraftRace(t, s, "decoy/2", "OfficialRace", "2026-07-09T18:45:00Z",
+		991, 18, "Race", intp(10), intp(4), []PositionEvent{
+			{LapNumber: 2, SessionTimeS: 100, FromPosition: 10, ToPosition: 9, Cause: CauseOnTrack},
+			{LapNumber: 3, SessionTimeS: 150, FromPosition: 9, ToPosition: 8, Cause: CauseOnTrack},
+		})
+	// An AI race for the same car, with its own pass and a very different grid.
+	seedRacecraftRace(t, s, "ai/2", "AI", "2026-07-10T18:45:00Z",
+		173, 18, "Race", intp(20), intp(1), onTrackGain)
+
+	all, err := s.Racecraft(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("Racecraft: %v", err)
+	}
+	if all.PassesMade != 2 || all.Races != 2 {
+		t.Errorf("unfiltered got %+v, want 2 passes over 2 races — car 991's two "+
+			"passes must not leak in, and the AI race is included by default", all)
+	}
+
+	human, err := s.Racecraft(Filter{ExcludeAI: true}, "car", 173)
+	if err != nil {
+		t.Fatalf("Racecraft with ExcludeAI: %v", err)
+	}
+	if human.PassesMade != 1 || human.Races != 1 {
+		t.Errorf("ExcludeAI got %+v, want 1 pass over 1 race", human)
+	}
+	if human.AvgStartPosition == nil || *human.AvgStartPosition != 6 {
+		t.Errorf("AvgStartPosition = %v, want 6 — the AI race started P20 and is excluded",
+			human.AvgStartPosition)
+	}
+}
+
+// Racecraft serves the track page from the same implementation, and rejects a
+// dimension that is not allowlisted rather than silently answering a different
+// question.
+func TestRacecraftByTrackAndBadDimension(t *testing.T) {
+	s := openTemp(t)
+	seedRacecraftRace(t, s, "r1/2", "OfficialRace", "2026-07-08T18:45:00Z",
+		173, 18, "Race", intp(6), intp(3), []PositionEvent{
+			{LapNumber: 2, SessionTimeS: 100, FromPosition: 6, ToPosition: 5, Cause: CauseOnTrack},
+		})
+
+	got, err := s.Racecraft(Filter{}, "track", 18)
+	if err != nil {
+		t.Fatalf("Racecraft by track: %v", err)
+	}
+	if got.PassesMade != 1 || got.Races != 1 {
+		t.Errorf("by track got %+v, want the same single race and pass", got)
+	}
+
+	if _, err := s.Racecraft(Filter{}, "driver", 18); !errors.Is(err, ErrBadGroupBy) {
+		t.Errorf("Racecraft by driver: err = %v, want ErrBadGroupBy", err)
 	}
 }

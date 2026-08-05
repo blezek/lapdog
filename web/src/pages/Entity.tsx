@@ -12,7 +12,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 
 import { api, type Filter, type PaceRow } from '../api'
-import { delta, hours, lapTime, num, pct } from '../format'
+import { delta, hours, lapTime, monthLabel, num, pct } from '../format'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { Card, Empty, ErrorNote, Loading, Stat } from '../components/ui'
@@ -20,11 +20,21 @@ import { Filters } from '../components/Filters'
 import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from '../components/Chart'
 import { StackedByCategory } from '../components/StackedByCategory'
 import { isEmptyArray, keepPrevious, viewState } from '../query'
-import { consistencyBand, dimensionLabel, otherLabel, type Dimension } from '../entity'
+import {
+  consistencyBand,
+  dimensionLabel,
+  otherLabel,
+  pageFilter,
+  type Dimension,
+} from '../entity'
 
 export function EntityPage({ dimension }: { dimension: Dimension }) {
-  const { filter } = useFilter()
+  const { filter: urlFilter } = useFilter()
   const [params, setParams] = useSearchParams()
+
+  // The page's own dimension is set by the left-hand list, so it must not also
+  // arrive as a hard filter — see pageFilter.
+  const filter = pageFilter(urlFilter, dimension)
 
   const list = useQuery({
     queryKey: ['entities', dimension, filter],
@@ -112,7 +122,8 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
 }
 
 function Review({ dimension, id }: { dimension: Dimension; id: number }) {
-  const { filter } = useFilter()
+  const { filter: urlFilter } = useFilter()
+  const filter = pageFilter(urlFilter, dimension)
   const theme = useTheme()
 
   const stats = useQuery({
@@ -125,19 +136,21 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
     queryFn: () => api.pace(filter, dimension, id),
     ...keepPrevious,
   })
-  // Race pace against qualifying pace. A positive delta is normal: qualifying runs
-  // on low fuel with a clear track.
-  const quali = useQuery({
-    queryKey: ['quali-pace', dimension, id, filter],
-    queryFn: () => api.qualiPace(filter, dimension, id),
-    ...keepPrevious,
-  })
 
   // The progression chart needs one value of the opposite dimension, because a
   // line mixing tracks would rise and fall with the circuit rather than the pace.
   const [other, setOther] = useState<number | null>(null)
   const paceRows = pace.data ?? []
-  const otherId = other ?? paceRows[0]?.otherId ?? null
+  // The selection is validated against the rows actually present rather than
+  // trusted, the same way the entity selection is in EntityPage. Review holds
+  // `other` in state and is rendered without a key, so React keeps it across a
+  // switch to another entity: picking Okayama for one car and then clicking
+  // another left the <select> showing that car's first track while the query ran
+  // for the retained id, and the card read "No timed laps here in this range".
+  const otherId =
+    other != null && paceRows.some((r) => r.otherId === other)
+      ? other
+      : (paceRows[0]?.otherId ?? null)
 
   if (stats.isError) return <ErrorNote error={stats.error} />
   if (!stats.data) return <Loading />
@@ -157,7 +170,7 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
         </div>
       </div>
 
-      <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(5, 1fr)' }}>
+      <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
         <Stat
           label="Clean laps"
           value={s.cleanLapPct == null ? '—' : pct(s.cleanLapPct / 100)}
@@ -182,27 +195,12 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
           // "incident points" rather than "incidents".
           note="all races, incl. AI"
         />
-        <Stat
-          label="Race vs qualifying"
-          // delta() puts the sign on itself from the number's own value, rather
-          // than a literal "+" prepended unconditionally — the earlier version
-          // rendered "+-0.78s" on a negative delta. A positive value here is the
-          // expected direction (qualifying runs light and on a clear track), so
-          // the note below spells out which way is which rather than relying on
-          // the reader to infer it from the sign.
-          value={quali.data?.avgDeltaS == null ? '—' : `${delta(quali.data.avgDeltaS)}s`}
-          note={
-            quali.data == null || quali.data.pairs === 0
-              ? 'no paired weekends'
-              : `${num(quali.data.pairs)} weekends · + slower`
-          }
-        />
       </div>
 
       <div className="grid" style={{ marginTop: 14, marginBottom: 14 }}>
         <Card
           title={`Pace by ${otherLabel(dimension).toLowerCase()}`}
-          table={<PaceTable rows={paceRows} dimension={dimension} />}
+          table={<PaceTable rows={paceRows} dimension={dimension} full />}
         >
           {viewState(pace, isEmptyArray) === 'loading' ? (
             <Loading />
@@ -233,7 +231,11 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
         filter={scoped}
       />
 
-      <div className="grid" style={{ marginTop: 14 }}>
+      <div className="grid" style={{ marginTop: 14, marginBottom: 14 }}>
+        <RacecraftPanel dimension={dimension} id={id} filter={filter} />
+      </div>
+
+      <div className="grid">
         <RivalsPanel filter={scoped} />
       </div>
     </>
@@ -241,13 +243,27 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
 }
 
 /**
- * PaceTable is both the chart and the table view for pace.
+ * PaceTable is a table in both of the card's slots rather than a chart and a table.
  *
- * It is a table in both slots deliberately: the values are a mix of times,
- * percentages and counts across many rows, which a bar chart cannot carry without
- * either dropping columns or needing two axes.
+ * The values are a mix of times, percentages and counts across many rows, which a
+ * bar chart cannot carry without either dropping columns or needing two axes. The
+ * two slots differ in width instead: `full` adds the absolute consistency delta,
+ * which is the same measurement the percentage already reports expressed in
+ * seconds. Every other column earns its place in the default view — spec §5.2's
+ * table names the track, the personal best, the consistency, the laps and the
+ * sessions, and §5.2 adds the in-range best and its delta to the PB — so the
+ * seconds restatement is the one that yields when eight columns will not read
+ * comfortably. That also gives the card's Table button something real to do.
  */
-function PaceTable({ rows, dimension }: { rows: PaceRow[]; dimension: Dimension }) {
+function PaceTable({
+  rows,
+  dimension,
+  full = false,
+}: {
+  rows: PaceRow[]
+  dimension: Dimension
+  full?: boolean
+}) {
   return (
     <div className="table-wrap">
       <table>
@@ -256,22 +272,40 @@ function PaceTable({ rows, dimension }: { rows: PaceRow[]; dimension: Dimension 
             <th className="no-sort">{otherLabel(dimension)}</th>
             <th className="no-sort num">Personal best</th>
             <th className="no-sort num">Best in range</th>
+            <th className="no-sort num">Δ to PB</th>
             <th className="no-sort num">Consistency</th>
+            {full && <th className="no-sort num">Δ consistency</th>}
             <th className="no-sort num">Laps</th>
+            <th className="no-sort num">Sessions</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => {
             const band = consistencyBand(r.consistencyPct)
+            // The in-range best can only ever be at or behind the personal best,
+            // since the PB is computed over the same predicate without the date
+            // bounds. delta() still carries the sign from the value itself rather
+            // than assuming the direction.
+            const toPb =
+              r.personalBestS == null || r.bestInRangeS == null
+                ? null
+                : r.bestInRangeS - r.personalBestS
             return (
               <tr key={r.otherId}>
                 <td>{r.otherName}</td>
                 <td className="num">{lapTime(r.personalBestS)}</td>
                 <td className="num">{lapTime(r.bestInRangeS)}</td>
+                <td className="num">{toPb == null ? '—' : delta(toPb)}</td>
                 <td className={`num cons-${band}`}>
                   {r.consistencyPct == null ? '—' : `${r.consistencyPct.toFixed(2)}%`}
                 </td>
+                {full && (
+                  <td className="num">
+                    {r.consistencyDeltaS == null ? '—' : `${r.consistencyDeltaS.toFixed(3)}s`}
+                  </td>
+                )}
                 <td className="num">{num(r.laps)}</td>
+                <td className="num">{num(r.sessions)}</td>
               </tr>
             )
           })}
@@ -296,7 +330,8 @@ function Progression({
   onPick: (id: number) => void
   theme: Theme
 }) {
-  const { filter } = useFilter()
+  const { filter: urlFilter } = useFilter()
+  const filter = pageFilter(urlFilter, dimension)
   const q = useQuery({
     queryKey: ['progression', dimension, id, otherId, filter],
     queryFn: () => api.progression(filter, dimension, id, otherId),
@@ -317,7 +352,10 @@ function Progression({
       },
       xAxis: {
         type: 'category',
-        data: data.map((r) => r.month),
+        // monthLabel, not the raw "2026-08" key the store groups by: the same
+        // month renders as "Aug 2026" on the dashboard, and both go through the
+        // one shared helper so they cannot drift apart again.
+        data: data.map((r) => monthLabel(r.month)),
         ...axisStyle(theme.textMuted, theme.baseline),
       },
       // Lower is better for a lap time, so the axis is inverted: a line rising on
@@ -372,7 +410,7 @@ function Progression({
             <tbody>
               {data.map((r) => (
                 <tr key={r.month}>
-                  <td>{r.month}</td>
+                  <td>{monthLabel(r.month)}</td>
                   <td className="num">{lapTime(r.bestLapS)}</td>
                   <td className="num">{num(r.laps)}</td>
                 </tr>
@@ -401,6 +439,92 @@ function Progression({
         <Empty>No timed laps here in this range.</Empty>
       ) : (
         <Chart option={option} ariaLabel="Best lap time per month" />
+      )}
+    </Card>
+  )
+}
+
+/**
+ * RacecraftPanel carries the three figures spec §5.6 defines: the on-track pass
+ * record, the average grid-to-finish, and race pace against qualifying pace.
+ *
+ * Human races only, so excludeAi is passed explicitly rather than assumed. The API
+ * parses exclude_ai to false by default and no store query hard-codes the
+ * exclusion — it is a user checkbox that starts off — so a panel that needs it must
+ * opt in, exactly as the Dashboard's grid-to-finish panel does.
+ *
+ * Both queries are gated on having data before anything is stated. Reading them
+ * while they are still in flight would let the panel say "no paired weekends" or
+ * show an em dash for a record that does exist, which asserts a zero state before
+ * it is known.
+ */
+function RacecraftPanel({
+  dimension,
+  id,
+  filter,
+}: {
+  dimension: Dimension
+  id: number
+  filter: Filter
+}) {
+  const humanFilter: Filter = { ...filter, excludeAi: true }
+  const rc = useQuery({
+    queryKey: ['racecraft', dimension, id, humanFilter],
+    queryFn: () => api.racecraft(humanFilter, dimension, id),
+    ...keepPrevious,
+  })
+  // Race pace against qualifying pace. A positive delta is normal: qualifying runs
+  // on low fuel with a clear track.
+  const quali = useQuery({
+    queryKey: ['quali-pace', dimension, id, humanFilter],
+    queryFn: () => api.qualiPace(humanFilter, dimension, id),
+    ...keepPrevious,
+  })
+
+  const r = rc.data
+  const q = quali.data
+  const loading = viewState(rc) === 'loading' || viewState(quali) === 'loading'
+
+  return (
+    <Card title="Racecraft">
+      {loading || r == null || q == null ? (
+        <Loading />
+      ) : (
+        <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
+          <Stat
+            label="Passes made / passed"
+            value={`${num(r.passesMade)} / ${num(r.timesPassed)}`}
+            // The store counts only cause = 'OnTrack' in race sessions, with AI
+            // excluded by the filter above, and the note says exactly that: a
+            // place inherited because someone else pitted is not an overtake.
+            note="on track, in human races"
+          />
+          <Stat
+            label="Average grid → finish"
+            value={
+              r.avgStartPosition == null || r.avgFinishPosition == null
+                ? '—'
+                : `${r.avgStartPosition.toFixed(1)} → ${r.avgFinishPosition.toFixed(1)}`
+            }
+            note={
+              r.races === 0
+                ? 'no races with both positions recorded'
+                : `${num(r.races)} races with both recorded`
+            }
+          />
+          <Stat
+            label="Race vs qualifying"
+            // delta() takes the sign from the number's own value rather than a
+            // literal "+" prepended unconditionally — the earlier version
+            // rendered "+-0.78s" on a negative delta. A positive value is the
+            // expected direction, so the note spells out which way is which
+            // rather than leaving the reader to infer it from the sign.
+            value={q.avgDeltaS == null ? '—' : `${delta(q.avgDeltaS)}s`}
+            note={
+              q.pairs === 0 ? 'no paired weekends' : `${num(q.pairs)} weekends · + slower`
+            }
+          />
+        </div>
       )}
     </Card>
   )
@@ -444,8 +568,12 @@ function RivalsPanel({ filter }: { filter: Filter }) {
     </div>
   )
 
+  // No table prop: the panel is already a table, so passing the same markup to
+  // both Card slots would render a Table button whose before and after DOM are
+  // byte-identical — a visible control that does nothing. Card only draws the
+  // toggle when a distinct table view exists.
   return (
-    <Card title="Rivals" table={table}>
+    <Card title="Rivals">
       {viewState(q, isEmptyArray) === 'loading' ? (
         <Loading />
       ) : rows.length === 0 ? (

@@ -956,3 +956,44 @@ func TestEntitiesDefaultsDimensionWhenAbsent(t *testing.T) {
 		t.Errorf("status = %d, want 200 when by is absent on /api/entities", rec.Code)
 	}
 }
+
+// The racecraft endpoint carries the §5.6 figures. The seeded race has one
+// on-track pass and one place inherited when an opponent pitted, so asserting the
+// pass count also pins that the store's cause filter reached the response: without
+// it the inherited place would be counted as an overtake too.
+func TestRacecraftEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/racecraft?by=car&id=173&range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got store.Racecraft
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.PassesMade != 1 {
+		t.Errorf("passesMade = %d, want 1 — the OpponentPit event is an inherited "+
+			"place, not an overtake", got.PassesMade)
+	}
+	// The seeded race records a finish but no grid position, so the averages have
+	// nothing to average and must be null rather than zero.
+	if got.Races != 0 || got.AvgStartPosition != nil {
+		t.Errorf("got %+v, want no races counted: the fixture records no grid position", got)
+	}
+}
+
+func TestRacecraftEndpointRequiresDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/racecraft?id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when by is absent", rec.Code)
+	}
+}
+
+func TestRacecraftEndpointRequiresID(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/racecraft?by=car", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when id is absent", rec.Code)
+	}
+}

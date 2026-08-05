@@ -1,7 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { formatDayKey, monthNames, parseDay, parseWhen, resetFormatters, weekdayNames } from './locale'
-import { day, dayShort, daysAgo, isoDay } from './format'
+import {
+  formatDayKey,
+  monthAndYear,
+  monthNames,
+  parseDay,
+  parseWhen,
+  resetFormatters,
+  weekdayNames,
+} from './locale'
+import { day, dayShort, daysAgo, isoDay, monthLabel } from './format'
 
 afterEach(() => {
   vi.unstubAllGlobals()
@@ -125,5 +133,22 @@ describe('unparseable values', () => {
     expect(day('not a date')).toBe('not a date')
     expect(parseDay('2024-8-1')).toBeNull()
     expect(parseDay('')).toBeNull()
+  })
+})
+
+describe('monthLabel', () => {
+  it('renders a YYYY-MM key as a month and year', () => {
+    // The raw key is a sort-stable database value, not something to show. The
+    // entity pages rendered "2024-09" while the dashboard rendered "Sep 2024"
+    // from the same kind of key, which is why there is now one shared helper.
+    const got = monthLabel('2024-09')
+    expect(got).not.toBe('2024-09')
+    expect(got).toBe(monthAndYear(new Date(2024, 8, 1)))
+    // The month must not roll over into another one in any zone.
+    expect(got).toContain('2024')
+  })
+
+  it('passes anything that is not a month key straight through', () => {
+    expect(monthLabel('Other/Other')).toBe('Other/Other')
   })
 })
