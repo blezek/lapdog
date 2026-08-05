@@ -2586,6 +2586,507 @@ git commit -m "Verify the Cars and Tracks pages and update the docs"
 
 ---
 
+---
+
+### Task 10: Top car-and-track combinations heatmap
+
+A dashboard panel, not part of the Cars or Tracks pages: the ten car-and-track
+pairings the driver spends most time in, with the time split across session
+categories. It answers "where do my hours actually go", which neither the per-car
+nor the per-track view can — a pairing is the unit a driver practises.
+
+**Files:**
+- Modify: `internal/store/entities.go`
+- Modify: `internal/store/entities_test.go`
+- Modify: `internal/api/handlers.go`, `internal/api/server.go`, `internal/api/api_test.go`
+- Modify: `web/src/api.ts`
+- Modify: `web/src/pages/Dashboard.tsx`
+
+**Interfaces:**
+- Consumes: `Filter`, `Filter.where()`.
+- Produces:
+  - `type ComboCell struct { Combo string; Category string; Hours float64; ComboHours float64 }`
+  - `func (s *Store) TopCombos(f Filter, limit int) ([]ComboCell, error)`
+  - `GET /api/combos?limit=`
+  - `api.combos(f, limit)` and `ComboCell` in `web/src/api.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `internal/store/entities_test.go`:
+
+```go
+func TestTopCombosRanksByTotalTime(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	cells, err := s.TopCombos(Filter{}, 10)
+	if err != nil {
+		t.Fatalf("TopCombos: %v", err)
+	}
+	if len(cells) == 0 {
+		t.Fatal("no cells")
+	}
+	// The seed pairs the Porsche with Watkins Glen across four sessions and with Spa
+	// once, so the Watkins Glen pairing leads.
+	if cells[0].Combo != "Porsche 911 GT3 R / Watkins Glen" {
+		t.Errorf("cells[0].Combo = %q, want the most-driven pairing first", cells[0].Combo)
+	}
+	// Every cell of one combo carries that combo's total, which is what lets the
+	// frontend order rows without re-summing.
+	first := cells[0].ComboHours
+	for _, c := range cells {
+		if c.Combo == cells[0].Combo && c.ComboHours != first {
+			t.Errorf("combo %q has inconsistent ComboHours %v vs %v", c.Combo, c.ComboHours, first)
+		}
+		if c.Category == "" || !strings.Contains(c.Category, "/") {
+			t.Errorf("category %q is not a type/context pair", c.Category)
+		}
+	}
+	// Rows are ordered by combo total descending.
+	for i := 1; i < len(cells); i++ {
+		if cells[i].ComboHours > cells[i-1].ComboHours {
+			t.Errorf("cell %d has a larger combo total than cell %d", i, i-1)
+		}
+	}
+}
+
+// The limit caps distinct combos, not cells: each combo contributes one cell per
+// category it appears in.
+func TestTopCombosLimitCapsCombosNotCells(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	cells, err := s.TopCombos(Filter{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, c := range cells {
+		seen[c.Combo] = true
+	}
+	if len(seen) != 1 {
+		t.Errorf("got %d combos with limit 1: %v", len(seen), seen)
+	}
+	if len(cells) < 2 {
+		t.Errorf("got %d cells; the leading combo spans several categories", len(cells))
+	}
+}
+
+// Honouring the filter is the point: a narrowed range must narrow the accumulated
+// time rather than always reporting all-time totals.
+func TestTopCombosHonoursFilter(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	all, err := s.TopCombos(Filter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow, err := s.TopCombos(Filter{From: "2026-07-14T00:00:00Z"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sum := func(cs []ComboCell) float64 {
+		var v float64
+		for _, c := range cs {
+			v += c.Hours
+		}
+		return v
+	}
+	if sum(narrow) >= sum(all) {
+		t.Errorf("narrowed range accumulated %.3f h, unfiltered %.3f h — the filter is "+
+			"not being applied", sum(narrow), sum(all))
+	}
+	// Only the Spa sessions fall after 14 July.
+	for _, c := range narrow {
+		if !strings.Contains(c.Combo, "Spa") {
+			t.Errorf("combo %q is outside the filtered range", c.Combo)
+		}
+	}
+}
+
+func TestTopCombosRejectsNonPositiveLimit(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	// A limit of zero would return nothing and read as "no data" rather than as a
+	// caller mistake, so it is clamped to the default instead.
+	cells, err := s.TopCombos(Filter{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) == 0 {
+		t.Error("a limit of 0 returned nothing; it should clamp to the default")
+	}
+}
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `CGO_ENABLED=0 go test ./internal/store/ -run TopCombos -v`
+Expected: FAIL — `s.TopCombos undefined`.
+
+- [ ] **Step 3: Write the implementation**
+
+Append to `internal/store/entities.go`:
+
+```go
+// defaultComboLimit is how many car-and-track pairings the heatmap shows.
+const defaultComboLimit = 10
+
+// ComboCell is one cell of the car-and-track heatmap: a pairing, a session
+// category, and the hours spent.
+//
+// ComboHours repeats the pairing's total on every one of its cells. That is
+// redundant by design: it lets the frontend order rows without re-summing, and it
+// means the ordering the store chose cannot disagree with the ordering the
+// interface draws.
+type ComboCell struct {
+	Combo      string  `json:"combo"`
+	Category   string  `json:"category"`
+	Hours      float64 `json:"hours"`
+	ComboHours float64 `json:"comboHours"`
+}
+
+// TopCombos returns the busiest car-and-track pairings, split by session category.
+//
+// The filter applies to both the ranking and the accumulated time, so narrowing the
+// range answers "where did my hours go lately" rather than always reporting
+// all-time totals. A category filter therefore also narrows the columns, which is
+// consistent with every other panel on the dashboard.
+//
+// Sessions with no car or no track are excluded: a pairing is the unit here, and
+// half of one is not a row.
+func (s *Store) TopCombos(f Filter, limit int) ([]ComboCell, error) {
+	if limit <= 0 {
+		limit = defaultComboLimit
+	}
+	pred, args := f.where()
+
+	q := `
+WITH combo AS (
+  SELECT s.car_id AS ci, s.track_id AS ti,
+         COALESCE(s.car_name, 'Unknown car') || ' / ' ||
+         COALESCE(s.track_name, 'Unknown track') AS label,
+         SUM(s.driving_seconds) AS tot
+  FROM sessions s
+  WHERE ` + pred + ` AND s.car_id IS NOT NULL AND s.track_id IS NOT NULL
+  GROUP BY s.car_id, s.track_id
+  ORDER BY tot DESC
+  LIMIT ?
+)
+SELECT c.label,
+       s.session_type || '/' || s.event_context AS category,
+       SUM(s.driving_seconds) / 3600.0,
+       c.tot / 3600.0
+FROM sessions s
+JOIN combo c ON c.ci = s.car_id AND c.ti = s.track_id
+WHERE ` + pred + `
+GROUP BY c.label, category, c.tot
+ORDER BY c.tot DESC, category`
+
+	qargs := make([]any, 0, len(args)*2+1)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, limit)
+	qargs = append(qargs, args...)
+
+	rows, err := s.reader.Query(q, qargs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: top combos: %w", err)
+	}
+	defer rows.Close()
+
+	out := []ComboCell{}
+	for rows.Next() {
+		var c ComboCell
+		if err := rows.Scan(&c.Combo, &c.Category, &c.Hours, &c.ComboHours); err != nil {
+			return nil, fmt.Errorf("store: scan combo cell: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+```
+
+Add `"strings"` to the test file's imports if it is not already there.
+
+- [ ] **Step 4: Run the test to verify it passes**
+
+Run: `CGO_ENABLED=0 go test ./internal/store/ -run TopCombos -v`
+Expected: PASS, four tests.
+
+- [ ] **Step 5: Add the endpoint**
+
+In `internal/api/server.go`, after the `/api/quali-pace` line:
+
+```go
+	mux.HandleFunc("GET /api/combos", s.handleCombos)
+```
+
+In `internal/api/handlers.go`:
+
+```go
+func (s *Server) handleCombos(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	// limit is optional; the store clamps a missing or non-positive value.
+	limit := 0
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			s.fail(w, http.StatusBadRequest,
+				fmt.Errorf("%w: limit must be an integer", ErrBadRequest))
+			return
+		}
+		limit = v
+	}
+	cells, err := s.st.TopCombos(f, limit)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, cells)
+}
+```
+
+In `internal/api/api_test.go`:
+
+```go
+func TestCombosEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/combos?range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var cells []store.ComboCell
+	if err := json.Unmarshal(rec.Body.Bytes(), &cells); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestCombosRejectsNonNumericLimit(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/combos?limit=ten", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+```
+
+Run: `CGO_ENABLED=0 go test ./internal/api/ -run Combos -v`
+Expected: PASS.
+
+- [ ] **Step 6: Add the client method**
+
+In `web/src/api.ts`, beside the other row types:
+
+```ts
+export interface ComboCell {
+  combo: string
+  category: string
+  hours: number
+  comboHours: number
+}
+```
+
+and in the `api` object:
+
+```ts
+  combos: (f: Filter, limit = 10) =>
+    get<ComboCell[]>(`/api/combos?${toQuery(f, { limit: String(limit) })}`),
+```
+
+- [ ] **Step 7: Add the dashboard panel**
+
+In `web/src/pages/Dashboard.tsx`, add the query beside the existing four:
+
+```tsx
+  const combos = useQuery({
+    queryKey: ['combos', filter],
+    queryFn: () => api.combos(filter, 10),
+    ...keepPrevious,
+  })
+```
+
+Render it in its own full-width grid row, after the calendar heatmap card and before
+`<CarAndTrackBreakdown />`:
+
+```tsx
+      <div className="grid" style={{ marginBottom: 14 }}>
+        <Card
+          title="Where the time goes: top car and track pairings"
+          table={<ComboTable cells={combos.data ?? []} />}
+        >
+          {viewState(combos, isEmptyArray) === 'loading' ? (
+            <Loading />
+          ) : viewState(combos, isEmptyArray) === 'empty' ? (
+            <Empty>No sessions in this range.</Empty>
+          ) : (
+            <ComboHeatmap cells={combos.data ?? []} theme={theme} />
+          )}
+        </Card>
+      </div>
+```
+
+And add the two components near `CalendarHeatmap`:
+
+```tsx
+/* ------------------------------------------------- car and track combo heatmap */
+
+/**
+ * ComboHeatmap shows the busiest car-and-track pairings against session category.
+ *
+ * A pairing is the unit a driver actually practises — a car at a track — which
+ * neither the per-car nor the per-track breakdown can express. The colour job is
+ * sequential because the value is a magnitude, so the eight-slot categorical
+ * ceiling does not apply here and every category keeps its own column.
+ */
+function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Theme }) {
+  const option = useMemo(() => {
+    // Rows keep the order the store chose, which is by pairing total descending.
+    // Re-sorting here would risk the axis disagreeing with the ranking.
+    const rows: string[] = []
+    for (const c of cells) if (!rows.includes(c.combo)) rows.push(c.combo)
+
+    // Columns are ordered by total hours so the categories that matter sit left.
+    const colTotals = new Map<string, number>()
+    for (const c of cells) colTotals.set(c.category, (colTotals.get(c.category) ?? 0) + c.hours)
+    const cols = [...colTotals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+
+    const max = Math.max(0.01, ...cells.map((c) => c.hours))
+    const data = cells.map((c) => [cols.indexOf(c.category), rows.indexOf(c.combo), c.hours])
+
+    return {
+      // A category axis on both sides needs room for long pairing labels.
+      grid: { left: 8, right: 20, top: 8, bottom: 64, containLabel: true },
+      tooltip: {
+        ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
+        formatter: (p: { value: [number, number, number] }) =>
+          `${rows[p.value[1]]}<br/>${labelForKey(cols[p.value[0]] ?? '')}` +
+          `<br/><strong>${hours(p.value[2])}</strong> driving`,
+      },
+      visualMap: {
+        min: 0,
+        max,
+        type: 'continuous',
+        orient: 'horizontal',
+        left: 'center',
+        bottom: 2,
+        // For a continuous visual map ECharts treats itemHeight as the bar's length
+        // and itemWidth as its thickness, and swaps them for horizontal orientation.
+        itemWidth: 11,
+        itemHeight: 90,
+        text: [hours(max), '0'],
+        textStyle: { color: theme.textMuted, fontSize: 10 },
+        inRange: { color: theme.seq },
+      },
+      xAxis: {
+        type: 'category',
+        data: cols.map((c) => labelForKey(c)),
+        axisLabel: { color: theme.textMuted, fontSize: 10, rotate: 30 },
+        axisLine: { lineStyle: { color: theme.baseline } },
+        axisTick: { show: false },
+        splitArea: { show: true, areaStyle: { color: ['transparent'] } },
+      },
+      yAxis: {
+        type: 'category',
+        // Reversed so the busiest pairing is the top row, the conventional
+        // direction for a ranking on a category axis.
+        data: [...rows].reverse(),
+        axisLabel: { color: theme.textSecondary, fontSize: 10 },
+        axisLine: { lineStyle: { color: theme.baseline } },
+        axisTick: { show: false },
+      },
+      series: [
+        {
+          type: 'heatmap',
+          data: data.map(([x, y, v]) => [x, rows.length - 1 - y, v]),
+          itemStyle: { borderColor: theme.surface, borderWidth: 2 },
+        },
+      ],
+    }
+  }, [cells, theme])
+
+  return (
+    <Chart
+      option={option}
+      className="chart tall"
+      ariaLabel="Driving hours per car and track pairing, split by session category"
+    />
+  )
+}
+
+function ComboTable({ cells }: { cells: ComboCell[] }) {
+  // One row per pairing, with its categories listed, so nothing the heatmap encodes
+  // only as colour is unavailable as a number.
+  const byCombo = new Map<string, { total: number; parts: ComboCell[] }>()
+  for (const c of cells) {
+    const e = byCombo.get(c.combo) ?? { total: c.comboHours, parts: [] }
+    e.parts.push(c)
+    byCombo.set(c.combo, e)
+  }
+  const ordered = [...byCombo.entries()].sort((a, b) => b[1].total - a[1].total)
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th className="no-sort">Car and track</th>
+            <th className="no-sort num">Driving</th>
+            <th className="no-sort">Split by category</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ordered.map(([combo, e]) => (
+            <tr key={combo}>
+              <td>{combo}</td>
+              <td className="num">{hours(e.total)}</td>
+              <td>
+                {[...e.parts]
+                  .sort((a, b) => b.hours - a.hours)
+                  .map((p) => `${labelForKey(p.category)} ${p.hours.toFixed(1)}`)
+                  .join(' · ')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+```
+
+Extend the Dashboard imports with `type ComboCell` from `../api`.
+
+- [ ] **Step 8: Typecheck, build and verify**
+
+```bash
+cd web && npx tsc -b --noEmit && npm run test && cd .. && make ui
+lsof -ti:47047 | xargs kill -9 2>/dev/null; make run-ctl &
+sleep 6
+curl -s 'http://127.0.0.1:47047/api/combos?range=all&limit=10' | head -c 300
+```
+Expected: clean typecheck and build; the endpoint returning cells whose `combo`
+fields are `car / track` strings and whose `comboHours` repeat per pairing.
+
+- [ ] **Step 9: Screenshot the panel**
+
+```bash
+cd web && node tools/shoot.mjs "WHERE THE TIME GOES" 90,all /tmp/lapdog-shots
+```
+Check the pairing labels are not clipped and the rotated category labels do not
+collide. The panel is full width and uses `chart tall`, so ten rows have room.
+
+- [ ] **Step 10: Commit**
+
+```bash
+git add internal/store/ internal/api/ web/src/ internal/web/dist/
+git commit -m "Add top car and track pairing heatmap to the dashboard"
+```
+
 ## Definition of done
 
 - [ ] `make ci` passes, and `CGO_ENABLED=0 go test -race ./...` passes.
@@ -2598,6 +3099,7 @@ git commit -m "Verify the Cars and Tracks pages and update the docs"
 - [ ] `npm run verify-animation` passes with the new charts mounted.
 - [ ] `/api/entities?by=driver` returns 400; `/api/entity?by=car&id=999999` returns 404.
 - [ ] Race-versus-qualifying pace reports an em dash rather than zero when no weekend has both sessions.
+- [ ] The dashboard's car-and-track heatmap shows ten pairings, and narrowing the date range reduces the hours it accumulates rather than always showing all-time totals.
 
 ## Self-review notes
 
