@@ -193,6 +193,14 @@ npm run verify-animation   # charts tween between filters rather than snapping
 npm run verify-layout      # the calendar is centred and unclipped at every range
 ```
 
+`verify-animation` takes the page and its chart-bearing card as optional arguments, so it can check the Cars and Tracks pages as well as the dashboard, all of which keep their charts mounted across a filter change:
+
+```bash
+node tools/verify-animation.mjs                                                           # dashboard, default card
+node tools/verify-animation.mjs http://127.0.0.1:47047 "/cars?range=90" "BEST LAP BY MONTH"
+node tools/verify-animation.mjs http://127.0.0.1:47047 "/tracks?range=90" "BEST LAP BY MONTH"
+```
+
 Both need a server running (`make run-ctl`). They exist because both properties are invisible to unit tests and both regressed silently once.
 
 ## Releases
