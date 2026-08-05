@@ -542,3 +542,85 @@ FROM q JOIN r ON r.ss = q.ss`
 	}
 	return out, nil
 }
+
+// defaultComboLimit is how many car-and-track pairings the heatmap shows.
+const defaultComboLimit = 10
+
+// ComboCell is one cell of the car-and-track heatmap: a pairing, a session
+// category, and the hours spent.
+//
+// ComboHours repeats the pairing's total on every one of its cells. That is
+// redundant by design: it lets the frontend order rows without re-summing, and it
+// means the ordering the store chose cannot disagree with the ordering the
+// interface draws.
+type ComboCell struct {
+	Combo      string  `json:"combo"`
+	Category   string  `json:"category"`
+	Hours      float64 `json:"hours"`
+	ComboHours float64 `json:"comboHours"`
+}
+
+// TopCombos returns the busiest car-and-track pairings, split by session category.
+//
+// The filter applies to both the ranking and the accumulated time, so narrowing the
+// range answers "where did my hours go lately" rather than always reporting
+// all-time totals. A category filter therefore also narrows the columns, which is
+// consistent with every other panel on the dashboard.
+//
+// Sessions with no car or no track are excluded: a pairing is the unit here, and
+// half of one is not a row.
+func (s *Store) TopCombos(f Filter, limit int) ([]ComboCell, error) {
+	if limit <= 0 {
+		limit = defaultComboLimit
+	}
+	pred, args := f.where()
+
+	// The label is wrapped in MAX rather than added to GROUP BY, for the same
+	// reason as EntityList: iRacing renames cars and track configurations between
+	// seasons, so two sessions can share a (car_id, track_id) pair while carrying
+	// different names. Grouping by the label as well would split one pairing into
+	// two rows, each with half its hours. MAX picks a single label
+	// deterministically; which of the two labels wins is arbitrary but consistent.
+	q := `
+WITH combo AS (
+  SELECT s.car_id AS ci, s.track_id AS ti,
+         MAX(COALESCE(s.car_name, 'Unknown car') || ' / ' ||
+             COALESCE(s.track_name, 'Unknown track')) AS label,
+         SUM(s.driving_seconds) AS tot
+  FROM sessions s
+  WHERE ` + pred + ` AND s.car_id IS NOT NULL AND s.track_id IS NOT NULL
+  GROUP BY s.car_id, s.track_id
+  ORDER BY tot DESC
+  LIMIT ?
+)
+SELECT c.label,
+       s.session_type || '/' || s.event_context AS category,
+       SUM(s.driving_seconds) / 3600.0,
+       c.tot / 3600.0
+FROM sessions s
+JOIN combo c ON c.ci = s.car_id AND c.ti = s.track_id
+WHERE ` + pred + `
+GROUP BY c.label, category, c.tot
+ORDER BY c.tot DESC, category`
+
+	qargs := make([]any, 0, len(args)*2+1)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, limit)
+	qargs = append(qargs, args...)
+
+	rows, err := s.reader.Query(q, qargs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: top combos: %w", err)
+	}
+	defer rows.Close()
+
+	out := []ComboCell{}
+	for rows.Next() {
+		var c ComboCell
+		if err := rows.Scan(&c.Combo, &c.Category, &c.Hours, &c.ComboHours); err != nil {
+			return nil, fmt.Errorf("store: scan combo cell: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}

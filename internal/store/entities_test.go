@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -928,5 +929,180 @@ func TestConsistencyOutlierBaselineIsPerSession(t *testing.T) {
 		t.Errorf("consistency = %.2f%%, want < 99.7 — the slow session's laps are "+
 			"likely being measured against the fast session's best rather than "+
 			"its own", *got)
+	}
+}
+
+func TestTopCombosRanksByTotalTime(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	cells, err := s.TopCombos(Filter{}, 10)
+	if err != nil {
+		t.Fatalf("TopCombos: %v", err)
+	}
+	if len(cells) == 0 {
+		t.Fatal("no cells")
+	}
+	// The seed pairs the Porsche with Watkins Glen across four sessions and with Spa
+	// once, so the Watkins Glen pairing leads.
+	if cells[0].Combo != "Porsche 911 GT3 R / Watkins Glen" {
+		t.Errorf("cells[0].Combo = %q, want the most-driven pairing first", cells[0].Combo)
+	}
+	// Every cell of one combo carries that combo's total, which is what lets the
+	// frontend order rows without re-summing.
+	first := cells[0].ComboHours
+	for _, c := range cells {
+		if c.Combo == cells[0].Combo && c.ComboHours != first {
+			t.Errorf("combo %q has inconsistent ComboHours %v vs %v", c.Combo, c.ComboHours, first)
+		}
+		if c.Category == "" || !strings.Contains(c.Category, "/") {
+			t.Errorf("category %q is not a type/context pair", c.Category)
+		}
+	}
+	// Rows are ordered by combo total descending.
+	for i := 1; i < len(cells); i++ {
+		if cells[i].ComboHours > cells[i-1].ComboHours {
+			t.Errorf("cell %d has a larger combo total than cell %d", i, i-1)
+		}
+	}
+}
+
+// The limit caps distinct combos, not cells: each combo contributes one cell per
+// category it appears in.
+func TestTopCombosLimitCapsCombosNotCells(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	cells, err := s.TopCombos(Filter{}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, c := range cells {
+		seen[c.Combo] = true
+	}
+	if len(seen) != 1 {
+		t.Errorf("got %d combos with limit 1: %v", len(seen), seen)
+	}
+	if len(cells) < 2 {
+		t.Errorf("got %d cells; the leading combo spans several categories", len(cells))
+	}
+}
+
+// seedStraddlingCombo adds one car-and-track pairing whose sessions fall on both
+// sides of the 14 July filter boundary used by TestTopCombosHonoursFilter: two
+// sessions before it (1800s = 0.5h each) and one after (3600s = 1.0h).
+//
+// This is the fixture shape the plain seed() lacks. Every seed() pairing sits
+// entirely inside or entirely outside a narrowed range, so filtering the ranking
+// and filtering the accumulated sum happen to agree even when only the ranking is
+// actually filtered — the bug the honours-filter test exists to catch is invisible
+// against that data. With a pairing split across the boundary, the correct
+// accumulated hours for the narrowed query (1.0h, the one post-boundary session)
+// differs from the buggy accumulated hours (2.0h, all three sessions), so the two
+// implementations can no longer coincide.
+//
+// Do not collapse these back into three same-side sessions "to simplify the
+// fixture" — that removes the one thing this test is checking. It has already
+// happened three times elsewhere in this plan.
+func seedStraddlingCombo(t *testing.T, s *Store) {
+	t.Helper()
+	rows := []struct {
+		key     string
+		started string
+		drive   float64
+	}{
+		{"9001/0", "2026-07-02T10:00:00Z", 1800}, // before the boundary
+		{"9002/0", "2026-07-09T10:00:00Z", 1800}, // before the boundary
+		{"9003/0", "2026-07-16T10:00:00Z", 3600}, // after the boundary
+	}
+	for _, r := range rows {
+		rec := &Session{
+			SessionKey: r.key, SubsessionID: 1, SessionNum: 0,
+			SessionType: "Practice", EventContext: "OfficialPractice",
+			StartedAt:        r.started,
+			ConnectedSeconds: r.drive, InCarSeconds: r.drive, DrivingSeconds: r.drive,
+			LapsCompleted: 2, Incidents: 0,
+			TrackID: intp(777), TrackName: strp("Sebring"),
+			CarID: intp(777), CarName: strp("BMW M4 GT3"),
+			ClassifySourceJSON: "{}", IncidentSource: "yaml",
+		}
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Honouring the filter is the point: a narrowed range must narrow the accumulated
+// time rather than always reporting all-time totals.
+func TestTopCombosHonoursFilter(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	seedStraddlingCombo(t, s)
+
+	const straddler = "BMW M4 GT3 / Sebring"
+
+	all, err := s.TopCombos(Filter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	narrow, err := s.TopCombos(Filter{From: "2026-07-14T00:00:00Z"}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sum := func(cs []ComboCell) float64 {
+		var v float64
+		for _, c := range cs {
+			v += c.Hours
+		}
+		return v
+	}
+	if sum(narrow) >= sum(all) {
+		t.Errorf("narrowed range accumulated %.3f h, unfiltered %.3f h — the filter is "+
+			"not being applied", sum(narrow), sum(all))
+	}
+	// Only the Spa sessions and the straddler's one post-boundary session fall
+	// after 14 July; the straddler's two pre-boundary sessions must not.
+	for _, c := range narrow {
+		if !strings.Contains(c.Combo, "Spa") && c.Combo != straddler {
+			t.Errorf("combo %q is outside the filtered range", c.Combo)
+		}
+	}
+	// The discriminating check: the straddler has 2.0h total (two 0.5h sessions
+	// before the boundary, one 1.0h session after), but only its post-boundary
+	// session — 1.0h — may be counted once the range narrows. A store that filters
+	// the ranking but not the accumulated sum would report 2.0h here (its total
+	// minus nothing, since the JOIN still finds all three of its sessions), not
+	// 1.0h.
+	found := false
+	for _, c := range narrow {
+		if c.Combo == straddler {
+			found = true
+			if c.Hours != 1.0 {
+				t.Errorf("straddler's narrowed hours = %.3f, want 1.0 — only its "+
+					"post-boundary session should be counted", c.Hours)
+			}
+			if c.ComboHours != 1.0 {
+				t.Errorf("straddler's narrowed ComboHours = %.3f, want 1.0", c.ComboHours)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("straddler combo missing from the narrowed result")
+	}
+}
+
+func TestTopCombosRejectsNonPositiveLimit(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+	// A limit of zero would return nothing and read as "no data" rather than as a
+	// caller mistake, so it is clamped to the default instead.
+	cells, err := s.TopCombos(Filter{}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cells) == 0 {
+		t.Error("a limit of 0 returned nothing; it should clamp to the default")
 	}
 }

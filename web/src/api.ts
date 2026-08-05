@@ -175,6 +175,13 @@ export interface QualiPace {
   avgDeltaS: number | null
 }
 
+export interface ComboCell {
+  combo: string
+  category: string
+  hours: number
+  comboHours: number
+}
+
 export interface Facet {
   id: number
   name: string
@@ -312,6 +319,12 @@ export const api = {
   rivals: (f: Filter) => get<RivalRow[]>(`/api/rivals?${toQuery(f)}`),
   qualiPace: (f: Filter, by: string, id: number) =>
     get<QualiPace>(`/api/quali-pace?${toQuery(f, { by, id: String(id) })}`),
+  // The heatmap's row cap is sent as `top`, not `limit`: Filter already has its
+  // own `limit` (pagination, e.g. api.sessions), and toQuery's extra params
+  // overwrite the filter's own via URLSearchParams.set — a Filter carrying a
+  // `limit` would silently clobber this one under the same key.
+  combos: (f: Filter, top = 10) =>
+    get<ComboCell[]>(`/api/combos?${toQuery(f, { top: String(top) })}`),
 
   sessions: (f: Filter) => get<ListResponse<Session>>(`/api/sessions?${toQuery(f)}`),
   session: (id: number) => get<Session>(`/api/sessions/${id}`),

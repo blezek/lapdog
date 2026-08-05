@@ -432,3 +432,29 @@ func (s *Server) handleQualiPace(w http.ResponseWriter, r *http.Request) {
 	}
 	s.writeJSON(w, got)
 }
+
+func (s *Server) handleCombos(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	// top is optional; the store clamps a missing or non-positive value. Named
+	// "top" rather than "limit" on the wire: Filter already has its own "limit"
+	// for pagination, and reusing the key would let the two silently collide.
+	limit := 0
+	if raw := r.URL.Query().Get("top"); raw != "" {
+		v, err := strconv.Atoi(raw)
+		if err != nil {
+			s.fail(w, http.StatusBadRequest,
+				fmt.Errorf("%w: top must be an integer", ErrBadRequest))
+			return
+		}
+		limit = v
+	}
+	cells, err := s.st.TopCombos(f, limit)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, cells)
+}

@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { api, type DailyRow, type SummaryRow } from '../api'
+import { api, type ComboCell, type DailyRow, type SummaryRow } from '../api'
 import { hours, labelForKey, num, pct, position, day, dayShort, lapTime } from '../format'
 import { monthAndYear, monthNames, weekdayNames } from '../locale'
 import { useFilter } from '../useFilter'
@@ -42,6 +42,11 @@ export function Dashboard() {
   const daily = useQuery({
     queryKey: ['daily', filter],
     queryFn: () => api.daily(filter),
+    ...keepPrevious,
+  })
+  const combos = useQuery({
+    queryKey: ['combos', filter],
+    queryFn: () => api.combos(filter, 10),
     ...keepPrevious,
   })
 
@@ -97,6 +102,21 @@ export function Dashboard() {
             <Empty>No sessions in this range.</Empty>
           ) : (
             <CalendarHeatmap rows={daily.data ?? []} theme={theme} />
+          )}
+        </Card>
+      </div>
+
+      <div className="grid" style={{ marginBottom: 14 }}>
+        <Card
+          title="Where the time goes: top car and track pairings"
+          table={<ComboTable cells={combos.data ?? []} />}
+        >
+          {viewState(combos, isEmptyArray) === 'loading' ? (
+            <Loading />
+          ) : viewState(combos, isEmptyArray) === 'empty' ? (
+            <Empty>No sessions in this range.</Empty>
+          ) : (
+            <ComboHeatmap cells={combos.data ?? []} theme={theme} />
           )}
         </Card>
       </div>
@@ -343,6 +363,138 @@ function DailyTable({ rows }: { rows: DailyRow[] }) {
       {rows.length > recent.length && (
         <div className="pager">Showing the {recent.length} most recent of {rows.length} days.</div>
       )}
+    </div>
+  )
+}
+
+/* ------------------------------------------------- car and track combo heatmap */
+
+/**
+ * ComboHeatmap shows the busiest car-and-track pairings against session category.
+ *
+ * A pairing is the unit a driver actually practises — a car at a track — which
+ * neither the per-car nor the per-track breakdown can express. The colour job is
+ * sequential because the value is a magnitude, so the eight-slot categorical
+ * ceiling does not apply here and every category keeps its own column.
+ */
+function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Theme }) {
+  const option = useMemo(() => {
+    // Rows keep the order the store chose, which is by pairing total descending.
+    // Re-sorting here would risk the axis disagreeing with the ranking.
+    const rows: string[] = []
+    for (const c of cells) if (!rows.includes(c.combo)) rows.push(c.combo)
+
+    // Columns are ordered by total hours so the categories that matter sit left.
+    const colTotals = new Map<string, number>()
+    for (const c of cells) colTotals.set(c.category, (colTotals.get(c.category) ?? 0) + c.hours)
+    const cols = [...colTotals.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => k)
+
+    const max = Math.max(0.01, ...cells.map((c) => c.hours))
+    // Typed as a tuple array rather than left as number[][]: under
+    // noUncheckedIndexedAccess, destructuring a plain number[][] makes every
+    // element possibly undefined, since only tuple positions are known-present.
+    const data: [number, number, number][] = cells.map((c) => [
+      cols.indexOf(c.category),
+      rows.indexOf(c.combo),
+      c.hours,
+    ])
+
+    return {
+      // A category axis on both sides needs room for long pairing labels.
+      grid: { left: 8, right: 20, top: 8, bottom: 64, containLabel: true },
+      tooltip: {
+        ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
+        formatter: (p: { value: [number, number, number] }) =>
+          `${rows[p.value[1]]}<br/>${labelForKey(cols[p.value[0]] ?? '')}` +
+          `<br/><strong>${hours(p.value[2])}</strong> driving`,
+      },
+      visualMap: {
+        min: 0,
+        max,
+        type: 'continuous',
+        orient: 'horizontal',
+        left: 'center',
+        bottom: 2,
+        // For a continuous visual map ECharts treats itemHeight as the bar's length
+        // and itemWidth as its thickness, and swaps them for horizontal orientation.
+        itemWidth: 11,
+        itemHeight: 90,
+        text: [hours(max), '0'],
+        textStyle: { color: theme.textMuted, fontSize: 10 },
+        inRange: { color: theme.seq },
+      },
+      xAxis: {
+        type: 'category',
+        data: cols.map((c) => labelForKey(c)),
+        axisLabel: { color: theme.textMuted, fontSize: 10, rotate: 30 },
+        axisLine: { lineStyle: { color: theme.baseline } },
+        axisTick: { show: false },
+        splitArea: { show: true, areaStyle: { color: ['transparent'] } },
+      },
+      yAxis: {
+        type: 'category',
+        // Reversed so the busiest pairing is the top row, the conventional
+        // direction for a ranking on a category axis.
+        data: [...rows].reverse(),
+        axisLabel: { color: theme.textSecondary, fontSize: 10 },
+        axisLine: { lineStyle: { color: theme.baseline } },
+        axisTick: { show: false },
+      },
+      series: [
+        {
+          type: 'heatmap',
+          data: data.map(([x, y, v]) => [x, rows.length - 1 - y, v]),
+          itemStyle: { borderColor: theme.surface, borderWidth: 2 },
+        },
+      ],
+    }
+  }, [cells, theme])
+
+  return (
+    <Chart
+      option={option}
+      className="chart tall"
+      ariaLabel="Driving hours per car and track pairing, split by session category"
+    />
+  )
+}
+
+function ComboTable({ cells }: { cells: ComboCell[] }) {
+  // One row per pairing, with its categories listed, so nothing the heatmap encodes
+  // only as colour is unavailable as a number.
+  const byCombo = new Map<string, { total: number; parts: ComboCell[] }>()
+  for (const c of cells) {
+    const e = byCombo.get(c.combo) ?? { total: c.comboHours, parts: [] }
+    e.parts.push(c)
+    byCombo.set(c.combo, e)
+  }
+  const ordered = [...byCombo.entries()].sort((a, b) => b[1].total - a[1].total)
+
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th className="no-sort">Car and track</th>
+            <th className="no-sort num">Driving</th>
+            <th className="no-sort">Split by category</th>
+          </tr>
+        </thead>
+        <tbody>
+          {ordered.map(([combo, e]) => (
+            <tr key={combo}>
+              <td>{combo}</td>
+              <td className="num">{hours(e.total)}</td>
+              <td>
+                {[...e.parts]
+                  .sort((a, b) => b.hours - a.hours)
+                  .map((p) => `${labelForKey(p.category)} ${p.hours.toFixed(1)}`)
+                  .join(' · ')}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
     </div>
   )
 }

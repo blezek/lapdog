@@ -891,6 +891,26 @@ func TestRivalsEndpoint(t *testing.T) {
 	}
 }
 
+func TestCombosEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/combos?range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var cells []store.ComboCell
+	if err := json.Unmarshal(rec.Body.Bytes(), &cells); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestCombosRejectsNonNumericLimit(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/combos?top=ten", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", rec.Code)
+	}
+}
+
 // The four id-scoped endpoints require by explicitly: car ids and track ids are
 // independent iRacing integers with no guaranteed disjoint ranges, so defaulting
 // by would let an id meant for one dimension silently resolve against the other.
