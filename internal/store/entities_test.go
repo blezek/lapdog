@@ -159,6 +159,181 @@ func TestEntityListRejectsUnknownDimension(t *testing.T) {
 	}
 }
 
+func TestEntityStatsForCar(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	st, err := s.EntityStats(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityStats: %v", err)
+	}
+	if st.Name != "Porsche 911 GT3 R" {
+		t.Errorf("Name = %q", st.Name)
+	}
+	if st.Sessions != 5 {
+		t.Errorf("Sessions = %d, want 5", st.Sessions)
+	}
+	// The seed's Porsche rows carry 2+1+0+6+4 = 13 incident points.
+	if st.IncidentPoints != 13 {
+		t.Errorf("IncidentPoints = %d, want 13", st.IncidentPoints)
+	}
+	// Laps come from laps_completed: 20+15+3+25+30 = 93.
+	if st.Laps != 93 {
+		t.Errorf("Laps = %d, want 93", st.Laps)
+	}
+	// The shared seed records no finish or starting positions on any session, so
+	// none of its rows count as a race under the recorded-finish definition —
+	// that is why the result metrics are exercised by
+	// TestEntityStatsResultMetrics below rather than here. Races, Wins and
+	// Podiums must read zero and AvgPositionsGained must read nil (an em dash
+	// on the page), not a zero, since a car with no recorded results is a
+	// different state from a car with three losses.
+	if st.Races != 0 {
+		t.Errorf("Races = %d, want 0 (the seed records no finish positions)", st.Races)
+	}
+	if st.Wins != 0 {
+		t.Errorf("Wins = %d, want 0 (the seed records no finish positions)", st.Wins)
+	}
+	if st.Podiums != 0 {
+		t.Errorf("Podiums = %d, want 0 (the seed records no finish positions)", st.Podiums)
+	}
+	if st.AvgPositionsGained != nil {
+		t.Errorf("AvgPositionsGained = %v, want nil (the seed records no starting/finish positions)", *st.AvgPositionsGained)
+	}
+}
+
+// TestEntityStatsResultMetrics exercises the recorded-finish path that
+// TestEntityStatsForCar's shared seed never touches. Three race sessions for
+// one car and track carry starting and finish positions: one a win from 3rd,
+// one a podium from 5th, and one a two-place loss from 6th to 8th.
+func TestEntityStatsResultMetrics(t *testing.T) {
+	s := openTemp(t)
+
+	races := []struct {
+		key        string
+		subsession int
+		start, fin int
+	}{
+		{"5001/0", 5001, 3, 1}, // win, gained 2
+		{"5002/0", 5002, 5, 3}, // podium, gained 2
+		{"5003/0", 5003, 6, 8}, // finished, lost 2
+	}
+	for _, r := range races {
+		rec := &Session{
+			SessionKey: r.key, SubsessionID: r.subsession, SessionNum: 0,
+			SessionType: "Race", EventContext: "OfficialRace",
+			StartedAt:      "2026-07-25T10:00:00Z",
+			DrivingSeconds: 3000,
+			CarID:          intp(173), CarName: strp("Porsche 911 GT3 R"),
+			TrackID: intp(18), TrackName: strp("Watkins Glen"),
+			StartingPosition: intp(r.start), FinishPosition: intp(r.fin),
+			ClassifySourceJSON: "{}", IncidentSource: "yaml",
+		}
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := s.EntityStats(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityStats: %v", err)
+	}
+	if st.Races != 3 {
+		t.Errorf("Races = %d, want 3", st.Races)
+	}
+	if st.Wins != 1 {
+		t.Errorf("Wins = %d, want 1", st.Wins)
+	}
+	if st.Podiums != 2 {
+		t.Errorf("Podiums = %d, want 2", st.Podiums)
+	}
+	// (2 + 2 - 2) / 3.
+	want := (2.0 + 2.0 - 2.0) / 3.0
+	if st.AvgPositionsGained == nil {
+		t.Fatal("AvgPositionsGained = nil, want a value since every race here has a recorded result")
+	}
+	if diff := *st.AvgPositionsGained - want; diff > 0.0001 || diff < -0.0001 {
+		t.Errorf("AvgPositionsGained = %.4f, want %.4f (a negative value would mean places lost on average)", *st.AvgPositionsGained, want)
+	}
+}
+
+// A car can have driving time with no completed timed laps at all — time in the
+// garage, or a session that ended before the driver crossed the line. Task 3's
+// pace table is built to still show such a car (see
+// TestEntityPaceIncludesEntityWithNoTimedLaps), so EntityStats must not error for
+// it either. Nil, not zero, is the correct CleanLapPct here: a car with no timed
+// laps has no clean-lap percentage, and reporting 0% would claim every lap was
+// dirty.
+func TestEntityStatsWithNoTimedLaps(t *testing.T) {
+	s := openTemp(t)
+
+	rec := &Session{
+		SessionKey: "6001/0", SubsessionID: 6001, SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt:      "2026-07-26T10:00:00Z",
+		DrivingSeconds: 900,
+		CarID:          intp(173), CarName: strp("Porsche 911 GT3 R"),
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	}
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	st, err := s.EntityStats(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityStats: %v", err)
+	}
+	if want := 900.0 / 3600.0; st.DrivingHours != want {
+		t.Errorf("DrivingHours = %v, want %v", st.DrivingHours, want)
+	}
+	if st.CleanLapPct != nil {
+		t.Errorf("CleanLapPct = %v, want nil for a car with no timed laps", *st.CleanLapPct)
+	}
+}
+
+// An entity with no rows in range is a 404 case, not a zeroed struct: a page
+// showing every stat as zero is indistinguishable from a car never driven.
+func TestEntityStatsUnknownIDIsNotFound(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	if _, err := s.EntityStats(Filter{}, "car", 999999); !errors.Is(err, ErrNotFound) {
+		t.Errorf("EntityStats for an unknown car = %v, want ErrNotFound", err)
+	}
+}
+
+func TestEntityStatsRejectsUnknownDimension(t *testing.T) {
+	s := openTemp(t)
+	if _, err := s.EntityStats(Filter{}, "driver", 1); !errors.Is(err, ErrBadGroupBy) {
+		t.Errorf("= %v, want ErrBadGroupBy", err)
+	}
+}
+
+// Driving hours for one entity must match what EntityList reports for it, or the
+// two views of the same page disagree.
+func TestEntityStatsAgreesWithEntityList(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	list, err := s.EntityList(Filter{}, "car")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range list {
+		st, err := s.EntityStats(Filter{}, "car", row.ID)
+		if err != nil {
+			t.Fatalf("EntityStats(%d): %v", row.ID, err)
+		}
+		if diff := st.DrivingHours - row.DrivingHours; diff > 0.001 || diff < -0.001 {
+			t.Errorf("car %d: stats %.4f h, list %.4f h", row.ID, st.DrivingHours, row.DrivingHours)
+		}
+		if st.Laps != row.Laps {
+			t.Errorf("car %d: stats %d laps, list %d laps", row.ID, st.Laps, row.Laps)
+		}
+	}
+}
+
 func TestEntityDimensions(t *testing.T) {
 	got := EntityDimensions()
 	if len(got) != 2 {

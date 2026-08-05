@@ -111,3 +111,120 @@ ORDER BY SUM(s.driving_seconds) DESC, MAX(` + d.nameExpr + `)`
 	}
 	return out, rows.Err()
 }
+
+// EntityStats is the headline panel for one car or track.
+//
+// Only quantities comparable across the opposite dimension appear here. Lap times
+// do not: a car's best lap at one track and at another are not the same quantity,
+// so pace lives in EntityPace, per row.
+//
+// The rate fields are pointers because they have no meaning at zero exposure.
+// Rendering "0.00 points per 100 km" for a car that has never been driven claims
+// something the data does not support; an em dash does not.
+type EntityStats struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+
+	DrivingHours   float64 `json:"drivingHours"`
+	InCarHours     float64 `json:"inCarHours"`
+	ConnectedHours float64 `json:"connectedHours"`
+
+	Sessions   int     `json:"sessions"`
+	Laps       int     `json:"laps"`
+	DistanceKm float64 `json:"distanceKm"`
+
+	IncidentPoints         int      `json:"incidentPoints"`
+	IncidentPointsPer100Km *float64 `json:"incidentPointsPer100Km"`
+	CleanLapPct            *float64 `json:"cleanLapPct"`
+
+	// Races counts race sessions with a recorded finish position, not every
+	// session with SessionType "Race". That keeps one denominator across all
+	// four result metrics: Wins, Podiums, and AvgPositionsGained are each
+	// counted or averaged over the same set of races, so a wins-per-race ratio
+	// means what it says. The cost is that a race with no recorded finish (a
+	// DNF the sim never logged a position for) is excluded from Races too,
+	// rather than inflating the denominator with a race that contributes to
+	// none of the other three counts.
+	Races              int      `json:"races"`
+	Wins               int      `json:"wins"`
+	Podiums            int      `json:"podiums"`
+	AvgPositionsGained *float64 `json:"avgPositionsGained"`
+}
+
+// EntityStats returns the headline figures for one entity.
+//
+// The session-level and lap-level aggregates are two separate subqueries joined on
+// the entity id. Combining them into one aggregate would multiply every session sum
+// by that session's lap count: measured on the development database, that reported
+// 28,895 driving hours against a true 1,242.6, which looks like a real number.
+func (s *Store) EntityStats(f Filter, by string, id int) (EntityStats, error) {
+	d, err := dimOrErr(by)
+	if err != nil {
+		return EntityStats{}, err
+	}
+	pred, args := f.where()
+
+	// Session-level aggregate. Distance uses the session's own lap counter and the
+	// track length, so it needs no lap rows.
+	//
+	// Every aggregate is wrapped in COALESCE, and the name in MAX, because this query
+	// always returns exactly one row: for an id matching nothing, every SUM is NULL
+	// and the name would fail to scan into a string before the zero check below could
+	// report the id as absent.
+	sessQ := `
+SELECT COALESCE(MAX(` + d.nameExpr + `), ''),
+       COALESCE(SUM(s.driving_seconds), 0) / 3600.0,
+       COALESCE(SUM(s.in_car_seconds), 0) / 3600.0,
+       COALESCE(SUM(s.connected_seconds), 0) / 3600.0,
+       COUNT(*),
+       COALESCE(SUM(s.laps_completed), 0),
+       COALESCE(SUM(s.laps_completed * COALESCE(s.track_length_km, 0)), 0),
+       COALESCE(SUM(s.incidents), 0),
+       COALESCE(SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position > 0 THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position = 1 THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END), 0),
+       AVG(CASE WHEN s.session_type = 'Race' AND s.starting_position > 0 AND s.finish_position > 0
+                THEN s.starting_position - s.finish_position END)
+FROM sessions s
+WHERE ` + pred + ` AND ` + d.idCol + ` = ?`
+
+	var out EntityStats
+	out.ID = id
+	var gained *float64
+	err = s.reader.QueryRow(sessQ, append(args, id)...).Scan(
+		&out.Name, &out.DrivingHours, &out.InCarHours, &out.ConnectedHours,
+		&out.Sessions, &out.Laps, &out.DistanceKm, &out.IncidentPoints,
+		&out.Races, &out.Wins, &out.Podiums, &gained,
+	)
+	if err != nil {
+		return EntityStats{}, fmt.Errorf("store: entity stats by %s: %w", by, err)
+	}
+	if out.Sessions == 0 {
+		return EntityStats{}, fmt.Errorf("%w: %s id %d", ErrNotFound, by, id)
+	}
+	out.AvgPositionsGained = gained
+
+	// Lap-level aggregate, separately. Pit laps are excluded because an in-lap is
+	// not an attempt at a clean flying lap.
+	lapQ := `
+SELECT COALESCE(COUNT(*), 0),
+       COALESCE(SUM(CASE WHEN l.incidents_on_lap = 0 THEN 1 ELSE 0 END), 0)
+FROM laps l
+JOIN sessions s ON s.id = l.session_id
+WHERE ` + pred + ` AND ` + d.idCol + ` = ?
+  AND l.lap_time_s > 0 AND l.is_pit_lap = 0`
+
+	var timed, clean int
+	if err := s.reader.QueryRow(lapQ, append(args, id)...).Scan(&timed, &clean); err != nil {
+		return EntityStats{}, fmt.Errorf("store: entity lap stats by %s: %w", by, err)
+	}
+	if timed > 0 {
+		pct := 100.0 * float64(clean) / float64(timed)
+		out.CleanLapPct = &pct
+	}
+	if out.DistanceKm > 0 {
+		rate := 100.0 * float64(out.IncidentPoints) / out.DistanceKm
+		out.IncidentPointsPer100Km = &rate
+	}
+	return out, nil
+}
