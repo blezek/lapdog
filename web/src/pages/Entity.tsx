@@ -28,13 +28,29 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
     ...keepPrevious,
   })
 
+  const listState = viewState(list, isEmptyArray)
   const items = list.data ?? []
-  const selectedParam = params.get(dimension)
-  const selected = selectedParam ? Number(selectedParam) : (items[0]?.id ?? null)
+
+  // The selection lives under a dimension-agnostic key rather than `car` or
+  // `track`: useFilter already reads those two keys as hard filters
+  // (carId/trackId), so reusing either name here would make selecting a row
+  // silently filter the list down to that one row. `sel` is outside
+  // useFilter's vocabulary and each route has exactly one dimension, so one
+  // key suffices for both pages.
+  const selectedParam = params.get('sel')
+  const parsedSelection =
+    selectedParam != null && /^\d+$/.test(selectedParam) ? Number(selectedParam) : null
+  // Accept the URL's selection only when it is an integer that actually
+  // names a row in the current list. Anything else — an unparseable value,
+  // or an id carried over from the other dimension's page — falls back to
+  // the first item rather than reaching the API as `id=NaN` or a 400.
+  const validSelection =
+    parsedSelection != null && items.some((e) => e.id === parsedSelection)
+  const selected = validSelection ? parsedSelection : (items[0]?.id ?? null)
 
   function select(id: number) {
     const next = new URLSearchParams(params)
-    next.set(dimension, String(id))
+    next.set('sel', String(id))
     setParams(next, { replace: true })
   }
 
@@ -53,7 +69,7 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
 
       <div className="explorer two">
         <div className="session-list">
-          {viewState(list, isEmptyArray) === 'loading' ? (
+          {listState === 'loading' ? (
             <Loading />
           ) : items.length === 0 ? (
             <Empty>Nothing matches this filter.</Empty>
@@ -75,7 +91,12 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
         </div>
 
         <div>
-          {selected == null ? (
+          {listState === 'loading' ? (
+            // The list has nothing to show yet, so telling the user to pick
+            // an entity is premature — mirror the left pane's loading state
+            // instead of asking for a choice before one exists.
+            <Loading />
+          ) : selected == null ? (
             <Empty>Select a {dimension}.</Empty>
           ) : (
             <Review dimension={dimension} id={selected} />
