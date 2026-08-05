@@ -76,16 +76,24 @@ func (s *Store) EntityList(f Filter, by string) ([]EntityRow, error) {
 	}
 	pred, args := f.where()
 
+	// The name is aggregated with MAX rather than added to GROUP BY. iRacing
+	// renames cars and track configurations between seasons, so two sessions can
+	// share an id while carrying different names; grouping by the name as well
+	// would split that one entity into two rows, each with half its hours —
+	// a wrong total, not just a cosmetic one. MAX picks a single name
+	// deterministically (the same one on every run against the same data), and
+	// which of the two names wins is arbitrary but consistent — that is
+	// preferred to a row split with divided totals.
 	q := `
 SELECT ` + d.idCol + `,
-       ` + d.nameExpr + `,
+       MAX(` + d.nameExpr + `),
        SUM(s.driving_seconds) / 3600.0,
        COUNT(*),
        SUM(s.laps_completed)
 FROM sessions s
 WHERE ` + pred + ` AND ` + d.idCol + ` IS NOT NULL
 GROUP BY ` + d.idCol + `
-ORDER BY SUM(s.driving_seconds) DESC, ` + d.nameExpr
+ORDER BY SUM(s.driving_seconds) DESC, MAX(` + d.nameExpr + `)`
 
 	rows, err := s.reader.Query(q, args...)
 	if err != nil {
