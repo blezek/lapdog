@@ -334,6 +334,113 @@ func TestEntityStatsAgreesWithEntityList(t *testing.T) {
 	}
 }
 
+func TestEntityPaceByCarGroupsByTrack(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	rows, err := s.EntityPace(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityPace: %v", err)
+	}
+	// The Porsche was driven at Watkins Glen and Spa.
+	if len(rows) != 2 {
+		t.Fatalf("got %d rows, want 2: %+v", len(rows), rows)
+	}
+	// Ordered by laps descending: Watkins Glen has four sessions to Spa's one.
+	if rows[0].OtherName != "Watkins Glen" {
+		t.Errorf("rows[0] = %q, want the most-lapped track first", rows[0].OtherName)
+	}
+	if rows[0].Sessions != 4 {
+		t.Errorf("Watkins Glen sessions = %d, want 4", rows[0].Sessions)
+	}
+	if rows[0].PersonalBestS == nil {
+		t.Fatal("PersonalBestS is nil; the seed has timed laps")
+	}
+	// seed() inserts laps at best+0.5 and best+1.0 for each session; the fastest
+	// Porsche lap at Watkins Glen therefore comes from the 101.8 qualifying row.
+	if got := *rows[0].PersonalBestS; got < 102.29 || got > 102.31 {
+		t.Errorf("PersonalBestS = %.3f, want 102.30", got)
+	}
+}
+
+func TestEntityPaceByTrackGroupsByCar(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	rows, err := s.EntityPace(Filter{}, "track", 341)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Spa hosted the Porsche league race and the MX-5 AI race, but AI is excluded
+	// from pace by default only when the caller asks; Filter{} does not.
+	names := map[string]bool{}
+	for _, r := range rows {
+		names[r.OtherName] = true
+	}
+	if !names["Porsche 911 GT3 R"] {
+		t.Errorf("Porsche missing from Spa pace rows: %+v", rows)
+	}
+}
+
+// The personal best ignores the date range; the in-range best respects it. That
+// pair is what tells a driver they are off form, so they must differ when the
+// range excludes the fastest lap.
+func TestEntityPacePersonalBestIgnoresDateRange(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	// The Porsche's fastest Watkins Glen lap is in the 8 July session. Restrict the
+	// range to 1 July only, which excludes it.
+	f := Filter{From: "2026-07-01T00:00:00Z", To: "2026-07-02T00:00:00Z"}
+	rows, err := s.EntityPace(f, "car", 173)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want only Watkins Glen: %+v", len(rows), rows)
+	}
+	r := rows[0]
+	if r.PersonalBestS == nil || r.BestInRangeS == nil {
+		t.Fatal("both bests should be present")
+	}
+	if *r.PersonalBestS >= *r.BestInRangeS {
+		t.Errorf("PersonalBestS %.3f should be faster than BestInRangeS %.3f",
+			*r.PersonalBestS, *r.BestInRangeS)
+	}
+}
+
+// A session with no timed laps must still appear, with pace as nil rather than the
+// row vanishing — otherwise time spent shows in the headline but nowhere else.
+func TestEntityPaceIncludesEntityWithNoTimedLaps(t *testing.T) {
+	s := openTemp(t)
+	id, err := s.UpsertSession(&Session{
+		SessionKey: "9001/0", SubsessionID: 9001, SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt: "2026-07-02T10:00:00Z", DrivingSeconds: 600,
+		TrackID: intp(77), TrackName: strp("Okayama"),
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = id
+
+	rows, err := s.EntityPace(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].PersonalBestS != nil {
+		t.Errorf("PersonalBestS = %v, want nil with no timed laps", *rows[0].PersonalBestS)
+	}
+	if rows[0].Laps != 0 {
+		t.Errorf("Laps = %d, want 0", rows[0].Laps)
+	}
+}
+
 func TestEntityDimensions(t *testing.T) {
 	got := EntityDimensions()
 	if len(got) != 2 {

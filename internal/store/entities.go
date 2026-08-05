@@ -228,3 +228,103 @@ WHERE ` + pred + ` AND ` + d.idCol + ` = ?
 	}
 	return out, nil
 }
+
+// PaceRow is one row of the pace table: a track on a car's page, or a car on a
+// track's page.
+//
+// Every pace field is a pointer. A track where the driver has time but no completed
+// timed lap is a real state, and zero is not the same as absent.
+type PaceRow struct {
+	OtherID   int    `json:"otherId"`
+	OtherName string `json:"otherName"`
+
+	PersonalBestS *float64 `json:"personalBestS"`
+	BestInRangeS  *float64 `json:"bestInRangeS"`
+
+	Laps     int `json:"laps"`
+	Sessions int `json:"sessions"`
+
+	ConsistencyPct    *float64 `json:"consistencyPct"`
+	ConsistencyDeltaS *float64 `json:"consistencyDeltaS"`
+}
+
+// EntityPace returns one row per value of the opposite dimension.
+//
+// Lap times are only comparable within a car and track pair, which is why the car
+// page has no single headline lap time and this table exists instead.
+//
+// The personal best deliberately ignores the filter's date range while everything
+// else respects it. A personal best is a fact about the driver's whole history, and
+// the comparison against the in-range best is what shows current form.
+func (s *Store) EntityPace(f Filter, by string, id int) ([]PaceRow, error) {
+	d, err := dimOrErr(by)
+	if err != nil {
+		return nil, err
+	}
+	pred, args := f.where()
+
+	// The all-time filter keeps every predicate except the date bounds, so that
+	// session-type and context filters still apply to the personal best.
+	allTime := f
+	allTime.From = ""
+	allTime.To = ""
+	pbPred, pbArgs := allTime.where()
+
+	q := `
+WITH sess AS (
+  SELECT ` + d.otherID + ` AS oid,
+         MAX(` + d.otherExpr + `) AS oname,
+         COUNT(*)                    AS sessions,
+         SUM(s.laps_completed)       AS laps
+  FROM sessions s
+  WHERE ` + pred + ` AND ` + d.idCol + ` = ? AND ` + d.otherID + ` IS NOT NULL
+  GROUP BY ` + d.otherID + `
+),
+inrange AS (
+  SELECT ` + d.otherID + ` AS oid, MIN(l.lap_time_s) AS best
+  FROM laps l JOIN sessions s ON s.id = l.session_id
+  WHERE ` + pred + ` AND ` + d.idCol + ` = ?
+    AND l.lap_time_s > 0 AND l.is_pit_lap = 0
+  GROUP BY ` + d.otherID + `
+),
+alltime AS (
+  SELECT ` + d.otherID + ` AS oid, MIN(l.lap_time_s) AS best
+  FROM laps l JOIN sessions s ON s.id = l.session_id
+  WHERE ` + pbPred + ` AND ` + d.idCol + ` = ?
+    AND l.lap_time_s > 0 AND l.is_pit_lap = 0
+  GROUP BY ` + d.otherID + `
+)
+SELECT sess.oid, sess.oname, alltime.best, inrange.best,
+       COALESCE(sess.laps, 0), sess.sessions
+FROM sess
+LEFT JOIN inrange ON inrange.oid = sess.oid
+LEFT JOIN alltime ON alltime.oid = sess.oid
+ORDER BY sess.laps DESC, sess.oname`
+
+	// Argument order follows the CTEs: filtered predicate, filtered predicate,
+	// all-time predicate — each followed by the entity id.
+	qargs := make([]any, 0, len(args)*2+len(pbArgs)+3)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, id)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, id)
+	qargs = append(qargs, pbArgs...)
+	qargs = append(qargs, id)
+
+	rows, err := s.reader.Query(q, qargs...)
+	if err != nil {
+		return nil, fmt.Errorf("store: entity pace by %s: %w", by, err)
+	}
+	defer rows.Close()
+
+	out := []PaceRow{}
+	for rows.Next() {
+		var r PaceRow
+		if err := rows.Scan(&r.OtherID, &r.OtherName, &r.PersonalBestS,
+			&r.BestInRangeS, &r.Laps, &r.Sessions); err != nil {
+			return nil, fmt.Errorf("store: scan pace row: %w", err)
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
