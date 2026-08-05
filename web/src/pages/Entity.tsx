@@ -12,7 +12,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 
 import { api, type Filter, type PaceRow } from '../api'
-import { hours, lapTime, num, pct } from '../format'
+import { delta, hours, lapTime, num, pct } from '../format'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { Card, Empty, ErrorNote, Loading, Stat } from '../components/ui'
@@ -184,13 +184,17 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
         />
         <Stat
           label="Race vs qualifying"
-          value={
-            quali.data?.avgDeltaS == null ? '—' : `+${quali.data.avgDeltaS.toFixed(2)}s`
-          }
+          // delta() puts the sign on itself from the number's own value, rather
+          // than a literal "+" prepended unconditionally — the earlier version
+          // rendered "+-0.78s" on a negative delta. A positive value here is the
+          // expected direction (qualifying runs light and on a clear track), so
+          // the note below spells out which way is which rather than relying on
+          // the reader to infer it from the sign.
+          value={quali.data?.avgDeltaS == null ? '—' : `${delta(quali.data.avgDeltaS)}s`}
           note={
             quali.data == null || quali.data.pairs === 0
               ? 'no paired weekends'
-              : `${num(quali.data.pairs)} weekends`
+              : `${num(quali.data.pairs)} weekends · + slower`
           }
         />
       </div>
@@ -318,7 +322,26 @@ function Progression({
       },
       // Lower is better for a lap time, so the axis is inverted: a line rising on
       // screen means improvement, which is the direction a reader expects.
-      yAxis: { type: 'value', inverse: true, ...valueAxisStyle(theme.textMuted, theme.line) },
+      //
+      // scale: true keeps zero out of the range. A value axis includes zero by
+      // default, and every best lap here sits within a couple of seconds of the
+      // others — with zero forced in, the whole line presses flat against the
+      // bottom of the plot and shows no trend at all. No lap takes zero seconds, so
+      // that space is dead anyway.
+      //
+      // The axis labels go through the same lapTime formatter as the tooltip, so a
+      // reader sees "1:01.500" on the axis rather than a bare "61" that disagrees
+      // with what the tooltip says on hover.
+      yAxis: {
+        type: 'value',
+        inverse: true,
+        scale: true,
+        ...valueAxisStyle(theme.textMuted, theme.line),
+        axisLabel: {
+          ...valueAxisStyle(theme.textMuted, theme.line).axisLabel,
+          formatter: (v: number) => lapTime(v),
+        },
+      },
       series: [
         {
           type: 'line',
