@@ -62,7 +62,11 @@ One route per page, `/cars` and `/tracks`, each a three-part split pane matching
 └──────────────┴────────────────────────────────────────────┘
 ```
 
-The left column ranks by driving time within the active range. The selection lives in the URL — `/cars?car=173` — matching the existing filter-in-URL pattern in `useFilter`, so a car page is linkable and survives a reload. With no selection the first entry is shown, as `Sessions` already does.
+The left column ranks by driving time within the active range. The selection lives in the URL so a car page is linkable and survives a reload, and with no selection the first entry is shown, as `Sessions` already does.
+
+**Correction, 2026-08-05.** This section originally specified `/cars?car=173`, "matching the existing filter-in-URL pattern in `useFilter`". Matching that pattern is exactly what broke it: `useFilter` already reads `car` and `track` as *hard filters*, so storing the selection under the same key made every click apply a filter to the list being chosen from. The left column collapsed to the single selected row on the first click — measured directly, `/api/entities?by=car&range=all` returns nine or more cars while `/api/entities?by=car&car_id=105&range=all` returns one — and the only recovery also discarded the range and session filters.
+
+The selection therefore uses a key outside `useFilter`'s vocabulary. Hiding the dropdown (§4.1) prevents a *second visible control* for the same dimension; it does nothing about a parameter name collision, and the two concerns must not be conflated. The selection is also validated against the ids actually present in the current list rather than trusted, so a hand-edited value or one carried across from the other page falls back to the first entry instead of reaching the API and failing.
 
 ### 4.1 Filter semantics
 
