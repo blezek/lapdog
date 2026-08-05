@@ -3,7 +3,10 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"strconv"
 
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
@@ -243,4 +246,153 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Allow", "GET, PUT")
 		s.fail(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
 	}
+}
+
+// requiredInt reads a required integer query parameter.
+//
+// Absent and unparseable are both client mistakes, and both must be 400 rather than
+// a zero that would silently query entity 0.
+func (s *Server) requiredInt(w http.ResponseWriter, q url.Values, key string) (int, bool) {
+	raw := q.Get(key)
+	if raw == "" {
+		s.fail(w, http.StatusBadRequest, fmt.Errorf("%w: %s is required", ErrBadRequest, key))
+		return 0, false
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil {
+		s.fail(w, http.StatusBadRequest,
+			fmt.Errorf("%w: %s must be an integer", ErrBadRequest, key))
+		return 0, false
+	}
+	return v, true
+}
+
+// dimension reads the by parameter, defaulting to car as /api/breakdown does.
+func dimension(q url.Values) string {
+	if by := q.Get("by"); by != "" {
+		return by
+	}
+	return "car"
+}
+
+func (s *Server) handleEntities(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityList(f, dimension(r.URL.Query()))
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleEntity(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	st, err := s.st.EntityStats(f, dimension(q), id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.notFoundOr500(w, err)
+		return
+	}
+	s.writeJSON(w, st)
+}
+
+func (s *Server) handlePace(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityPace(f, dimension(q), id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleProgression(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	other, ok := s.requiredInt(w, q, "other")
+	if !ok {
+		return
+	}
+	rows, err := s.st.EntityProgression(f, dimension(q), id, other)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleRivals(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	rows, err := s.st.Rivals(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, rows)
+}
+
+func (s *Server) handleQualiPace(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	q := r.URL.Query()
+	id, ok := s.requiredInt(w, q, "id")
+	if !ok {
+		return
+	}
+	got, err := s.st.QualifyingVsRace(f, dimension(q), id)
+	if errors.Is(err, store.ErrBadGroupBy) {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, got)
 }

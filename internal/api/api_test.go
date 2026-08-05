@@ -809,3 +809,84 @@ func TestFacetsAdvertisesBreakdownDimensions(t *testing.T) {
 		t.Errorf("breakdownBy = %v, want it to include car", f.BreakdownBy)
 	}
 }
+
+func TestEntitiesEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entities?by=car", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var rows []store.EntityRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestEntitiesRejectsUnknownDimension(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entities?by=driver", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 for an unknown dimension", rec.Code)
+	}
+}
+
+func TestEntityEndpointRequiresID(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entity?by=car", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 when id is absent", rec.Code)
+	}
+}
+
+func TestEntityEndpointUnknownIDIs404(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/entity?by=car&id=999999", nil)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPaceEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/pace?by=car&id=173", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var rows []store.PaceRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestProgressionEndpointRequiresBothIDs(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/progression?by=car&id=173", nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 without the other id — a line mixing tracks "+
+			"would be meaningless", rec.Code)
+	}
+}
+
+func TestQualiPaceEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/quali-pace?by=car&id=173&range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var got store.QualiPace
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
+
+func TestRivalsEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/rivals?range=all", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var rows []store.RivalRow
+	if err := json.Unmarshal(rec.Body.Bytes(), &rows); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+}
