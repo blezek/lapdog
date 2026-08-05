@@ -548,6 +548,11 @@ tbody tr.selected td {
   }
 }
 
+/* Cars and Tracks reuse the explorer layout with no facet sidebar. */
+.explorer.two {
+  grid-template-columns: 260px 1fr;
+}
+
 .facet-group {
   margin-bottom: 14px;
 }

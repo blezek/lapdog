@@ -120,6 +120,61 @@ export interface DailyRow {
   drivingHours: number
 }
 
+export interface EntityRow {
+  id: number
+  name: string
+  drivingHours: number
+  sessions: number
+  laps: number
+}
+
+export interface EntityStats {
+  id: number
+  name: string
+  drivingHours: number
+  inCarHours: number
+  connectedHours: number
+  sessions: number
+  laps: number
+  distanceKm: number
+  incidentPoints: number
+  incidentPointsPer100Km: number | null
+  cleanLapPct: number | null
+  races: number
+  wins: number
+  podiums: number
+  avgPositionsGained: number | null
+}
+
+export interface PaceRow {
+  otherId: number
+  otherName: string
+  personalBestS: number | null
+  bestInRangeS: number | null
+  laps: number
+  sessions: number
+  consistencyPct: number | null
+  consistencyDeltaS: number | null
+}
+
+export interface ProgressionRow {
+  month: string
+  bestLapS: number
+  laps: number
+}
+
+export interface RivalRow {
+  name: string
+  passedThem: number
+  lostTo: number
+  net: number
+}
+
+export interface QualiPace {
+  pairs: number
+  avgDeltaS: number | null
+}
+
 export interface Facet {
   id: number
   name: string
@@ -243,6 +298,20 @@ export const api = {
   daily: (f: Filter) => get<DailyRow[]>(`/api/daily?${toQuery(f)}`),
   breakdown: (f: Filter, by: string) =>
     get<BreakdownRow[]>(`/api/breakdown?${toQuery(f, { by })}`),
+
+  entities: (f: Filter, by: string) =>
+    get<EntityRow[]>(`/api/entities?${toQuery(f, { by })}`),
+  entity: (f: Filter, by: string, id: number) =>
+    get<EntityStats>(`/api/entity?${toQuery(f, { by, id: String(id) })}`),
+  pace: (f: Filter, by: string, id: number) =>
+    get<PaceRow[]>(`/api/pace?${toQuery(f, { by, id: String(id) })}`),
+  progression: (f: Filter, by: string, id: number, other: number) =>
+    get<ProgressionRow[]>(
+      `/api/progression?${toQuery(f, { by, id: String(id), other: String(other) })}`,
+    ),
+  rivals: (f: Filter) => get<RivalRow[]>(`/api/rivals?${toQuery(f)}`),
+  qualiPace: (f: Filter, by: string, id: number) =>
+    get<QualiPace>(`/api/quali-pace?${toQuery(f, { by, id: String(id) })}`),
 
   sessions: (f: Filter) => get<ListResponse<Session>>(`/api/sessions?${toQuery(f)}`),
   session: (id: number) => get<Session>(`/api/sessions/${id}`),

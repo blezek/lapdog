@@ -8,6 +8,7 @@ import { Icon } from './components/ui'
 import { hm } from './format'
 
 import { Dashboard } from './pages/Dashboard'
+import { EntityPage } from './pages/Entity'
 import { Sessions } from './pages/Sessions'
 import { Laps } from './pages/Laps'
 import { Export } from './pages/Export'
@@ -16,6 +17,8 @@ import { Settings } from './pages/Settings'
 /** nav is the four-page structure plus settings, pinned to the bottom. */
 const nav = [
   { to: '/dashboard', label: 'Dashboard', icon: 'speedometer' },
+  { to: '/cars', label: 'Cars', icon: 'car-sports' },
+  { to: '/tracks', label: 'Tracks', icon: 'road-variant' },
   { to: '/sessions', label: 'Sessions', icon: 'flag-checkered' },
   { to: '/laps', label: 'Laps', icon: 'timer-outline' },
   { to: '/export', label: 'Export', icon: 'download' },
@@ -63,6 +66,8 @@ export function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<Dashboard />} />
+          <Route path="/cars" element={<EntityPage dimension="car" />} />
+          <Route path="/tracks" element={<EntityPage dimension="track" />} />
           <Route path="/sessions" element={<Sessions />} />
           <Route path="/laps" element={<Laps />} />
           <Route path="/export" element={<Export />} />
