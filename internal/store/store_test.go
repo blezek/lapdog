@@ -450,7 +450,7 @@ func seed(t *testing.T, s *Store) {
 		rec := &Session{
 			SessionKey: r.key, SubsessionID: 1, SessionNum: 0,
 			SessionType: r.st, EventContext: r.ctx, LeagueID: r.leagueID,
-			StartedAt: r.started,
+			StartedAt:        r.started,
 			ConnectedSeconds: r.conn, InCarSeconds: r.car, DrivingSeconds: r.drive,
 			LapsCompleted: r.laps, Incidents: r.inc, BestLapTimeS: f64p(r.best),
 			TrackID: intp(r.trackID), TrackName: strp(r.trackName),
