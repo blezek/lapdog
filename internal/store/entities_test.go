@@ -451,3 +451,153 @@ func TestEntityDimensions(t *testing.T) {
 		t.Errorf("EntityDimensions() = %v, want car and track", got)
 	}
 }
+
+// seedPace creates one car at one track with sessions long enough to measure
+// consistency. The shared seed helper gives two laps per session, which cannot
+// exercise a metric that needs five after exclusions.
+//
+// lapSet is the timed laps in order; the first is dropped as a standing start.
+func seedPace(t *testing.T, s *Store, key string, started string, lapSet []float64, pitLast bool) int64 {
+	t.Helper()
+	id, err := s.UpsertSession(&Session{
+		SessionKey: key, SubsessionID: 1, SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt: started, DrivingSeconds: 1800, LapsCompleted: len(lapSet),
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range lapSet {
+		lap := &Lap{SessionID: id, LapNumber: i + 1, LapTimeS: f64p(v)}
+		if pitLast && i == len(lapSet)-1 {
+			lap.IsPitLap = true
+		}
+		if _, err := s.InsertLap(lap); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return id
+}
+
+// consistencyOf finds the Watkins Glen row and returns its consistency percentage.
+func consistencyOf(t *testing.T, s *Store, f Filter) *float64 {
+	t.Helper()
+	rows, err := s.EntityPace(f, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityPace: %v", err)
+	}
+	for _, r := range rows {
+		if r.OtherName == "Watkins Glen" {
+			return r.ConsistencyPct
+		}
+	}
+	t.Fatal("no Watkins Glen row")
+	return nil
+}
+
+func TestConsistencyPerSessionThenAveraged(t *testing.T) {
+	s := openTemp(t)
+	// Two sessions, each internally tight, but a full second apart from each other.
+	// Per-session-then-averaged this is highly consistent. Pooling the laps would
+	// report a far worse figure, and both forms return a plausible percentage — so
+	// this test is the only thing that distinguishes them.
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{105.0, 100.0, 100.1, 100.2, 100.1, 100.0, 100.2}, false)
+	seedPace(t, s, "p2/0", "2026-07-02T10:00:00Z",
+		[]float64{106.0, 101.0, 101.1, 101.2, 101.1, 101.0, 101.2}, false)
+
+	got := consistencyOf(t, s, Filter{})
+	if got == nil {
+		t.Fatal("consistency is nil; both sessions have six laps after the first")
+	}
+	// Each session's best is 100.0 (or 101.0) and its other laps average about
+	// 0.12 s slower, so consistency is near 99.9%. Pooling gives roughly 99.4%.
+	if *got < 99.7 {
+		t.Errorf("consistency = %.2f%%, want >= 99.7 — laps are likely being pooled "+
+			"across sessions rather than measured within each", *got)
+	}
+}
+
+func TestConsistencySuppressedBelowMinimumLaps(t *testing.T) {
+	s := openTemp(t)
+	// Four timed laps: three survive dropping the first, below the five needed.
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{105.0, 100.0, 100.1, 100.2}, false)
+
+	if got := consistencyOf(t, s, Filter{}); got != nil {
+		t.Errorf("consistency = %.2f, want nil below the lap minimum — one lap is "+
+			"trivially 100%% consistent", *got)
+	}
+}
+
+func TestConsistencyExcludesPitLaps(t *testing.T) {
+	s := openTemp(t)
+	// A slow final lap marked as a pit lap must not drag consistency down.
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{105.0, 100.0, 100.1, 100.2, 100.1, 100.0, 100.1, 140.0}, true)
+
+	got := consistencyOf(t, s, Filter{})
+	if got == nil {
+		t.Fatal("consistency is nil")
+	}
+	if *got < 99.7 {
+		t.Errorf("consistency = %.2f%%, want >= 99.7 — the 140 s pit lap is being "+
+			"counted", *got)
+	}
+}
+
+func TestConsistencyExcludesOutliers(t *testing.T) {
+	s := openTemp(t)
+	// 130 s is well beyond 110%% of the 100 s best, so it is an outlier and dropped.
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{105.0, 100.0, 100.1, 100.2, 100.1, 100.0, 100.1, 130.0}, false)
+
+	got := consistencyOf(t, s, Filter{})
+	if got == nil {
+		t.Fatal("consistency is nil")
+	}
+	if *got < 99.7 {
+		t.Errorf("consistency = %.2f%%, want >= 99.7 — the 130 s outlier is being "+
+			"counted", *got)
+	}
+}
+
+// A lap just inside the threshold must still count, or the exclusion is silently
+// discarding real laps.
+func TestConsistencyKeepsLapsInsideOutlierThreshold(t *testing.T) {
+	s := openTemp(t)
+	// 108 s is inside 110 s, so it counts and pulls consistency down measurably.
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{115.0, 100.0, 100.1, 100.2, 100.1, 100.0, 108.0}, false)
+
+	got := consistencyOf(t, s, Filter{})
+	if got == nil {
+		t.Fatal("consistency is nil")
+	}
+	if *got > 99.0 {
+		t.Errorf("consistency = %.2f%%, want < 99.0 — the 108 s lap is inside the "+
+			"110%% threshold and should count", *got)
+	}
+}
+
+func TestConsistencyDeltaAccompaniesPercentage(t *testing.T) {
+	s := openTemp(t)
+	seedPace(t, s, "p1/0", "2026-07-01T10:00:00Z",
+		[]float64{105.0, 100.0, 100.5, 100.5, 100.5, 100.5, 100.5}, false)
+
+	rows, err := s.EntityPace(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := rows[0]
+	if r.ConsistencyPct == nil || r.ConsistencyDeltaS == nil {
+		t.Fatal("both consistency fields should be set together")
+	}
+	// Best 100.0, the other five laps all 100.5, so the delta is 0.5 s.
+	if *r.ConsistencyDeltaS < 0.49 || *r.ConsistencyDeltaS > 0.51 {
+		t.Errorf("ConsistencyDeltaS = %.3f, want 0.50", *r.ConsistencyDeltaS)
+	}
+}

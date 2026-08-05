@@ -34,6 +34,22 @@ var entityDims = map[string]entityDim{
 	},
 }
 
+// consistencyMinLaps is how many laps a session needs, after exclusions, before its
+// consistency is measured.
+//
+// A single lap is trivially 100% consistent, which is a lie, and one false figure
+// discredits every honest number beside it. Sessions below this are dropped from
+// the average rather than contributing a noisy value.
+const consistencyMinLaps = 5
+
+// consistencyOutlierFactor is the multiple of a session's own best lap beyond which
+// a lap is treated as an outlier and excluded.
+//
+// Chosen here rather than derived: Simresults publishes the consistency formula but
+// not its outlier rule. Motorsport's 107% rule is the precedent, loosened because a
+// lap held up in traffic is normal in a race rather than exceptional.
+const consistencyOutlierFactor = 1.10
+
 // EntityDimensions returns the allowlisted dimensions.
 func EntityDimensions() []string {
 	out := make([]string, 0, len(entityDims))
@@ -293,23 +309,66 @@ alltime AS (
   WHERE ` + pbPred + ` AND ` + d.idCol + ` = ?
     AND l.lap_time_s > 0 AND l.is_pit_lap = 0
   GROUP BY ` + d.otherID + `
+),
+-- Consistency is computed within each session and only then averaged.
+--
+-- Pooling every lap a car has ever done at a track measures something else: it
+-- conflates repeatability with improvement over time and with varying conditions.
+-- Measured on the development database the two forms differ by about 2.5
+-- percentage points, enough to move a driver across the 98% threshold.
+lap AS (
+  SELECT s.id AS sid,
+         ` + d.otherID + ` AS oid,
+         l.lap_time_s AS t,
+         ROW_NUMBER() OVER (PARTITION BY s.id ORDER BY l.lap_number) AS rn
+  FROM laps l JOIN sessions s ON s.id = l.session_id
+  WHERE ` + pred + ` AND ` + d.idCol + ` = ?
+    AND l.lap_time_s > 0 AND l.is_pit_lap = 0
+),
+-- The first timed lap of a session starts from a standing or rolling start and is
+-- not an attempt at a representative lap.
+flying AS (SELECT * FROM lap WHERE rn > 1),
+sbest AS (SELECT sid, MIN(t) AS best FROM flying GROUP BY sid),
+kept AS (
+  SELECT fl.sid, fl.oid, fl.t, sb.best
+  FROM flying fl JOIN sbest sb ON sb.sid = fl.sid
+  WHERE fl.t <= sb.best * ?
+),
+persession AS (
+  SELECT sid, oid, MIN(best) AS best,
+         AVG(CASE WHEN t > best THEN t END) AS mean_others,
+         COUNT(*) AS n
+  FROM kept
+  GROUP BY sid, oid
+  HAVING COUNT(*) >= ? AND AVG(CASE WHEN t > best THEN t END) IS NOT NULL
+),
+cons AS (
+  SELECT oid,
+         AVG(100.0 * best / mean_others) AS pct,
+         AVG(mean_others - best)         AS delta
+  FROM persession GROUP BY oid
 )
 SELECT sess.oid, sess.oname, alltime.best, inrange.best,
-       COALESCE(sess.laps, 0), sess.sessions
+       COALESCE(sess.laps, 0), sess.sessions,
+       cons.pct, cons.delta
 FROM sess
 LEFT JOIN inrange ON inrange.oid = sess.oid
 LEFT JOIN alltime ON alltime.oid = sess.oid
+LEFT JOIN cons    ON cons.oid    = sess.oid
 ORDER BY sess.laps DESC, sess.oname`
 
 	// Argument order follows the CTEs: filtered predicate, filtered predicate,
-	// all-time predicate — each followed by the entity id.
-	qargs := make([]any, 0, len(args)*2+len(pbArgs)+3)
+	// all-time predicate, filtered predicate (for the consistency lap CTE) — each
+	// followed by the entity id — then the outlier factor and the lap minimum.
+	qargs := make([]any, 0, len(args)*3+len(pbArgs)+6)
 	qargs = append(qargs, args...)
 	qargs = append(qargs, id)
 	qargs = append(qargs, args...)
 	qargs = append(qargs, id)
 	qargs = append(qargs, pbArgs...)
 	qargs = append(qargs, id)
+	qargs = append(qargs, args...)
+	qargs = append(qargs, id, consistencyOutlierFactor, consistencyMinLaps)
 
 	rows, err := s.reader.Query(q, qargs...)
 	if err != nil {
@@ -321,7 +380,8 @@ ORDER BY sess.laps DESC, sess.oname`
 	for rows.Next() {
 		var r PaceRow
 		if err := rows.Scan(&r.OtherID, &r.OtherName, &r.PersonalBestS,
-			&r.BestInRangeS, &r.Laps, &r.Sessions); err != nil {
+			&r.BestInRangeS, &r.Laps, &r.Sessions,
+			&r.ConsistencyPct, &r.ConsistencyDeltaS); err != nil {
 			return nil, fmt.Errorf("store: scan pace row: %w", err)
 		}
 		out = append(out, r)
