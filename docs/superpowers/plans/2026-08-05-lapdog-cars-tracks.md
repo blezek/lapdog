@@ -442,18 +442,23 @@ func (s *Store) EntityStats(f Filter, by string, id int) (EntityStats, error) {
 
 	// Session-level aggregate. Distance uses the session's own lap counter and the
 	// track length, so it needs no lap rows.
+	//
+	// Every aggregate is wrapped in COALESCE, and the name in MAX, because this query
+	// always returns exactly one row: for an id matching nothing, every SUM is NULL
+	// and the name would fail to scan into a string before the zero check below could
+	// report the id as absent.
 	sessQ := `
-SELECT ` + d.nameExpr + `,
-       SUM(s.driving_seconds) / 3600.0,
-       SUM(s.in_car_seconds) / 3600.0,
-       SUM(s.connected_seconds) / 3600.0,
+SELECT COALESCE(MAX(` + d.nameExpr + `), ''),
+       COALESCE(SUM(s.driving_seconds), 0) / 3600.0,
+       COALESCE(SUM(s.in_car_seconds), 0) / 3600.0,
+       COALESCE(SUM(s.connected_seconds), 0) / 3600.0,
        COUNT(*),
-       SUM(s.laps_completed),
-       SUM(s.laps_completed * COALESCE(s.track_length_km, 0)),
-       SUM(s.incidents),
-       SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position > 0 THEN 1 ELSE 0 END),
-       SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position = 1 THEN 1 ELSE 0 END),
-       SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END),
+       COALESCE(SUM(s.laps_completed), 0),
+       COALESCE(SUM(s.laps_completed * COALESCE(s.track_length_km, 0)), 0),
+       COALESCE(SUM(s.incidents), 0),
+       COALESCE(SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position > 0 THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position = 1 THEN 1 ELSE 0 END), 0),
+       COALESCE(SUM(CASE WHEN s.session_type = 'Race' AND s.finish_position BETWEEN 1 AND 3 THEN 1 ELSE 0 END), 0),
        AVG(CASE WHEN s.session_type = 'Race' AND s.starting_position > 0 AND s.finish_position > 0
                 THEN s.starting_position - s.finish_position END)
 FROM sessions s
@@ -500,16 +505,6 @@ WHERE ` + pred + ` AND ` + d.idCol + ` = ?
 	return out, nil
 }
 ```
-
-Note on `Scan` into `&out.Name` when no rows match: `SUM` over an empty set yields `NULL`, and the aggregate query always returns exactly one row. `COUNT(*)` is 0 in that case, which is why the zero check follows the scan rather than replacing it. `out.Name` would scan `NULL` into a string and error first, so the query uses `COALESCE` in `nameExpr` and the `Sessions == 0` check catches the genuinely-absent case for ids that match nothing.
-
-Correction to apply while writing: because a scan of `NULL` into `string` fails before the count check is reached, wrap the name in `COALESCE(MAX(` … `), '')`. Use this exact expression for the first selected column instead of `d.nameExpr`:
-
-```go
-	nameSel := `COALESCE(MAX(` + d.nameExpr + `), '')`
-```
-
-and select `nameSel` first, keeping everything else unchanged. Sum columns are scanned into numeric types, which accept `NULL` as zero only for `COUNT`; so also wrap each `SUM(...)` in `COALESCE(SUM(...), 0)`.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
