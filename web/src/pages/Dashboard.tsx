@@ -488,7 +488,7 @@ function ComboTable({ cells }: { cells: ComboCell[] }) {
               <td>
                 {[...e.parts]
                   .sort((a, b) => b.hours - a.hours)
-                  .map((p) => `${labelForKey(p.category)} ${p.hours.toFixed(1)}`)
+                  .map((p) => `${labelForKey(p.category)} ${hours(p.hours)}`)
                   .join(' · ')}
               </td>
             </tr>

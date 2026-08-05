@@ -452,6 +452,13 @@ type RivalRow struct {
 //
 // Opponent names are returned as recorded. Other drivers are never anonymised: a
 // race is not a race without who was in it.
+//
+// Grouping is by opponent_name, not by an opponent id, because position_events
+// has no stable identifier for the other car — see EntityList for the same
+// tradeoff on the entity side. That means a driver who changes their display
+// name mid-season splits into two rows here, each with half the real record, and
+// two different drivers who happen to share a display name merge into one row
+// that overstates how contested either rivalry actually is.
 func (s *Store) Rivals(f Filter) ([]RivalRow, error) {
 	pred, args := f.where()
 

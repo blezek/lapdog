@@ -152,6 +152,8 @@ iRacing ──shared memory──► internal/irsdk ──► internal/source �
 | `internal/synth` | The synthetic dataset generator |
 | `internal/ui/icons` | Vendored Material Design Icons, and SVG-to-PNG/ICO rasterising |
 | `web/` | React + TypeScript + ECharts frontend |
+| `web/src/pages/Entity.tsx` | The Cars and Tracks pages: one component, two dimensions |
+| `web/src/entity.ts` | Consistency banding and dimension labels, kept pure for testing |
 
 Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lapdog-design.md) and [packaging](docs/superpowers/specs/2026-08-04-lapdog-packaging.md). The [backend plan](docs/superpowers/plans/2026-08-04-lapdog-backend.md) is the task-by-task implementation record.
 
@@ -170,6 +172,8 @@ Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lap
 **Replay time is never counted.** Watching a replay is not driving, and there is deliberately no setting to change that.
 
 **Other drivers' names are never anonymised.** They are public information within a session, and a race is not a race without who you raced.
+
+**Consistency is computed per session, then averaged.** Pooling every lap a car has ever done at a track measures something else — it mixes repeatability with two years of improvement — and on real data the two forms differ by about 2.5 percentage points, enough to move a driver across the 98% threshold. Both return a plausible percentage, so a test pins the difference.
 
 ## Testing
 
