@@ -138,3 +138,88 @@ func (i *Info) FieldSize(sessionNum int) int {
 	}
 	return n
 }
+
+// Identity is who the local driver is and where their ratings stood.
+//
+// Every field is a pointer because absent and zero are different facts here. An
+// iRating of zero is a real value for an unrated licence, and a session driven
+// offline may carry no rating at all — reporting either as 0 would invent a number.
+type Identity struct {
+	UserID       *int
+	IRating      *int
+	LicString    *string
+	LicLevel     *int
+	LicSubLevel  *int
+	SafetyRating *float64
+}
+
+// MyIdentity returns the local driver's identity and ratings.
+//
+// The customer id prefers DriverInfo.DriverUserID, which states it directly, and
+// falls back to the drivers array entry. Both are present in practice; the direct
+// field cannot be wrong if the array is reordered, and the fallback covers a document
+// that omits it.
+func (i *Info) MyIdentity() Identity {
+	var id Identity
+	if i == nil {
+		return id
+	}
+
+	if i.DriverInfo.DriverUserID != 0 {
+		v := i.DriverInfo.DriverUserID
+		id.UserID = &v
+	}
+
+	me, ok := i.Me()
+	if !ok {
+		return id
+	}
+	if id.UserID == nil && me.UserID != 0 {
+		v := me.UserID
+		id.UserID = &v
+	}
+	// iRating is taken even when zero, because zero is a licence state rather than a
+	// missing reading — but only once a driver entry was actually found.
+	ir := me.IRating
+	id.IRating = &ir
+	if me.LicString != "" {
+		ls := me.LicString
+		id.LicString = &ls
+	}
+	if me.LicLevel != 0 {
+		v := me.LicLevel
+		id.LicLevel = &v
+	}
+	if me.LicSubLevel != 0 {
+		v := me.LicSubLevel
+		id.LicSubLevel = &v
+	}
+	if sr, ok := SafetyRating(me); ok {
+		id.SafetyRating = &sr
+	}
+	return id
+}
+
+// SafetyRating returns the driver's Safety Rating as a number.
+//
+// Two sources state it and they are read in a deliberate order. LicString is the
+// string the simulator shows the driver — "A 3.55" — so the number in it is the one
+// they would recognise, and it is preferred. LicSubLevel carries the same value
+// scaled by a hundred and is used when the string is absent or unparseable.
+//
+// Reading only LicSubLevel would be simpler and is what the field appears to be for,
+// but it would report a value the driver has never seen if the two ever disagree.
+func SafetyRating(d Driver) (float64, bool) {
+	if d.LicString != "" {
+		// The class is a letter and the rating follows it: "A 3.55", "R 2.50".
+		if f := strings.LastIndexByte(d.LicString, ' '); f >= 0 {
+			if v, err := strconv.ParseFloat(strings.TrimSpace(d.LicString[f+1:]), 64); err == nil {
+				return v, true
+			}
+		}
+	}
+	if d.LicSubLevel != 0 {
+		return float64(d.LicSubLevel) / 100.0, true
+	}
+	return 0, false
+}

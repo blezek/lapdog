@@ -90,7 +90,11 @@ type QualifyResult struct {
 
 // Drivers holds the DriverInfo section.
 type Drivers struct {
-	DriverCarIdx        int      `yaml:"DriverCarIdx" json:"DriverCarIdx"`
+	DriverCarIdx int `yaml:"DriverCarIdx" json:"DriverCarIdx"`
+	// DriverUserID is the local driver's customer id, stated directly rather than
+	// inferred by matching DriverCarIdx against the drivers array. Both routes exist;
+	// this one cannot be wrong if the array is reordered.
+	DriverUserID        int      `yaml:"DriverUserID" json:"DriverUserID"`
 	DriverCarEstLapTime float64  `yaml:"DriverCarEstLapTime" json:"DriverCarEstLapTime"`
 	Drivers             []Driver `yaml:"Drivers" json:"Drivers"`
 }
@@ -113,6 +117,8 @@ type Driver struct {
 	CarClassShortName  string `yaml:"CarClassShortName" json:"CarClassShortName"`
 	IRating            int    `yaml:"IRating" json:"IRating"`
 	LicString          string `yaml:"LicString" json:"LicString"`
+	LicLevel           int    `yaml:"LicLevel" json:"LicLevel"`
+	LicSubLevel        int    `yaml:"LicSubLevel" json:"LicSubLevel"`
 	IsSpectator        int    `yaml:"IsSpectator" json:"IsSpectator"`
 	CarIsAI            *int   `yaml:"CarIsAI" json:"CarIsAI,omitempty"`
 }

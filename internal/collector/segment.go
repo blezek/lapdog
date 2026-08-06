@@ -60,6 +60,7 @@ type Segment struct {
 	fieldSize            *int
 
 	captureFile *string
+	identity    sessionyaml.Identity
 	sourceJSON  string
 }
 
@@ -129,6 +130,11 @@ func (g *Segment) ApplyInfo(info *sessionyaml.Info) {
 	if n := info.FieldSize(g.SessionNum); n > 0 {
 		g.fieldSize = &n
 	}
+
+	// Who is driving, and where their ratings stand as of this document. Both ratings
+	// move after almost every official race, so they are recorded per session rather
+	// than as a single current value — that is what turns them into a progression.
+	g.identity = info.MyIdentity()
 
 	if raw, err := classifySourceJSON(info); err == nil {
 		g.sourceJSON = raw
@@ -251,7 +257,15 @@ func (g *Segment) ToStore() *store.Session {
 		QualifyBestTimeS:     g.qualifyBestTimeS,
 		FieldSize:            g.fieldSize,
 
-		AIOpponentCount:    g.Class.AIOpponentCount,
+		AIOpponentCount: g.Class.AIOpponentCount,
+
+		DriverUserID:       g.identity.UserID,
+		DriverIRating:      g.identity.IRating,
+		DriverLicString:    g.identity.LicString,
+		DriverLicLevel:     g.identity.LicLevel,
+		DriverLicSubLevel:  g.identity.LicSubLevel,
+		DriverSafetyRating: g.identity.SafetyRating,
+
 		ClassifySourceJSON: g.sourceJSON,
 		CaptureFile:        g.captureFile,
 	}
