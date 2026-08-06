@@ -8,7 +8,7 @@
 # Those tests skip when the bundle is absent, so that a clone without a Node
 # toolchain still runs the Go suite. A skip that can be reached in CI is a test
 # that has quietly stopped running, so LAPDOG_REQUIRE_BUNDLE turns it into a
-# failure here. `make test-ci` sets it.
+# failure here. `make test` sets it.
 
 name: CI
 
@@ -62,15 +62,12 @@ jobs:
       - name: Frontend typecheck
         run: cd web && npm run typecheck
 
-      - name: Frontend tests
-        run: cd web && npm run test
+      - name: Vet and gofmt
+        run: make lint
 
-      - name: go vet
-        run: make vet
-
-      # Requires the bundle rather than skipping over it.
-      - name: Go tests
-        run: make test-ci
+      # Both suites, and the Go one requires the bundle rather than skipping over it.
+      - name: Tests
+        run: make test
 
       # The release target is Windows, so a host-only build would not prove much.
       # CGO_ENABLED=0 is what makes this work without a mingw toolchain.

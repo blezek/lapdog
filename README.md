@@ -21,15 +21,15 @@ macOS is the development platform. There is no simulator and no system tray, but
 The quickest thing worth doing. Two years of generated sessions, so every chart has data in it.
 
 ```bash
-make run-ctl        # http://127.0.0.1:47047, Ctrl-C to stop
+make run        # http://127.0.0.1:47047, Ctrl-C to stop
 ```
 
-On a fresh clone the database does not exist yet — it is generated, not committed. `run-ctl` will tell you so and print these:
+On a fresh clone the database does not exist yet — it is generated, not committed. `run` will tell you so and print these:
 
 ```bash
 make dataset        # generate capture files (~250 MB, a few minutes, gitignored)
 make dataset-db     # replay them into .dataset.db (~25 MB)
-make run-ctl
+make run
 ```
 
 The database is built by *replaying captures*, not by writing rows directly. That is deliberate: the development data has been through the same decode, classify and accounting path as a real session, so a bug in that path shows up while you are looking at the interface rather than only on a race weekend.
@@ -37,14 +37,14 @@ The database is built by *replaying captures*, not by writing rows directly. Tha
 Point it at any database, including a real one copied off a Windows machine:
 
 ```bash
-make run-ctl DEV_DB=~/.local/share/lapdog/lapdog.db
-make run-ctl DEV_PORT=48000
+make run DEV_DB=~/.local/share/lapdog/lapdog.db
+make run DEV_PORT=48000
 ```
 
 ### Work on the frontend
 
 ```bash
-make run-ctl        # terminal 1: the Go API and data
+make run        # terminal 1: the Go API and data
 make ui-dev         # terminal 2: http://localhost:5173
 ```
 
@@ -69,10 +69,9 @@ XDG_DATA_HOME=/tmp/lapdog-test go run ./cmd/lapdog
 ### Build the Windows binaries
 
 ```bash
-make build-windows      # dist/lapdog.exe, windows/amd64, ~14 MB
-make build-windows-ctl  # dist/lapdogctl.exe, the console CLI, ~13 MB
-make verify-embed       # assert both are windows/amd64 with the interface inside
-make portable           # zip both
+make build-windows  # dist/lapdog.exe (~14 MB) and dist/lapdogctl.exe (~13 MB)
+make verify-embed   # assert both are windows/amd64 with the interface inside
+make portable       # zip both
 ```
 
 `portable` builds both and zips them. `lapdogctl.exe` ships because the machine that needs diagnosing is a Windows machine with a simulator and no development environment — `lapdogctl inspect` on a capture is how a telemetry problem gets identified there, and requiring a Go toolchain to obtain it puts the tool out of reach exactly when it is needed.
@@ -103,38 +102,28 @@ make build
 
 | Target | What it does |
 |---|---|
-| `run-ctl` | Serve `.dataset.db` on 47047 for local testing |
+| `build` | Every check, then every artefact: binaries, zip, installer |
+| `ci` | Every check and nothing else — what CI runs |
+| `test` | The Go and web test suites |
+| `run` | Serve `.dataset.db` on 47047 for local testing |
+| `ui-dev` | Vite dev server with hot reload |
 | `dataset` | Generate synthetic capture files into `.dataset` (~250 MB) |
 | `dataset-db` | Replay those captures into `.dataset.db` |
-| `ui` | Build the frontend into `internal/web/dist` |
-| `ui-dev` | Vite dev server with hot reload |
-| `ui-clean` | Rebuild the frontend from scratch |
-| `test` | Go tests |
-| `test-ci` | Go tests with the frontend bundle required rather than skipped |
-| `vet` | `go vet` |
-| `ci` | Everything CI runs |
-| `build` | Every check, then every artefact: binaries, zip, installer |
-| `build-windows` | Cross-compile the tray app to `dist/lapdog.exe` |
-| `build-ctl` | Build `lapdogctl` for this machine |
-| `build-windows-ctl` | Cross-compile `lapdogctl` to `dist/lapdogctl.exe` |
-| `build-gen` | Build `lapdog-gen`, the dataset generator |
-| `verify-embed` | Prove the interface is inside both windows/amd64 binaries |
-| `fixtures` | Regenerate the committed test fixtures (~1.7 MB) |
-| `validate` | Replay `.dataset` back through decode, parse and classify |
-| `portable` | Zip both executables |
-| `installer` | Build the NSIS installer (needs `brew install makensis`) |
-| `sign` | Authenticode-sign, when a certificate is configured |
-| `release` | Test, build, portable, installer, sign, checksums |
+| `release` | `build`, then Authenticode-sign and write `SHA256SUMS` |
 | `tools` | Install the macOS packaging toolchain via brew |
 | `clean` | Remove build output and the generated bundle |
+
+Plumbing, invocable but normally reached as a prerequisite: `lint`, `ui`, `verify-embed`, `portable`, `installer`, `sign`, `validate`, `fixtures`, `build-windows`, `build-ctl`, `build-gen`.
+
+To force a frontend rebuild when the inputs look unchanged: `make clean ui`.
 
 ## lapdogctl
 
 A console CLI, separate from the tray app because a GUI-subsystem executable has no console to print to. It ships in the portable zip as `lapdogctl.exe`, so it is available on the Windows machine that has the simulator.
 
 ```bash
-make build-ctl          # this machine
-make build-windows-ctl  # dist/lapdogctl.exe
+make build-ctl      # this machine
+make build-windows  # dist/lapdogctl.exe, alongside the tray app
 ./dist/lapdogctl ingest <captures-dir> <lapdog.db>   # replay captures into a database
 ./dist/lapdogctl summary <lapdog.db>                 # print what a database contains
 ./dist/lapdogctl reclassify <lapdog.db>              # re-derive classification from stored provenance
@@ -183,7 +172,7 @@ Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lap
 
 **The frontend bundle is generated, not committed.** `internal/web/dist` is gitignored apart from a `.gitkeep`, which is tracked because `//go:embed` fails at *compile* time when its pattern matches nothing — without it every Go build on a clean clone breaks, including `go vet`. CI builds the bundle and fails if it is ever committed again.
 
-**Bundle-dependent tests skip when the frontend is not built**, so a clone without Node still runs the Go suite. `LAPDOG_REQUIRE_BUNDLE=1` turns those skips into failures; `make test-ci` and CI set it, because a skip that is reachable in CI is a test that has quietly stopped running.
+**Bundle-dependent tests skip when the frontend is not built**, so a clone without Node still runs the Go suite. `LAPDOG_REQUIRE_BUNDLE=1` turns those skips into failures; `make test` and CI set it, because a skip that is reachable in CI is a test that has quietly stopped running.
 
 **`lapdog.exe` is a GUI-subsystem binary.** Linked `-H windowsgui` so no console window appears, which also makes it useless as a CLI — hence `lapdogctl`.
 
@@ -221,7 +210,7 @@ node tools/verify-animation.mjs http://127.0.0.1:47047 "/cars?range=90" "BEST LA
 node tools/verify-animation.mjs http://127.0.0.1:47047 "/tracks?range=90" "BEST LAP BY MONTH"
 ```
 
-Both need a server running (`make run-ctl`). They exist because both properties are invisible to unit tests and both regressed silently once.
+Both need a server running (`make run`). They exist because both properties are invisible to unit tests and both regressed silently once.
 
 ## Releases
 

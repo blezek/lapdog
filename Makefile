@@ -26,7 +26,7 @@ SETUP    := $(DIST)/lapdog-$(VERSION)-setup.exe
 # builds and emits unsigned artefacts with a warning, because a missing
 # certificate must not block a development build.
 # The development dataset. Overridable so a real database can be inspected with the
-# same target: make run-ctl DEV_DB=~/.local/share/lapdog/lapdog.db
+# same target: make run DEV_DB=~/.local/share/lapdog/lapdog.db
 DEV_DB   ?= .dataset.db
 DEV_PORT ?= 47047
 
@@ -46,56 +46,44 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 # target arguments only from 4.4.
 .NOTPARALLEL:
 
-.PHONY: help build test test-ci vet fmt-check ui ui-clean ui-dev ci verify-embed run-ctl dataset-db \
-        build-windows build-windows-ctl build-ctl build-gen \
-        fixtures dataset validate portable installer sign release tools clean
+.PHONY: help build ci test run ui-dev dataset dataset-db release tools clean \
+        lint ui verify-embed build-windows build-ctl build-gen \
+        fixtures validate portable installer sign
 
+# Only the targets worth typing. The rest are prerequisites of these — real
+# targets, still invocable, just not things anyone reaches for directly.
 help:
-	@echo "test           run the Go unit tests"
-	@echo "test-ci        run the Go tests with the frontend bundle required"
-	@echo "vet            run go vet"
-	@echo "fmt-check      fail if any file is not gofmt-formatted"
-	@echo "ui             build the frontend into internal/web/dist"
-	@echo "ui-clean       rebuild the frontend from scratch"
-	@echo "ci             what CI runs: fmt check, vet, frontend, both test suites, cross-build"
-	@echo "verify-embed   prove the interface is inside a Windows binary"
-	@echo "ui-dev         run the Vite dev server against a local API"
-	@echo "run-ctl        serve $(DEV_DB) on port $(DEV_PORT) for local testing"
-	@echo "dataset-db     ingest the generated captures into $(DEV_DB)"
-	@echo "build-windows  cross-compile the tray app for Windows"
-	@echo "build-ctl      build the lapdogctl CLI for this machine"
-	@echo "build-windows-ctl  cross-compile the lapdogctl CLI for Windows"
-	@echo "build-gen      build the dataset generator"
-	@echo "fixtures       regenerate the committed test fixtures (~1.7 MB)"
-	@echo "dataset        generate the full two-year dataset into .dataset (~250 MB, gitignored)"
-	@echo "validate       replay .dataset back through decode, parse and classify"
-	@echo "build          every check, then every artefact: binaries, zip, installer"
-	@echo "portable       zip both self-contained executables"
-	@echo "installer      build the NSIS installer (needs: brew install makensis)"
-	@echo "sign           Authenticode-sign the exe and installer (needs SIGN_PKCS12)"
-	@echo "release        test, build, portable, installer, sign, checksums"
-	@echo "tools          install the macOS packaging toolchain via brew"
+	@echo "build       every check, then every artefact: binaries, zip, installer"
+	@echo "ci          every check, and nothing else: what CI runs"
+	@echo "test        the Go and web test suites"
+	@echo "run         serve $(DEV_DB) on http://127.0.0.1:$(DEV_PORT)"
+	@echo "ui-dev      Vite dev server with hot reload, against a running API"
+	@echo "dataset     generate the synthetic capture files (~250 MB, gitignored)"
+	@echo "dataset-db  replay those captures into $(DEV_DB)"
+	@echo "release     build, then Authenticode-sign and write SHA256SUMS"
+	@echo "tools       install the macOS packaging toolchain via brew"
+	@echo "clean       remove build output and the generated bundle"
+	@echo
+	@echo "Plumbing, used as prerequisites: lint ui verify-embed portable"
+	@echo "installer sign validate fixtures build-windows build-ctl build-gen"
 
-test:
-	go test ./...
-
-# The bundle-dependent tests skip when the frontend has not been built, so that a
-# clone without Node still runs the Go suite. That skip must not be reachable in
-# CI or a release: this target builds the bundle first and makes its absence a
-# failure rather than a skip.
-test-ci: $(BUNDLE)
+# The bundle-dependent tests skip when the frontend has not been built. That skip
+# used to be reachable from `make test`, which meant the quick target silently
+# proved less than the CI one — the difference was a whole second target to
+# remember. The bundle is a file dependency, so requiring it costs nothing when it
+# is already current, and LAPDOG_REQUIRE_BUNDLE turns a skip into a failure.
+test: $(BUNDLE)
 	LAPDOG_REQUIRE_BUNDLE=1 go test ./...
-
-vet:
-	go vet ./...
+	cd web && npm run test
 
 # gofmt -l lists unformatted files and exits 0 regardless, so the failure has to
 # come from the output being non-empty rather than from the exit code. This is
 # what would have caught the unformatted files that reached main unnoticed.
-fmt-check:
+lint:
+	go vet ./...
 	@files="$$(gofmt -l ./internal ./cmd)"; \
 	if [ -n "$$files" ]; then \
-	  echo "fmt-check: these files are not gofmt-formatted:"; \
+	  echo "lint: these files are not gofmt-formatted:"; \
 	  echo "$$files"; \
 	  exit 1; \
 	fi
@@ -104,12 +92,8 @@ fmt-check:
 # minified JavaScript that changes wholesale on every UI edit, so committing it
 # would bury real changes under regenerated noise. CI builds it, and so does any
 # target that needs it — see BUNDLE below.
+# To force a rebuild when the inputs look unchanged: make clean ui
 ui: $(BUNDLE)
-
-# Force a rebuild even when the inputs look unchanged.
-ui-clean:
-	rm -rf internal/web/dist/assets internal/web/dist/index.html
-	$(MAKE) ui
 
 # A file target, not a phony one, so builds can depend on the bundle without
 # rerunning npm on every invocation. index.html stands in for the whole bundle
@@ -140,25 +124,24 @@ ui-dev:
 # Windows executable, it was named .exe, and it could not run on Windows at all.
 # GOARCH matters too — windows/amd64 is the shipped target, and iRacing does not
 # run on Windows on ARM, so an arm64 build would be useless even though it links.
+# Both shipped Windows binaries, because they always ship together and splitting
+# them was two targets describing one release.
+#
+# The -H windowsgui on the first and its absence on the second is the load-bearing
+# difference: the tray app must have no console window, and lapdogctl must have one
+# or it has nowhere to print.
+#
+# lapdogctl.exe ships because the machine that needs diagnosing is a Windows machine
+# with a simulator and no development environment. `lapdogctl inspect` on a capture
+# is how a telemetry problem gets identified there, and requiring a Go toolchain to
+# obtain it puts the tool out of reach exactly when it is needed.
 build-windows: $(BUNDLE)
 	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui $(LDFLAGS)" -o $(EXE) ./cmd/lapdog
+	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(CTLEXE) ./cmd/lapdogctl
 
-# lapdogctl is a separate binary precisely because a GUI-subsystem executable has
-# no console and is therefore useless as a CLI.
+# The host build of the CLI, for development on this machine.
 build-ctl: $(BUNDLE)
 	go build -ldflags "$(LDFLAGS)" -o dist/lapdogctl ./cmd/lapdogctl
-
-# The Windows build of the same CLI, shipped alongside the tray app.
-#
-# No -H windowsgui here, and that is the whole point: lapdogctl is a console
-# program, and linking it into the GUI subsystem would give it nowhere to print.
-#
-# It ships because the machine that needs diagnosing is a Windows machine with a
-# simulator and no development environment. `lapdogctl inspect` on a capture is how
-# a telemetry problem gets identified there, and requiring a Go toolchain to obtain
-# it puts the tool out of reach exactly when it is needed.
-build-windows-ctl: $(BUNDLE)
-	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(CTLEXE) ./cmd/lapdogctl
 
 build-gen:
 	go build -ldflags "$(LDFLAGS)" -o dist/lapdog-gen ./cmd/lapdog-gen
@@ -199,13 +182,13 @@ dataset-db: build-ctl
 # sessions, so every chart has something in it. The tray application is the other
 # way to run the interface, but on a development machine it has no simulator to read
 # and so shows an empty database.
-run-ctl: build-ctl
+run: build-ctl
 	@test -f $(DEV_DB) || { \
-	  echo "run-ctl: $(DEV_DB) does not exist. To create it:"; \
-	  echo "           make dataset      # generate captures (~250 MB, a few minutes)"; \
-	  echo "           make dataset-db   # replay them into $(DEV_DB)"; \
-	  echo "         Or point at another database: make run-ctl DEV_DB=path/to.db"; exit 1; }
-	@echo "run-ctl: http://127.0.0.1:$(DEV_PORT)  (Ctrl-C to stop)"
+	  echo "run: $(DEV_DB) does not exist. To create it:"; \
+	  echo "       make dataset      # generate captures (~250 MB, a few minutes)"; \
+	  echo "       make dataset-db   # replay them into $(DEV_DB)"; \
+	  echo "     Or point at another database: make run DEV_DB=path/to.db"; exit 1; }
+	@echo "run: http://127.0.0.1:$(DEV_PORT)  (Ctrl-C to stop)"
 	./dist/lapdogctl serve $(DEV_DB) $(DEV_PORT)
 
 # The whole Windows toolchain runs on macOS, which is why the release needs no
@@ -220,7 +203,7 @@ tools:
 # archive and replaces only the entries it is given, so a rebuild after renaming or
 # dropping a file would leave the old entry in place — a stale binary shipping
 # beside a current one, with nothing to indicate it.
-portable: build-windows build-windows-ctl
+portable: build-windows
 	rm -f $(PORTABLE)
 	cd $(DIST) && zip -q -9 $(notdir $(PORTABLE)) lapdog.exe lapdogctl.exe
 	@echo "portable: $(PORTABLE)"
@@ -276,7 +259,7 @@ build: ci build-ctl build-gen portable installer
 	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe lapdogctl lapdog-gen \
 	  $(notdir $(PORTABLE)) $(notdir $(SETUP))
 
-release: test-ci vet build-windows portable installer sign
+release: build sign
 	cd $(DIST) && shasum -a 256 lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) > SHA256SUMS
 	@echo
 	@echo "Release artefacts in $(DIST):"
@@ -291,7 +274,7 @@ release: test-ci vet build-windows portable installer sign
 # about what the binary was compiled for, and it passed happily on a darwin build
 # that merely had a PE header attached. Go records the real values in the binary,
 # so they are read back out of it.
-verify-embed: build-windows build-windows-ctl
+verify-embed: build-windows
 	@for f in $(EXE) $(CTLEXE); do \
 	  go version -m $$f | grep -q "GOOS=windows" || { \
 	    echo "verify-embed: $$f was not built for Windows:"; go version -m $$f | grep GOOS; exit 1; }; \
@@ -304,8 +287,8 @@ verify-embed: build-windows build-windows-ctl
 	done
 
 # Mirrors .github/workflows/ci.yml so the same checks can be run before pushing.
-ci: fmt-check vet test-ci verify-embed
-	cd web && npm run typecheck && npm run test
+ci: lint test verify-embed
+	cd web && npm run typecheck
 	GOOS=windows GOARCH=amd64 go build ./...
 	@echo "ci: ok"
 
