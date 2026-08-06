@@ -19,7 +19,7 @@ UI_SRC  := $(shell find web/src -type f 2>/dev/null) \
 
 EXE     := $(DIST)/lapdog.exe
 CTLEXE  := $(DIST)/lapdogctl.exe
-ZIP     := $(DIST)/lapdog-$(VERSION)-windows-amd64.zip
+ZIP     := $(DIST)/lapdog-$(VERSION)-portable.zip
 SETUP   := $(DIST)/lapdog-$(VERSION)-setup.exe
 
 # Authenticode signing is optional. Absent a certificate the release still

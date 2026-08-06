@@ -118,7 +118,7 @@ This is the significant finding, and it shapes everything below: **the complete 
 2. verify        make test-ci                           -> web.Check passes, no skips
 3. compile       GOOS=windows GOARCH=amd64              -> dist/lapdog.exe
                  -ldflags "-H windowsgui -X …Version=…"
-4. portable      zip                                    -> dist/lapdog-<ver>-windows-amd64.zip
+4. portable      zip                                    -> dist/lapdog-<ver>-portable.zip
 5. installer     makensis packaging/windows/lapdog.nsi  -> dist/lapdog-<ver>-setup.exe
 6. sign          osslsigncode (both exe and setup)      -> *-signed
 7. checksums     shasum -a 256                          -> dist/SHA256SUMS
@@ -197,7 +197,7 @@ A release publishes:
 
 ```
 lapdog-<version>-setup.exe                 installer, signed when a certificate is available
-lapdog-<version>-windows-amd64.zip         portable, containing lapdog.exe and a README
+lapdog-<version>-portable.zip              portable, containing lapdog.exe and lapdogctl.exe
 SHA256SUMS                                 checksums for both
 ```
 
