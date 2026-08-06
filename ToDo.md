@@ -83,6 +83,53 @@ lapdogctl.exe inspect -grep CarIsAI path\to\capture.lpd
 
 That prints the matching session-YAML lines with line numbers. If the field is named something else, correct it and then run `lapdogctl reclassify` — the provenance columns exist precisely so this is a recomputation rather than lost data.
 
+## Resuming this session
+
+Ten commits, `33fc186..b5f044d`, 28 files, +1679/-130. `git log` is the primary record — every message explains its reasoning, and this is the map to it. The working tree is clean and `make ci` passes.
+
+| Commit | Subject |
+|---|---|
+| `33fc186` | Record the driver's identity and ratings per session |
+| `b89b5dd` | Show iRating and Safety Rating progression |
+| `390f0f6` | Ship lapdogctl.exe in the portable zip |
+| `28daa44` | Name the portable zip after what it is |
+| `b4a89ff` | Upload both Windows binaries from CI |
+| `1781e1c` | Name the portable-zip variable PORTABLE |
+| `01d7e18` | Add a build target for every check and every artefact |
+| `7f49cf7` | Slim the make target list from 26 to 22 |
+| `421d765` | Record the server-side collection discussion |
+| `b5f044d` | Add a ToDo for collecting the Windows telemetry logs |
+
+### What changed, in one paragraph each
+
+**Identity and ratings.** Schema version 2 (`internal/store/migrations/0002_driver_identity.sql`) adds six nullable `driver_*` columns and `idx_sessions_driver`. `sessionyaml.MyIdentity()` picks the driver whose `CarIdx` matches the document's own `DriverCarIdx` — taking the first entry in `Drivers` would record an opponent's rating as the user's own. Safety Rating derives from the licence string, falling back to `LicSubLevel/100`. `store.Ratings(Filter)` returns the progression plus headline values computed over the same range, so a card cannot disagree with the chart beside it. Served at `GET /api/ratings`; shown as two dashboard cards and a read-only row in Settings.
+
+**Packaging.** `make portable` now builds and zips both Windows binaries; `lapdogctl.exe` ships because the machine that needs diagnosing has no Go toolchain. `make build` is the new uber-target: `ci` first, then every artefact. The zip is `lapdog-<version>-portable.zip`, matching `-setup.exe`.
+
+**Make targets slimmed, 26 to 22.** `test-ci` folded into `test` (which now also runs the web suite), `build-windows-ctl` into `build-windows`, `vet` and `fmt-check` into `lint`, `ui-clean` deleted. `run-ctl` renamed to **`run`**.
+
+### Getting back to a running system
+
+```bash
+make run        # http://127.0.0.1:47047 against .dataset.db
+make ci         # every check
+make build      # every check, then every artefact
+```
+
+`.dataset.db` was re-ingested on 2026-08-06 and is at schema version 2, so all 1,331 sessions carry identity: customer 271828, iRating 1405 rising to 2249, licence `A 3.55`. The rating panels therefore render, and `/api/ratings` returns 1,331 points with a delta of +809.
+
+Note that Safety Rating shows a delta of exactly 0 there, which is a property of the generator rather than a bug — `internal/synth/yaml.go` writes a fixed `LicString: A 3.55` for every session while varying iRating. If the Safety Rating chart ever needs to be seen moving, the generator has to vary the licence string. iRating exercises the progression path fully in the meantime.
+
+On a database that predates the migration the panels are **absent** rather than empty, which is deliberate: a card asserting "no rating" would read as a rating of nothing.
+
+### Things learned the hard way, worth not rediscovering
+
+- `web/tools/shoot.mjs` silently measured the wrong thing: `730` is not a range the interface offers, so `useFilter` fell back to 90 days and a "three range" PASS was really two. It now rejects unknown ids. Legal values: `7 30 90 365 all`.
+- The Safety Rating card printed the raw licence string over a chart of numbers, so it could read `A 3.55` above a line ending at 3.94. `licenceLabel()` in `web/src/format.ts` now takes the class from the string and the number from the plotted value.
+- Rating series drop their markers past 60 points; two years of practice is over a thousand observations and the markers merge into a band that hides the line.
+- Recipes are serial now (`.NOTPARALLEL:`), because `portable` and `installer` both write `dist/lapdog.exe` and under `-j` both could be in it at once. Global rather than per-target because this is GNU Make 3.81.
+- Tests were mutation-checked, not merely passed: dropping `driver_irating` from the `ON CONFLICT` clause and swapping two scan targets each produce a failure. Worth repeating for new tests — six non-discriminating tests shipped earlier in this project.
+
 ## Also outstanding, unrelated to telemetry
 
 - **No git remote.** Everything is local only, and the CI workflow has never actually run — it is verified to parse and `make ci` passes, nothing more.
