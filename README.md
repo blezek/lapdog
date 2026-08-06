@@ -66,15 +66,20 @@ It writes to `~/.local/share/lapdog`. To leave that alone:
 XDG_DATA_HOME=/tmp/lapdog-test go run ./cmd/lapdog
 ```
 
-### Build the Windows binary
+### Build the Windows binaries
 
 ```bash
-make build-windows    # dist/lapdog.exe, windows/amd64, ~13 MB
-make verify-embed     # assert it is windows/amd64 and the interface is inside it
-make portable         # zip it
+make build-windows      # dist/lapdog.exe, windows/amd64, ~14 MB
+make build-windows-ctl  # dist/lapdogctl.exe, the console CLI, ~13 MB
+make verify-embed       # assert both are windows/amd64 with the interface inside
+make portable           # zip both
 ```
 
-`verify-embed` reads `GOOS` and `GOARCH` back out of the binary rather than trusting the build. This is not paranoia: the target once produced a `darwin/arm64` binary with a Windows PE header that `file` happily called a Windows executable.
+`portable` builds both and zips them. `lapdogctl.exe` ships because the machine that needs diagnosing is a Windows machine with a simulator and no development environment — `lapdogctl inspect` on a capture is how a telemetry problem gets identified there, and requiring a Go toolchain to obtain it puts the tool out of reach exactly when it is needed.
+
+The two differ in PE subsystem, which is the load-bearing part: `lapdog.exe` is linked `-H windowsgui` (subsystem 2, no console window), `lapdogctl.exe` is not (subsystem 3, a console program that can print).
+
+`verify-embed` reads `GOOS` and `GOARCH` back out of each binary rather than trusting the build. This is not paranoia: the target once produced a `darwin/arm64` binary with a Windows PE header that `file` happily called a Windows executable.
 
 ### Everything CI runs
 
@@ -99,12 +104,13 @@ Vet, frontend build, typecheck, both test suites, Windows cross-compile, embeddi
 | `vet` | `go vet` |
 | `ci` | Everything CI runs |
 | `build-windows` | Cross-compile the tray app to `dist/lapdog.exe` |
-| `build-ctl` | Build `lapdogctl`, the development CLI |
+| `build-ctl` | Build `lapdogctl` for this machine |
+| `build-windows-ctl` | Cross-compile `lapdogctl` to `dist/lapdogctl.exe` |
 | `build-gen` | Build `lapdog-gen`, the dataset generator |
-| `verify-embed` | Prove the interface is inside a windows/amd64 binary |
+| `verify-embed` | Prove the interface is inside both windows/amd64 binaries |
 | `fixtures` | Regenerate the committed test fixtures (~1.7 MB) |
 | `validate` | Replay `.dataset` back through decode, parse and classify |
-| `portable` | Zip the executable |
+| `portable` | Zip both executables |
 | `installer` | Build the NSIS installer (needs `brew install makensis`) |
 | `sign` | Authenticode-sign, when a certificate is configured |
 | `release` | Test, build, portable, installer, sign, checksums |
@@ -113,10 +119,11 @@ Vet, frontend build, typecheck, both test suites, Windows cross-compile, embeddi
 
 ## lapdogctl
 
-The development CLI. Not shipped — a GUI-subsystem executable has no console, which is exactly why this is a separate binary.
+A console CLI, separate from the tray app because a GUI-subsystem executable has no console to print to. It ships in the portable zip as `lapdogctl.exe`, so it is available on the Windows machine that has the simulator.
 
 ```bash
-make build-ctl
+make build-ctl          # this machine
+make build-windows-ctl  # dist/lapdogctl.exe
 ./dist/lapdogctl ingest <captures-dir> <lapdog.db>   # replay captures into a database
 ./dist/lapdogctl summary <lapdog.db>                 # print what a database contains
 ./dist/lapdogctl reclassify <lapdog.db>              # re-derive classification from stored provenance

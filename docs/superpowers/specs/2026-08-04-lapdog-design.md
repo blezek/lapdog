@@ -406,7 +406,13 @@ Total size of the captures directory is capped, default 2 GB, configurable, `0` 
 
 ### 10.4 Development CLI
 
-`cmd/lapdogctl` is a console binary, not shipped in releases.
+`cmd/lapdogctl` is a console binary.
+
+> **Amended 2026-08-06.** This originally said "not shipped in releases". It now ships
+> in the portable zip as `lapdogctl.exe`: the machine that needs diagnosing is a
+> Windows machine with a simulator and no development environment, and requiring a Go
+> toolchain to obtain the diagnostic tool put it out of reach exactly when it was
+> needed. The installer still carries only `lapdog.exe`.
 
 | Command | Purpose |
 |---|---|

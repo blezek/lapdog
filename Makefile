@@ -18,6 +18,7 @@ UI_SRC  := $(shell find web/src -type f 2>/dev/null) \
            $(wildcard web/vite.config.ts web/tsconfig*.json)
 
 EXE     := $(DIST)/lapdog.exe
+CTLEXE  := $(DIST)/lapdogctl.exe
 ZIP     := $(DIST)/lapdog-$(VERSION)-windows-amd64.zip
 SETUP   := $(DIST)/lapdog-$(VERSION)-setup.exe
 
@@ -34,7 +35,7 @@ SIGN_PASSWORD ?=
 TIMESTAMP_URL ?= http://timestamp.digicert.com
 
 .PHONY: help test test-ci vet fmt-check ui ui-clean ui-dev ci verify-embed run-ctl dataset-db \
-        build-windows build-ctl build-gen \
+        build-windows build-windows-ctl build-ctl build-gen \
         fixtures dataset validate portable installer sign release tools clean
 
 help:
@@ -50,12 +51,13 @@ help:
 	@echo "run-ctl        serve $(DEV_DB) on port $(DEV_PORT) for local testing"
 	@echo "dataset-db     ingest the generated captures into $(DEV_DB)"
 	@echo "build-windows  cross-compile the tray app for Windows"
-	@echo "build-ctl      build the lapdogctl development CLI"
+	@echo "build-ctl      build the lapdogctl CLI for this machine"
+	@echo "build-windows-ctl  cross-compile the lapdogctl CLI for Windows"
 	@echo "build-gen      build the dataset generator"
 	@echo "fixtures       regenerate the committed test fixtures (~1.7 MB)"
 	@echo "dataset        generate the full two-year dataset into .dataset (~250 MB, gitignored)"
 	@echo "validate       replay .dataset back through decode, parse and classify"
-	@echo "portable       zip the self-contained executable"
+	@echo "portable       zip both self-contained executables"
 	@echo "installer      build the NSIS installer (needs: brew install makensis)"
 	@echo "sign           Authenticode-sign the exe and installer (needs SIGN_PKCS12)"
 	@echo "release        test, build, portable, installer, sign, checksums"
@@ -129,9 +131,21 @@ build-windows: $(BUNDLE)
 	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui $(LDFLAGS)" -o $(EXE) ./cmd/lapdog
 
 # lapdogctl is a separate binary precisely because a GUI-subsystem executable has
-# no console and is therefore useless as a CLI. It is not shipped in releases.
+# no console and is therefore useless as a CLI.
 build-ctl: $(BUNDLE)
 	go build -ldflags "$(LDFLAGS)" -o dist/lapdogctl ./cmd/lapdogctl
+
+# The Windows build of the same CLI, shipped alongside the tray app.
+#
+# No -H windowsgui here, and that is the whole point: lapdogctl is a console
+# program, and linking it into the GUI subsystem would give it nowhere to print.
+#
+# It ships because the machine that needs diagnosing is a Windows machine with a
+# simulator and no development environment. `lapdogctl inspect` on a capture is how
+# a telemetry problem gets identified there, and requiring a Go toolchain to obtain
+# it puts the tool out of reach exactly when it is needed.
+build-windows-ctl: $(BUNDLE)
+	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(CTLEXE) ./cmd/lapdogctl
 
 build-gen:
 	go build -ldflags "$(LDFLAGS)" -o dist/lapdog-gen ./cmd/lapdog-gen
@@ -186,10 +200,16 @@ run-ctl: build-ctl
 tools:
 	brew install makensis msitools osslsigncode
 
-# The executable is genuinely self-contained, so a zip is a legitimate
+# Both executables are genuinely self-contained, so a zip is a legitimate
 # distribution channel rather than a degraded one.
-portable: build-windows
-	cd $(DIST) && zip -q -9 $(notdir $(ZIP)) lapdog.exe
+#
+# The archive is removed first rather than written into. zip adds to an existing
+# archive and replaces only the entries it is given, so a rebuild after renaming or
+# dropping a file would leave the old entry in place — a stale binary shipping
+# beside a current one, with nothing to indicate it.
+portable: build-windows build-windows-ctl
+	rm -f $(ZIP)
+	cd $(DIST) && zip -q -9 $(notdir $(ZIP)) lapdog.exe lapdogctl.exe
 	@echo "portable: $(ZIP)"
 
 installer: build-windows
@@ -230,29 +250,31 @@ sign:
 	echo "sign: signed $(EXE) $(SETUP)"
 
 release: test-ci vet build-windows portable installer sign
-	cd $(DIST) && shasum -a 256 lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) > SHA256SUMS
+	cd $(DIST) && shasum -a 256 lapdog.exe lapdogctl.exe $(notdir $(ZIP)) $(notdir $(SETUP)) > SHA256SUMS
 	@echo
 	@echo "Release artefacts in $(DIST):"
-	@cd $(DIST) && ls -lh lapdog.exe $(notdir $(ZIP)) $(notdir $(SETUP)) SHA256SUMS
+	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe $(notdir $(ZIP)) $(notdir $(SETUP)) SHA256SUMS
 
 # Proves the interface really is inside a Windows executable rather than read from
 # disk at runtime, by finding strings that only exist in the bundle and icon set.
 #
-# It checks the shipped tray binary, which is the artefact users receive.
+# It checks both shipped binaries, which are the artefacts users receive.
 #
 # The target is asserted rather than assumed. Greping for strings says nothing
 # about what the binary was compiled for, and it passed happily on a darwin build
 # that merely had a PE header attached. Go records the real values in the binary,
 # so they are read back out of it.
-verify-embed: build-windows
-	@go version -m $(EXE) | grep -q "GOOS=windows" || { \
-	  echo "verify-embed: $(EXE) was not built for Windows:"; go version -m $(EXE) | grep GOOS; exit 1; }
-	@go version -m $(EXE) | grep -q "GOARCH=amd64" || { \
-	  echo "verify-embed: $(EXE) is not amd64, the shipped target:"; go version -m $(EXE) | grep GOARCH; exit 1; }
-	@for n in LapDog mdi-racing-helmet; do \
-	  grep -qa "$$n" $(EXE) || { echo "verify-embed: $$n is missing from the binary"; exit 1; }; \
+verify-embed: build-windows build-windows-ctl
+	@for f in $(EXE) $(CTLEXE); do \
+	  go version -m $$f | grep -q "GOOS=windows" || { \
+	    echo "verify-embed: $$f was not built for Windows:"; go version -m $$f | grep GOOS; exit 1; }; \
+	  go version -m $$f | grep -q "GOARCH=amd64" || { \
+	    echo "verify-embed: $$f is not amd64, the shipped target:"; go version -m $$f | grep GOARCH; exit 1; }; \
+	  for n in LapDog mdi-racing-helmet; do \
+	    grep -qa "$$n" $$f || { echo "verify-embed: $$n is missing from $$f"; exit 1; }; \
+	  done; \
+	  echo "verify-embed: $$f is windows/amd64 with the interface and icons inside"; \
 	done
-	@echo "verify-embed: $(EXE) is windows/amd64 with the interface and icons inside"
 
 # Mirrors .github/workflows/ci.yml so the same checks can be run before pushing.
 ci: fmt-check vet test-ci verify-embed
