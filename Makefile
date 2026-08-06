@@ -17,10 +17,10 @@ UI_SRC  := $(shell find web/src -type f 2>/dev/null) \
            $(wildcard web/index.html web/package.json web/package-lock.json) \
            $(wildcard web/vite.config.ts web/tsconfig*.json)
 
-EXE     := $(DIST)/lapdog.exe
-CTLEXE  := $(DIST)/lapdogctl.exe
-ZIP     := $(DIST)/lapdog-$(VERSION)-portable.zip
-SETUP   := $(DIST)/lapdog-$(VERSION)-setup.exe
+EXE      := $(DIST)/lapdog.exe
+CTLEXE   := $(DIST)/lapdogctl.exe
+PORTABLE := $(DIST)/lapdog-$(VERSION)-portable.zip
+SETUP    := $(DIST)/lapdog-$(VERSION)-setup.exe
 
 # Authenticode signing is optional. Absent a certificate the release still
 # builds and emits unsigned artefacts with a warning, because a missing
@@ -208,9 +208,9 @@ tools:
 # dropping a file would leave the old entry in place — a stale binary shipping
 # beside a current one, with nothing to indicate it.
 portable: build-windows build-windows-ctl
-	rm -f $(ZIP)
-	cd $(DIST) && zip -q -9 $(notdir $(ZIP)) lapdog.exe lapdogctl.exe
-	@echo "portable: $(ZIP)"
+	rm -f $(PORTABLE)
+	cd $(DIST) && zip -q -9 $(notdir $(PORTABLE)) lapdog.exe lapdogctl.exe
+	@echo "portable: $(PORTABLE)"
 
 installer: build-windows
 	@command -v makensis >/dev/null || { echo "makensis not found; run 'make tools'"; exit 1; }
@@ -250,10 +250,10 @@ sign:
 	echo "sign: signed $(EXE) $(SETUP)"
 
 release: test-ci vet build-windows portable installer sign
-	cd $(DIST) && shasum -a 256 lapdog.exe lapdogctl.exe $(notdir $(ZIP)) $(notdir $(SETUP)) > SHA256SUMS
+	cd $(DIST) && shasum -a 256 lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) > SHA256SUMS
 	@echo
 	@echo "Release artefacts in $(DIST):"
-	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe $(notdir $(ZIP)) $(notdir $(SETUP)) SHA256SUMS
+	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) SHA256SUMS
 
 # Proves the interface really is inside a Windows executable rather than read from
 # disk at runtime, by finding strings that only exist in the bundle and icon set.
