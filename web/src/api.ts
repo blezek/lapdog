@@ -221,6 +221,24 @@ export interface Status {
   sessionsRecorded: number
   version: string
   databasePath: string
+  telemetry: Telemetry
+}
+
+/**
+ * Telemetry describes where the readings come from.
+ *
+ * Read-only on purpose: the source is fixed by the simulator and the paths follow
+ * from the data directory the platform dictates, so there is nothing here a user
+ * could usefully change. It exists to be read out into a bug report.
+ */
+export interface Telemetry {
+  source: string
+  sourceKind: string
+  available: boolean
+  platform: string
+  dataDir: string
+  capturesDir: string
+  logPath: string
 }
 
 export interface Config {

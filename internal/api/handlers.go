@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path/filepath"
+	"runtime"
 	"strconv"
 
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/irsdk"
 	"github.com/blezek/lapdog/internal/store"
 	"github.com/blezek/lapdog/internal/version"
 )
@@ -18,8 +21,33 @@ import (
 // screen shows.
 type statusResponse struct {
 	collector.Status
-	Version      string `json:"version"`
-	DatabasePath string `json:"databasePath"`
+	Version      string    `json:"version"`
+	DatabasePath string    `json:"databasePath"`
+	Telemetry    Telemetry `json:"telemetry"`
+}
+
+// Telemetry describes where the readings come from, for the settings screen to show
+// and for a bug report to quote.
+//
+// These are facts about the running process, not preferences, which is why nothing
+// here is editable: the source is fixed by the simulator, and the paths are derived
+// from the data directory the platform dictates.
+type Telemetry struct {
+	// Source is the shared-memory mapping the reader opens.
+	Source string `json:"source"`
+	// SourceKind names what that is, because it is the thing most often
+	// misunderstood: the reader samples live shared memory, not the .ibt telemetry
+	// files iRacing writes to disk.
+	SourceKind string `json:"sourceKind"`
+	// Available reports whether this build can read live telemetry at all. Only
+	// Windows can; elsewhere the interface still serves an existing database.
+	Available bool `json:"available"`
+	// Platform is the GOOS this binary was built for.
+	Platform string `json:"platform"`
+
+	DataDir     string `json:"dataDir"`
+	CapturesDir string `json:"capturesDir"`
+	LogPath     string `json:"logPath"`
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
@@ -27,10 +55,24 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if s.sp != nil {
 		st = s.sp.Status()
 	}
+	// The data directory is the database's parent, so the sibling paths follow from
+	// it without the API needing to be told where it lives.
+	dbPath := s.st.Path()
+	dataDir := filepath.Dir(dbPath)
+
 	s.writeJSON(w, statusResponse{
 		Status:       st,
 		Version:      version.Version,
-		DatabasePath: s.st.Path(),
+		DatabasePath: dbPath,
+		Telemetry: Telemetry{
+			Source:      irsdk.MemMapFileName,
+			SourceKind:  "live shared memory, sampled once per poll interval",
+			Available:   runtime.GOOS == "windows",
+			Platform:    runtime.GOOS,
+			DataDir:     dataDir,
+			CapturesDir: config.CapturesDir(dataDir),
+			LogPath:     config.LogPath(dataDir),
+		},
 	})
 }
 

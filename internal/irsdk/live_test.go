@@ -207,3 +207,80 @@ func TestSnapshotFromToleratesUnusableYAML(t *testing.T) {
 		t.Errorf("row was lost along with the YAML: Lap = %d, %v", lap, ok)
 	}
 }
+
+// A live simulator completes a new buffer while a row is being copied. That is not a
+// torn read, and the reader must recover rather than reporting failure.
+//
+// This documents behaviour that was checked because the Windows build recorded nothing
+// while connected, and this path had never run against a live simulator. The
+// hypothesis was that a newly-completed buffer would be mistaken for tearing and every
+// read would fail. It does not: the first attempt does see a tick change, but the
+// retry re-reads the header and reads the now-latest buffer successfully. At sixty hertz
+// a retry takes microseconds against a sixteen millisecond tick, so it converges. The
+// test is kept because it pins that convergence, which is the property the live path
+// depends on and which no other test covers.
+func TestReadRowRecoversWhenANewerBufferCompletes(t *testing.T) {
+	mapping := syntheticMapping("x")
+
+	// Parse the header while buffer 1 is newest, which is what the caller does.
+	hdr, err := ParseHeader(mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, ok := hdr.LatestBuf()
+	if !ok || before.BufOffset != 8192 {
+		t.Fatalf("expected buffer 1 at 8192 to be newest, got %+v", before)
+	}
+
+	// The sim finishes buffer 0 with a higher tick, so it becomes latest. Buffer 1 is
+	// untouched and still self-consistent — this is the ordinary live case, not a tear.
+	putI(mapping, 48, 300)
+	putI(mapping, 56, 300)
+
+	row, err := readRow(mapping, hdr)
+	if err != nil {
+		t.Fatalf("readRow failed on an ordinary buffer rotation: %v", err)
+	}
+	// It returns the buffer that is latest once it settles, which is buffer 0 holding
+	// Lap 7 — the freshest complete row, which is what a poll wants.
+	lap, ok := NewRow(mustVarHeaders(t, mapping), row).Int("Lap")
+	if !ok {
+		t.Fatal("returned row does not decode")
+	}
+	if lap != 7 {
+		t.Errorf("decoded Lap = %d, want 7 from the buffer that was latest on settling", lap)
+	}
+}
+
+// A genuine tear — the chosen buffer being rewritten mid-copy — must still be caught.
+func TestReadRowStillDetectsTheChosenBufferChanging(t *testing.T) {
+	mapping := syntheticMapping("x")
+	hdr, err := ParseHeader(mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// TickCountBegin ahead of TickCount is what a write in progress looks like, and it
+	// stays that way on every retry.
+	putI(mapping, 64, 200)
+	putI(mapping, 72, 201)
+
+	if _, err := readRow(mapping, hdr); err == nil {
+		t.Error("readRow accepted a row from a buffer that was being rewritten")
+	}
+}
+
+// mustVarHeaders parses the variable layout out of a synthetic mapping.
+func mustVarHeaders(t *testing.T, mapping []byte) []VarHeader {
+	t.Helper()
+	hdr, err := ParseHeader(mapping)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := int(hdr.VarHeaderOffset)
+	vh, err := ParseVarHeaders(mapping[start:start+int(hdr.NumVars)*VarHeaderSize], int(hdr.NumVars))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return vh
+}

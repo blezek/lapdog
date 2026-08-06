@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/irsdk"
 	"github.com/blezek/lapdog/internal/store"
 	"github.com/blezek/lapdog/internal/web/webtest"
 )
@@ -995,5 +997,68 @@ func TestRacecraftEndpointRequiresID(t *testing.T) {
 	rec := get(t, h, "/api/racecraft?by=car", nil)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 when id is absent", rec.Code)
+	}
+}
+
+// The status response names where the readings come from.
+//
+// This exists because a Windows build recorded nothing while connected, and the first
+// question was what the reader had been pointed at — which the interface could not
+// answer. The source is also the most misunderstood thing about this application: it
+// is live shared memory, not the .ibt files iRacing writes to disk.
+func TestStatusReportsTheTelemetrySource(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := get(t, h, "/api/status", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	var got struct {
+		DatabasePath string `json:"databasePath"`
+		Telemetry    struct {
+			Source      string `json:"source"`
+			SourceKind  string `json:"sourceKind"`
+			Available   bool   `json:"available"`
+			Platform    string `json:"platform"`
+			DataDir     string `json:"dataDir"`
+			CapturesDir string `json:"capturesDir"`
+			LogPath     string `json:"logPath"`
+		} `json:"telemetry"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	// The mapping name comes from the SDK constant rather than being retyped, so a
+	// change there cannot leave the interface reporting a stale name.
+	if got.Telemetry.Source != irsdk.MemMapFileName {
+		t.Errorf("source = %q, want %q", got.Telemetry.Source, irsdk.MemMapFileName)
+	}
+	// The kind must say it is shared memory, because a reader who assumes it is the
+	// .ibt file will conclude the wrong thing about why nothing recorded.
+	if !strings.Contains(strings.ToLower(got.Telemetry.SourceKind), "shared memory") {
+		t.Errorf("sourceKind = %q, want it to say shared memory", got.Telemetry.SourceKind)
+	}
+	if got.Telemetry.Platform != runtime.GOOS {
+		t.Errorf("platform = %q, want %q", got.Telemetry.Platform, runtime.GOOS)
+	}
+	// Live telemetry exists only on Windows, and the interface must say so rather than
+	// leaving a Mac user wondering why no session appears.
+	if want := runtime.GOOS == "windows"; got.Telemetry.Available != want {
+		t.Errorf("available = %v on %s, want %v", got.Telemetry.Available, runtime.GOOS, want)
+	}
+
+	// The sibling paths are derived from the database's directory, so they must agree
+	// with it rather than being independently guessed.
+	wantDir := filepath.Dir(got.DatabasePath)
+	if got.Telemetry.DataDir != wantDir {
+		t.Errorf("dataDir = %q, want %q, the database's directory", got.Telemetry.DataDir, wantDir)
+	}
+	for name, path := range map[string]string{
+		"capturesDir": got.Telemetry.CapturesDir,
+		"logPath":     got.Telemetry.LogPath,
+	} {
+		if !strings.HasPrefix(path, wantDir) {
+			t.Errorf("%s = %q, which is not inside the data directory %q", name, path, wantDir)
+		}
 	}
 }

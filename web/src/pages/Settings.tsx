@@ -279,12 +279,75 @@ export function Settings() {
           </div>
         </div>
 
+        {/*
+            Read-only, and deliberately so: the source is fixed by the simulator and
+            the paths follow from the data directory the platform dictates. Nothing
+            here is a preference. It is shown because when nothing records, the first
+            question is what the reader was pointed at — and because the source is the
+            single most misunderstood thing about this application.
+        */}
+        <div className="setting">
+          <div className="setting-label">
+            Telemetry source
+            <span className="setting-hint mono">{status.data?.telemetry.source ?? '—'}</span>
+            <span className="setting-hint">
+              {status.data?.telemetry.sourceKind ?? ''}
+              {status.data && !status.data.telemetry.available
+                ? ` · unavailable on ${status.data.telemetry.platform}, so no session will record on this machine`
+                : ''}
+            </span>
+          </div>
+          <div className="setting-control">
+            {status.data?.telemetry.available ? 'Available' : 'Unavailable'}
+          </div>
+        </div>
+
+        {/* Absent variables are why a connected session records nothing, so they are
+            named rather than counted. */}
+        {status.data?.missingVars && status.data.missingVars.length > 0 && (
+          <div className="setting">
+            <div className="setting-label">
+              Refused: missing telemetry variables
+              <span className="setting-hint mono">
+                {status.data.missingVars.join(', ')}
+              </span>
+              <span className="setting-hint">
+                The session was not recorded rather than recorded wrongly. These names
+                come from the simulator's variable list.
+              </span>
+            </div>
+            <div className="setting-control">{status.data.missingVars.length}</div>
+          </div>
+        )}
+
         <div className="setting">
           <div className="setting-label">
             Database
             <span className="setting-hint mono">{status.data?.databasePath ?? '—'}</span>
           </div>
           <div className="setting-control">{status.data?.version ?? ''}</div>
+        </div>
+
+        <div className="setting">
+          <div className="setting-label">
+            Captures
+            <span className="setting-hint mono">{status.data?.telemetry.capturesDir ?? '—'}</span>
+            <span className="setting-hint">
+              Copy this folder to replay real sessions elsewhere with lapdogctl ingest.
+            </span>
+          </div>
+          <div className="setting-control">{config.data?.captureEnabled ? 'On' : 'Off'}</div>
+        </div>
+
+        <div className="setting">
+          <div className="setting-label">
+            Log
+            <span className="setting-hint mono">{status.data?.telemetry.logPath ?? '—'}</span>
+            <span className="setting-hint">
+              Records why a session was refused, if one was.
+            </span>
+          </div>
+          <div className="setting-control" />
         </div>
       </div>
 
