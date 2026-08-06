@@ -9,16 +9,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// mappingSize is how much of the shared memory region to map.
+// fallbackMappingSize bounds the view when the region's true size cannot be
+// determined.
 //
-// The sim does not publish the region's size, so a fixed window is mapped. 2 MiB
-// comfortably covers the header, the variable headers, the triple buffers and a
-// large session YAML string; the SDK's own samples take the same approach.
-//
-// Mapping more than the region contains is safe because the pages are only read
-// where the header says data lives, and every one of those offsets is bounds
-// checked against this length before use.
-const mappingSize = 2 << 20
+// It is a floor for safety, not a guess at the real size: every offset read out of
+// the mapping is bounds checked against whatever length is in use, so a smaller
+// bound can only truncate, never overrun. The header, the variable headers and the
+// triple buffers all sit well inside it.
+const fallbackMappingSize = 1 << 20
 
 // OpenFileMappingW, declared here because golang.org/x/sys/windows does not wrap
 // it.
@@ -72,11 +70,25 @@ func Open() (*Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
 	}
-	view, err := windows.MapViewOfFile(h, windows.FILE_MAP_READ, 0, 0, mappingSize)
+	// A length of zero maps the whole section, which is what the reference SDK does
+	// (irsdk_utils.cpp: MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0)).
+	//
+	// Passing an explicit length here was a real bug and the reason a Windows build
+	// connected to iRacing and recorded nothing: MapViewOfFile fails outright when
+	// asked for more bytes than the section contains, and the section the simulator
+	// creates is computed from its own limits rather than being a round number. The
+	// request was 2 MiB, the call returned ERROR_ACCESS_DENIED, and every poll then
+	// reported the simulator as absent.
+	view, err := windows.MapViewOfFile(h, windows.FILE_MAP_READ, 0, 0, 0)
 	if err != nil {
 		windows.CloseHandle(h)
-		return nil, fmt.Errorf("irsdk: map view: %w", err)
+		return nil, fmt.Errorf("irsdk: map view of %s: %w", MemMapFileName, err)
 	}
+
+	// Ask the kernel how large the mapped region actually is, rather than assuming.
+	// The slice must not extend past the section, or a header offset near the end
+	// would read unmapped memory instead of being rejected by the bounds checks.
+	size := regionSize(view)
 	// `go vet` reports "possible misuse of unsafe.Pointer" on the conversion below,
 	// and it is a false positive here rather than something to work around.
 	//
@@ -93,7 +105,7 @@ func Open() (*Conn, error) {
 	return &Conn{
 		handle: h,
 		view:   view,
-		buf:    unsafe.Slice((*byte)(unsafe.Pointer(view)), mappingSize),
+		buf:    unsafe.Slice((*byte)(unsafe.Pointer(view)), size),
 	}, nil
 }
 
@@ -129,4 +141,23 @@ func (c *Conn) Close() error {
 		c.handle = 0
 	}
 	return firstErr
+}
+
+// regionSize reports how many bytes are mapped at view.
+//
+// VirtualQuery is asked rather than trusting a constant, because the simulator sizes
+// its section from its own limits and those have changed across versions. If the
+// query fails the fallback applies, which can only under-report: every offset taken
+// from the mapping is bounds checked against the length in use, so a short bound
+// rejects a read that a correct bound would have allowed, rather than reading memory
+// that is not there.
+func regionSize(view uintptr) int {
+	var mbi windows.MemoryBasicInformation
+	if err := windows.VirtualQuery(view, &mbi, unsafe.Sizeof(mbi)); err != nil {
+		return fallbackMappingSize
+	}
+	if mbi.RegionSize < uintptr(HeaderSize) {
+		return fallbackMappingSize
+	}
+	return int(mbi.RegionSize)
 }

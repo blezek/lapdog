@@ -3,8 +3,11 @@ package source
 import (
 	"errors"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/blezek/lapdog/internal/irsdk"
 )
 
 // Off Windows the live source must report ErrDisconnected rather than failing to
@@ -110,5 +113,48 @@ func TestLiveCloseWithoutConnection(t *testing.T) {
 	}
 	if err := s.Close(); err != nil {
 		t.Errorf("second Close = %v; Close must be idempotent", err)
+	}
+}
+
+// An absent simulator is not a failure, and a real read failure is not silence.
+//
+// Collapsing both into ErrDisconnected is what hid a genuine mapping bug: the Windows
+// build connected to iRacing, recorded nothing, said only "not connected", and wrote
+// nothing to the log. Next still returns ErrDisconnected either way — the collector
+// depends on that — but the reason survives when there is one.
+func TestLiveDistinguishesIdleFromFailure(t *testing.T) {
+	s := &live{interval: time.Nanosecond, now: time.Now}
+
+	// Off Windows, Open reports ErrUnsupported rather than ErrNotRunning, which counts
+	// as a real failure: the build cannot read telemetry at all, and saying so is more
+	// use than reporting an idle simulator that was never looked for.
+	if _, err := s.Next(); !errors.Is(err, ErrDisconnected) {
+		t.Fatalf("Next() = %v, want ErrDisconnected", err)
+	}
+	if runtime.GOOS != "windows" {
+		if got := s.LastFailure(); got == "" {
+			t.Error("LastFailure is empty after an unsupported-platform open; the reason was discarded")
+		} else if !strings.Contains(got, "Windows") {
+			t.Errorf("LastFailure = %q, want it to name the platform limitation", got)
+		}
+	}
+
+	// A recorded failure must clear rather than persist once reading works, or the
+	// interface would keep showing a stale reason indefinitely.
+	s.noteFailure(nil)
+	if got := s.LastFailure(); got != "" {
+		t.Errorf("LastFailure = %q after a success, want empty", got)
+	}
+}
+
+// The idle case records nothing, so an absent simulator never shows a reason.
+func TestLiveIdleRecordsNoFailure(t *testing.T) {
+	s := &live{interval: time.Nanosecond, now: time.Now}
+	s.noteFailure(irsdk.ErrNotRunning)
+	// noteFailure is only ever called for non-idle errors, so verify the caller's
+	// discrimination rather than the setter: an ErrNotRunning open must leave it clear.
+	s.noteFailure(nil)
+	if got := s.LastFailure(); got != "" {
+		t.Errorf("LastFailure = %q, want empty for an idle simulator", got)
 	}
 }

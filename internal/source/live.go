@@ -1,6 +1,7 @@
 package source
 
 import (
+	"errors"
 	"sync"
 	"time"
 
@@ -29,6 +30,31 @@ type live struct {
 
 	// now is swappable so the timestamp behaviour can be tested without sleeping.
 	now func() time.Time
+
+	// lastFailure is the most recent non-idle failure, retained so the interface can
+	// say why nothing is being read instead of only that nothing is.
+	lastFailure string
+}
+
+// noteFailure records, or clears, the reason live reading is failing.
+func (s *live) noteFailure(err error) {
+	s.mu.Lock()
+	if err == nil {
+		s.lastFailure = ""
+	} else {
+		s.lastFailure = err.Error()
+	}
+	s.mu.Unlock()
+}
+
+// LastFailure returns the most recent non-idle failure, or an empty string.
+//
+// The simulator being absent is not a failure and never appears here; this is for the
+// case where the mapping exists but cannot be read, which is otherwise silent.
+func (s *live) LastFailure() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastFailure
 }
 
 // NewLive returns a Source reading the running simulator.
@@ -72,8 +98,17 @@ func (s *live) Next() (Frame, error) {
 	if s.conn == nil {
 		conn, err := irsdk.Open()
 		if err != nil {
+			// The simulator not running is the ordinary case and stays quiet. Any
+			// other failure — a mapping that exists but cannot be opened or viewed —
+			// is reported, because flattening everything into ErrDisconnected is what
+			// made a real mapping bug indistinguishable from an idle simulator: the
+			// interface said "not connected" and the log said nothing at all.
+			if !errors.Is(err, irsdk.ErrNotRunning) {
+				s.noteFailure(err)
+			}
 			return Frame{}, ErrDisconnected
 		}
+		s.noteFailure(nil)
 		s.conn = conn
 	}
 
@@ -82,10 +117,18 @@ func (s *live) Next() (Frame, error) {
 		// A failed read after the mapping existed usually means the sim exited.
 		// Drop the mapping so the next poll reopens it rather than reading a
 		// region that no longer belongs to a running simulator.
+		//
+		// ErrNotRunning here means the connected bit is clear, which is what the
+		// simulator reports at its menus — ordinary, and not worth recording. Anything
+		// else is a real read failure and is kept for the interface to show.
+		if !errors.Is(err, irsdk.ErrNotRunning) {
+			s.noteFailure(err)
+		}
 		s.conn.Close()
 		s.conn = nil
 		return Frame{}, ErrDisconnected
 	}
+	s.noteFailure(nil)
 
 	s.mu.Lock()
 	s.meta = capture.Meta{
