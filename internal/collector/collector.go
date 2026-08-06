@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -294,14 +295,29 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 		c.mu.Lock()
 		c.status.MissingVars = missing
 		c.mu.Unlock()
+		// The names it needed and the names the simulator actually published, both, so
+		// a refusal can be diagnosed from one log line rather than by guessing which
+		// spelling is wrong. The required names came from 2015 documentation.
+		published := f.Row.Names()
+		sort.Strings(published)
 		c.log.Error("refusing to record session: required telemetry variables absent",
-			"missing", strings.Join(missing, ","), "session", seg.Key)
+			"missing", strings.Join(missing, ","),
+			"missingCount", len(missing),
+			"required", strings.Join(need, ","),
+			"publishedCount", len(published),
+			"published", strings.Join(published, ","),
+			"session", seg.Key,
+			"isRace", seg.IsRace())
 		return nil
 	}
 
 	c.mu.Lock()
 	c.status.MissingVars = nil
 	c.mu.Unlock()
+	c.log.Info("recording session",
+		"session", seg.Key, "type", seg.Class.SessionType, "context", seg.Class.EventContext,
+		"track", seg.trackName, "car", seg.carName, "isRace", seg.IsRace(),
+		"pollIntervalSeconds", c.pollInterval().Seconds())
 
 	// The live incident variable is preferred when present because it updates
 	// continuously rather than only when the YAML does.

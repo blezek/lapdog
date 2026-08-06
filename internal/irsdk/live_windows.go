@@ -3,6 +3,7 @@
 package irsdk
 
 import (
+	"errors"
 	"fmt"
 	"unsafe"
 
@@ -61,15 +62,35 @@ type Conn struct {
 // as the normal idle state rather than a failure. The mapping only exists while
 // iRacing is up, so failing to open it is the ordinary case, not an error worth
 // surfacing to the user.
-func Open() (*Conn, error) {
+func Open() (*Conn, error) { return OpenTraced(nil) }
+
+// OpenTraced maps the region, reporting each step.
+//
+// Every step is traced because this is the only Windows-specific code in the project
+// and the machine that runs it has no development environment: a failure here can be
+// diagnosed from a log or not at all. The steps report what they observed rather than
+// only that they failed — a mapping that opens and views 1.2 MB with a header
+// declaring zero variables is a completely different problem from one that never
+// opens, and the two are indistinguishable from "not connected".
+func OpenTraced(tr Trace) (*Conn, error) {
+	tr.note("opening telemetry mapping", "name", MemMapFileName)
+
 	name, err := windows.UTF16PtrFromString(MemMapFileName)
 	if err != nil {
+		tr.note("mapping name could not be encoded", "err", err)
 		return nil, fmt.Errorf("irsdk: encode mapping name: %w", err)
 	}
 	h, err := openFileMapping(windows.FILE_MAP_READ, name)
 	if err != nil {
+		// Absent is the ordinary case: the section exists only while iRacing runs.
+		// The error number is included because access denied and not found mean very
+		// different things — the first suggests a permissions or session-isolation
+		// problem, the second simply that the simulator is closed.
+		tr.note("mapping could not be opened", "err", err, "errno", errnoOf(err),
+			"meaning", "file-not-found normally means iRacing is not running")
 		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
 	}
+	tr.note("mapping opened", "handle", uintptr(h))
 	// A length of zero maps the whole section, which is what the reference SDK does
 	// (irsdk_utils.cpp: MapViewOfFile(h, FILE_MAP_READ, 0, 0, 0)).
 	//
@@ -81,6 +102,11 @@ func Open() (*Conn, error) {
 	// reported the simulator as absent.
 	view, err := windows.MapViewOfFile(h, windows.FILE_MAP_READ, 0, 0, 0)
 	if err != nil {
+		// This call failing with a non-zero length was the original bug behind a build
+		// that connected and recorded nothing, so its failure is spelled out.
+		tr.note("view could not be mapped", "err", err, "errno", errnoOf(err),
+			"requestedLength", 0,
+			"meaning", "a length of zero maps the whole section; access-denied here would mean the request exceeded it")
 		windows.CloseHandle(h)
 		return nil, fmt.Errorf("irsdk: map view of %s: %w", MemMapFileName, err)
 	}
@@ -89,6 +115,8 @@ func Open() (*Conn, error) {
 	// The slice must not extend past the section, or a header offset near the end
 	// would read unmapped memory instead of being rejected by the bounds checks.
 	size := regionSize(view)
+	tr.note("view mapped", "bytes", size,
+		"note", "this is the section size the kernel reports, not a fixed window")
 	// `go vet` reports "possible misuse of unsafe.Pointer" on the conversion below,
 	// and it is a false positive here rather than something to work around.
 	//
@@ -115,10 +143,28 @@ func Open() (*Conn, error) {
 // All the parsing happens in snapshotFrom, which has no build tag and is tested on
 // every platform. This method exists only to hand it the mapped bytes.
 func (c *Conn) Snapshot() (Header, []VarHeader, []byte, []byte, error) {
+	return c.SnapshotTraced(nil)
+}
+
+// SnapshotTraced is Snapshot with a step trace.
+func (c *Conn) SnapshotTraced(tr Trace) (Header, []VarHeader, []byte, []byte, error) {
 	if c == nil || c.buf == nil {
+		tr.note("snapshot on a closed connection")
 		return Header{}, nil, nil, nil, ErrNotRunning
 	}
-	return snapshotFrom(c.buf)
+	return snapshotTraced(c.buf, tr)
+}
+
+// errnoOf extracts a Windows error number for logging, or zero.
+//
+// The number matters as much as the message: access denied and file not found lead to
+// opposite conclusions about whether the simulator is even running.
+func errnoOf(err error) uintptr {
+	var errno windows.Errno
+	if errors.As(err, &errno) {
+		return uintptr(errno)
+	}
+	return 0
 }
 
 // Close unmaps the view and releases the handle.
@@ -151,12 +197,19 @@ func (c *Conn) Close() error {
 // from the mapping is bounds checked against the length in use, so a short bound
 // rejects a read that a correct bound would have allowed, rather than reading memory
 // that is not there.
-func regionSize(view uintptr) int {
+func regionSize(view uintptr) int { return regionSizeTraced(view, nil) }
+
+// regionSizeTraced is regionSize with a step trace.
+func regionSizeTraced(view uintptr, tr Trace) int {
 	var mbi windows.MemoryBasicInformation
 	if err := windows.VirtualQuery(view, &mbi, unsafe.Sizeof(mbi)); err != nil {
+		tr.note("region size query failed, using the fallback bound",
+			"err", err, "fallbackBytes", fallbackMappingSize)
 		return fallbackMappingSize
 	}
 	if mbi.RegionSize < uintptr(HeaderSize) {
+		tr.note("region smaller than a header, using the fallback bound",
+			"reportedBytes", mbi.RegionSize, "headerBytes", HeaderSize)
 		return fallbackMappingSize
 	}
 	return int(mbi.RegionSize)

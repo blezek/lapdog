@@ -1,6 +1,7 @@
 package applog
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -122,5 +123,42 @@ func TestDoesNotRotateSmallLog(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	if !strings.Contains(string(b), "existing") {
 		t.Error("the existing entry was lost")
+	}
+}
+
+// The level is shared and switchable, so turning debug on in settings affects loggers
+// that were already handed out. A logger captured before the change must honour it
+// too, or the toggle would appear to do nothing until a restart.
+func TestSetDebugAffectsAnExistingLogger(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapdog.log")
+	log, c, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+
+	SetDebug(false)
+	log.Debug("suppressed-line")
+	SetDebug(true)
+	log.Debug("emitted-line")
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := string(b)
+	if strings.Contains(got, "suppressed-line") {
+		t.Error("a debug line was written while the level was info")
+	}
+	if !strings.Contains(got, "emitted-line") {
+		t.Error("a debug line was dropped after debug was switched on; the toggle does not reach existing loggers")
+	}
+}
+
+// Debug is on by default, because the machine that needs diagnosing has no
+// development environment and a quiet log there is no information at all.
+func TestDefaultLevelIsDebug(t *testing.T) {
+	if Level.Level() != slog.LevelDebug {
+		t.Errorf("default level = %v, want debug", Level.Level())
 	}
 }

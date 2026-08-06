@@ -2,6 +2,10 @@ package source
 
 import (
 	"errors"
+	"io"
+	"log/slog"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +38,17 @@ type live struct {
 	// lastFailure is the most recent non-idle failure, retained so the interface can
 	// say why nothing is being read instead of only that nothing is.
 	lastFailure string
+
+	// log receives the step trace. Never nil after NewLive.
+	log *slog.Logger
+
+	// polls counts calls to Next, so repeated identical outcomes can be summarised
+	// rather than written once a second forever. A 1 Hz loop left unthrottled fills a
+	// four megabyte log with the same line and buries the one that matters.
+	polls int64
+	// loggedVars records whether the variable list has been dumped. It is written once
+	// per connection because it is long and only changes when the sim's layout does.
+	loggedVars bool
 }
 
 // noteFailure records, or clears, the reason live reading is failing.
@@ -62,8 +77,41 @@ func (s *live) LastFailure() string {
 // It does not fail when the sim is absent: connecting is attempted lazily in Next,
 // because the sim not running is the normal state and must not stop the tray or
 // the web interface from starting.
-func NewLive() (Source, error) {
-	return &live{interval: time.Second, now: time.Now}, nil
+func NewLive() (Source, error) { return NewLiveWithLogger(nil) }
+
+// NewLiveWithLogger returns a live Source that narrates its read path.
+//
+// The logger is not optional in practice. This is the only code that cannot be
+// exercised on the development machine, and the machine that runs it has no debugger,
+// so the trace is the sole means of finding out why a read failed. A nil logger is
+// accepted so tests need not supply one, and discards the trace.
+func NewLiveWithLogger(log *slog.Logger) (Source, error) {
+	if log == nil {
+		log = slog.New(slog.NewTextHandler(io.Discard, nil))
+	}
+	return &live{interval: time.Second, now: time.Now, log: log}, nil
+}
+
+// discardLog swallows output, for a source constructed without a logger.
+var discardLog = slog.New(slog.NewTextHandler(io.Discard, nil))
+
+// logger returns the source's logger, or a discarding one.
+//
+// Nil-safe on purpose: the tests construct a live source as a struct literal, which is
+// a legitimate way to exercise it, and a logger requirement should not be the reason
+// that breaks.
+func (s *live) logger() *slog.Logger {
+	if s.log == nil {
+		return discardLog
+	}
+	return s.log
+}
+
+// trace returns an irsdk.Trace that writes to the source's logger at debug level.
+func (s *live) trace() irsdk.Trace {
+	return func(step string, kv ...any) {
+		s.logger().Debug("telemetry: "+step, kv...)
+	}
 }
 
 // SetInterval changes the poll rate, satisfying Paced.
@@ -95,8 +143,18 @@ func (s *live) Next() (Frame, error) {
 	s.mu.Unlock()
 	time.Sleep(interval)
 
+	s.polls++
+
 	if s.conn == nil {
-		conn, err := irsdk.Open()
+		// Tracing every open at 1 Hz would fill the log while iRacing is closed, which
+		// is most of the time. The first few attempts are traced in full, then one in
+		// sixty — about once a minute — which is frequent enough to show the state and
+		// sparse enough to leave room for the session that matters.
+		tr := s.trace()
+		if s.polls > 3 && s.polls%60 != 0 {
+			tr = nil
+		}
+		conn, err := irsdk.OpenTraced(tr)
 		if err != nil {
 			// The simulator not running is the ordinary case and stays quiet. Any
 			// other failure — a mapping that exists but cannot be opened or viewed —
@@ -110,9 +168,17 @@ func (s *live) Next() (Frame, error) {
 		}
 		s.noteFailure(nil)
 		s.conn = conn
+		s.loggedVars = false
+		s.logger().Info("telemetry: connected to the simulator")
 	}
 
-	hdr, vh, row, yamlBytes, err := s.conn.Snapshot()
+	// The first read after connecting is traced in full; afterwards once a minute, so
+	// a long session does not bury its own beginning.
+	readTrace := s.trace()
+	if s.loggedVars && s.polls%60 != 0 {
+		readTrace = nil
+	}
+	hdr, vh, row, yamlBytes, err := s.conn.SnapshotTraced(readTrace)
 	if err != nil {
 		// A failed read after the mapping existed usually means the sim exited.
 		// Drop the mapping so the next poll reopens it rather than reading a
@@ -126,9 +192,34 @@ func (s *live) Next() (Frame, error) {
 		}
 		s.conn.Close()
 		s.conn = nil
+		if s.loggedVars {
+			// Only worth a line if a connection was actually established; otherwise
+			// this is the ordinary idle path.
+			s.logger().Info("telemetry: connection lost", "err", err)
+		}
+		s.loggedVars = false
 		return Frame{}, ErrDisconnected
 	}
 	s.noteFailure(nil)
+
+	// The full variable list, once per connection.
+	//
+	// This is the single most useful line in the log. The collector refuses a session
+	// outright when a required variable is absent, and the names it needs were taken
+	// from 2015 documentation — so when a session is refused, the question is always
+	// "what does this build of the simulator actually publish?". Answering it from a
+	// log beats guessing, and there is no other way to see it on that machine.
+	if !s.loggedVars {
+		names := make([]string, 0, len(vh))
+		for _, v := range vh {
+			names = append(names, v.Name)
+		}
+		sort.Strings(names)
+		s.logger().Info("telemetry: variables published by the simulator",
+			"count", len(names), "tickRate", hdr.TickRate, "bufLen", hdr.BufLen,
+			"names", strings.Join(names, ","))
+		s.loggedVars = true
+	}
 
 	s.mu.Lock()
 	s.meta = capture.Meta{

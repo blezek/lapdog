@@ -250,6 +250,7 @@ export interface Config {
   startWithWindows: boolean
   units: 'metric' | 'imperial'
   theme: 'system' | 'light' | 'dark'
+  debug: boolean
 }
 
 export interface SettingsResponse {

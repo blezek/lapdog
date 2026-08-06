@@ -40,6 +40,14 @@ type Config struct {
 	StartWithWindows    bool    `json:"startWithWindows"`
 	Units               string  `json:"units"`
 	Theme               string  `json:"theme"`
+
+	// Debug turns on verbose logging of the telemetry read path.
+	//
+	// Default on, deliberately, while live reading is still being proven on real
+	// hardware. There is no development environment on the machine that runs the
+	// simulator, so the log is the only diagnostic channel available — a quiet log
+	// there means no information at all rather than nothing being wrong.
+	Debug bool `json:"debug"`
 }
 
 // Default returns the settings a fresh install starts with.
@@ -53,6 +61,7 @@ func Default() Config {
 		StartWithWindows:    true,
 		Units:               "metric",
 		Theme:               "system",
+		Debug:               true,
 	}
 }
 

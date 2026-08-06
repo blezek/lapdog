@@ -2,7 +2,9 @@ package irsdk
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -283,4 +285,69 @@ func mustVarHeaders(t *testing.T, mapping []byte) []VarHeader {
 		t.Fatal(err)
 	}
 	return vh
+}
+
+// The trace reports what it observed, not merely that something failed.
+//
+// This is the only diagnostic channel for the Windows read path: that machine has no
+// development environment, so a log line saying "read failed" is worth very little
+// while one carrying the header's own fields is usually conclusive. The test pins the
+// fields that have actually been needed to diagnose a fault.
+func TestTraceReportsTheHeaderFields(t *testing.T) {
+	var steps []string
+	tr := Trace(func(step string, kv ...any) {
+		line := step
+		for i := 0; i+1 < len(kv); i += 2 {
+			line += fmt.Sprintf(" %v=%v", kv[i], kv[i+1])
+		}
+		steps = append(steps, line)
+	})
+
+	if _, _, _, _, err := snapshotTraced(syntheticMapping("WeekendInfo:\n TrackID: 18\n"), tr); err != nil {
+		t.Fatalf("snapshotTraced: %v", err)
+	}
+	all := strings.Join(steps, "\n")
+
+	// Each of these has been the answer to a real question about why nothing recorded.
+	for _, want := range []string{
+		"header parsed",   // the step reached at all
+		"connected=true",  // the bit that is clear at the simulator's menus
+		"numVars=",        // zero here would explain every missing-variable refusal
+		"bufLen=",         // a zero row length fails the read outright
+		"sessionInfoLen=", // no YAML means no classification
+		"mappedBytes=",    // a short mapping was the original Windows bug
+		"variable headers parsed",
+		"session YAML read",
+	} {
+		if !strings.Contains(all, want) {
+			t.Errorf("trace omits %q; it reads:\n%s", want, all)
+		}
+	}
+}
+
+// A simulator sitting at its menus is the most likely explanation for a build that
+// looks connected and records nothing, so the trace must name it rather than reporting
+// a generic failure.
+func TestTraceExplainsTheDisconnectedBit(t *testing.T) {
+	var steps []string
+	tr := Trace(func(step string, kv ...any) { steps = append(steps, step) })
+
+	mapping := syntheticMapping("x")
+	putI(mapping, 4, 0) // clear the connected bit
+
+	if _, _, _, _, err := snapshotTraced(mapping, tr); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("err = %v, want ErrNotRunning", err)
+	}
+	if !strings.Contains(strings.Join(steps, "\n"), "not connected") {
+		t.Errorf("trace does not explain the cleared connected bit: %v", steps)
+	}
+}
+
+// A nil Trace must be safe, since every non-traced call passes one.
+func TestNilTraceIsSafe(t *testing.T) {
+	var tr Trace
+	tr.note("this must not panic", "k", "v")
+	if _, _, _, _, err := snapshotTraced(syntheticMapping("x"), nil); err != nil {
+		t.Fatalf("snapshotTraced with a nil trace: %v", err)
+	}
 }

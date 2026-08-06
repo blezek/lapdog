@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -59,13 +60,26 @@ func run() error {
 		return err
 	}
 	defer logCloser.Close()
-	log.Info("starting", "version", version.Version, "dataDir", dataDir)
+	log.Info("starting", "version", version.Version, "dataDir", dataDir,
+		"platform", runtime.GOOS, "arch", runtime.GOARCH,
+		"logPath", config.LogPath(dataDir))
 
 	cfgStore, err := config.NewStore(config.ConfigPath(dataDir))
 	if err != nil {
 		return err
 	}
 	cfg := cfgStore.Get()
+
+	// Apply the log level before anything else runs, so the start-up sequence itself is
+	// captured at the level the user chose.
+	applog.SetDebug(cfg.Debug)
+	log.Info("configuration loaded",
+		"debug", cfg.Debug,
+		"pollIntervalSeconds", cfg.PollIntervalSeconds,
+		"minSessionSeconds", cfg.MinSessionSeconds,
+		"captureEnabled", cfg.CaptureEnabled,
+		"port", cfg.Port,
+		"configPath", config.ConfigPath(dataDir))
 
 	if exe, err := os.Executable(); err == nil {
 		if err := config.SetAutostart(cfg.StartWithWindows, exe); err != nil {
@@ -81,11 +95,16 @@ func run() error {
 	}
 	defer st.Close()
 
-	src, err := source.NewLive()
+	// The live source narrates its read path through this logger. On the machine that
+	// matters there is no debugger, so the trace is the only instrument.
+	src, err := source.NewLiveWithLogger(log)
 	if err != nil {
 		return err
 	}
 	defer src.Close()
+	log.Debug("telemetry source created",
+		"platform", runtime.GOOS,
+		"liveReadingAvailable", runtime.GOOS == "windows")
 
 	coll, err := collector.New(collector.Options{
 		Source:     src,
@@ -108,7 +127,12 @@ func run() error {
 	// settings API reports to the user rather than silently ignoring.
 	cfgStore.OnChange(func(c config.Config) {
 		coll.SetInterval(c.PollInterval())
-		log.Info("configuration updated", "pollIntervalSeconds", c.PollIntervalSeconds)
+		// The level changes immediately, so switching debug on in settings starts
+		// producing detail without a restart — which matters when the only way to
+		// observe the problem is to be running while it happens.
+		applog.SetDebug(c.Debug)
+		log.Info("configuration updated",
+			"pollIntervalSeconds", c.PollIntervalSeconds, "debug", c.Debug)
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

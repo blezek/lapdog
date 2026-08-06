@@ -13,6 +13,24 @@ var ErrUnsupported = errors.New("irsdk: live telemetry is only available on Wind
 // published a connected status. This is an expected state, not a fault.
 var ErrNotRunning = errors.New("irsdk: simulator not running")
 
+// Trace receives a description of each step of an open or a read.
+//
+// The mapping code only runs on Windows, on a machine with a simulator attached and
+// no development environment, so a failure there cannot be stepped through — the log
+// is the only instrument. Every step reports what it observed, not merely that it
+// failed, because "could not open" and "opened, mapped 1.2 MB, header says 0 vars"
+// lead to entirely different conclusions.
+//
+// A nil Trace disables tracing, so the quiet path costs one nil check.
+type Trace func(step string, kv ...any)
+
+// note calls t when it is non-nil.
+func (t Trace) note(step string, kv ...any) {
+	if t != nil {
+		t(step, kv...)
+	}
+}
+
 // maxTornRetries bounds how many times a single poll re-reads a buffer that the
 // sim overwrote mid-copy. Beyond this the poll is abandoned rather than spinning;
 // the next poll will try again.
@@ -26,11 +44,34 @@ const maxTornRetries = 3
 // Windows, which keeps the code that needs a simulator to verify down to a few
 // dozen lines.
 func snapshotFrom(mapping []byte) (Header, []VarHeader, []byte, []byte, error) {
+	return snapshotTraced(mapping, nil)
+}
+
+// snapshotTraced is snapshotFrom with a step trace, for diagnosing a live read.
+func snapshotTraced(mapping []byte, tr Trace) (Header, []VarHeader, []byte, []byte, error) {
 	hdr, err := ParseHeader(mapping)
 	if err != nil {
+		tr.note("header parse failed", "mappedBytes", len(mapping), "err", err)
 		return Header{}, nil, nil, nil, err
 	}
+	// Every header field, because a wrong one explains everything downstream and
+	// there is no way to inspect them on the affected machine.
+	tr.note("header parsed",
+		"mappedBytes", len(mapping),
+		"ver", hdr.Ver, "status", hdr.Status, "connected", hdr.Connected(),
+		"tickRate", hdr.TickRate, "numVars", hdr.NumVars,
+		"varHeaderOffset", hdr.VarHeaderOffset, "numBuf", hdr.NumBuf,
+		"bufLen", hdr.BufLen, "curBufTickCount", hdr.CurBufTickCount,
+		"sessionInfoLen", hdr.SessionInfoLen,
+		"sessionInfoOffset", hdr.SessionInfoOffset,
+		"sessionInfoUpdate", hdr.SessionInfoUpdate)
+
 	if !hdr.Connected() {
+		// This is the ordinary state at the simulator's menus, and the single most
+		// likely explanation for a connected-looking build recording nothing, so it
+		// says what the bit actually was.
+		tr.note("simulator present but not connected",
+			"status", hdr.Status, "wantBitSet", StatusConnected)
 		return hdr, nil, nil, nil, ErrNotRunning
 	}
 
@@ -44,12 +85,15 @@ func snapshotFrom(mapping []byte) (Header, []VarHeader, []byte, []byte, error) {
 	}
 	vh, err := ParseVarHeaders(mapping[vhStart:vhStart+vhLen], int(hdr.NumVars))
 	if err != nil {
+		tr.note("variable headers unparseable", "at", vhStart, "len", vhLen, "err", err)
 		return hdr, nil, nil, nil, err
 	}
+	tr.note("variable headers parsed", "count", len(vh))
 
 	// Newest variable row, copied out and then verified untorn.
-	row, err := readRow(mapping, hdr)
+	row, err := readRowTraced(mapping, hdr, tr)
 	if err != nil {
+		tr.note("row read failed", "err", err)
 		return hdr, vh, nil, nil, err
 	}
 
@@ -68,6 +112,15 @@ func snapshotFrom(mapping []byte) (Header, []VarHeader, []byte, []byte, error) {
 		// The sim NUL-terminates the string inside the declared length.
 		yaml = trimNul(yaml)
 	}
+	// The YAML is what classification depends on, so its absence is worth a line even
+	// though it is not fatal: the row is still good and the collector carries the
+	// previous document forward.
+	if len(yaml) == 0 {
+		tr.note("no usable session YAML",
+			"declaredOffset", yStart, "declaredLen", yLen, "mappedBytes", len(mapping))
+	} else {
+		tr.note("session YAML read", "bytes", len(yaml), "update", hdr.SessionInfoUpdate)
+	}
 	return hdr, vh, row, yaml, nil
 }
 
@@ -79,6 +132,11 @@ func snapshotFrom(mapping []byte) (Header, []VarHeader, []byte, []byte, error) {
 // partially applied: a row that mixes two ticks can hold a lap number from one
 // and a track position from the next, which is worse than no sample at all.
 func readRow(mapping []byte, hdr Header) ([]byte, error) {
+	return readRowTraced(mapping, hdr, nil)
+}
+
+// readRowTraced is readRow with a step trace.
+func readRowTraced(mapping []byte, hdr Header, tr Trace) ([]byte, error) {
 	bufLen := int(hdr.BufLen)
 	if bufLen <= 0 {
 		return nil, fmt.Errorf("irsdk: header declares bufLen %d", bufLen)
@@ -109,8 +167,18 @@ func readRow(mapping []byte, hdr Header) ([]byte, error) {
 			return nil, errors.New("irsdk: header declares no variable buffers")
 		}
 		if !IsTorn(before, afterBuf) {
+			if attempt > 0 {
+				tr.note("row read settled after a retry", "attempts", attempt+1)
+			}
 			return row, nil
 		}
+		// A rotation between the two header reads is ordinary at sixty hertz; it is
+		// only worth reporting because persistent tearing looks identical until the
+		// retries run out.
+		tr.note("row looked torn, retrying",
+			"attempt", attempt+1,
+			"beforeTick", before.TickCount, "afterTick", afterBuf.TickCount,
+			"afterBegin", afterBuf.TickCountBegin)
 		hdr = after
 	}
 	return nil, errors.New("irsdk: could not obtain an untorn variable row")

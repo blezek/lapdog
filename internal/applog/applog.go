@@ -17,6 +17,23 @@ import (
 // notices until it matters.
 const maxLogBytes = 4 << 20
 
+// Level is the shared level every logger from Open honours.
+//
+// It is a slog.LevelVar rather than a fixed level so the settings screen can turn
+// debug logging on and off while the process runs. Restarting to change a log level
+// is exactly the wrong requirement when the thing being diagnosed only happens on a
+// machine with a simulator attached and no debugger.
+var Level = func() *slog.LevelVar { v := new(slog.LevelVar); v.Set(slog.LevelDebug); return v }()
+
+// SetDebug raises or lowers the shared level.
+func SetDebug(on bool) {
+	if on {
+		Level.Set(slog.LevelDebug)
+		return
+	}
+	Level.Set(slog.LevelInfo)
+}
+
 // Open returns a logger writing to both the log file and stderr, plus a Closer for
 // the file.
 //
@@ -35,7 +52,9 @@ func Open(path string) (*slog.Logger, io.Closer, error) {
 		return nil, nil, fmt.Errorf("applog: open %s: %w", path, err)
 	}
 	h := slog.NewTextHandler(io.MultiWriter(f, os.Stderr), &slog.HandlerOptions{
-		Level: slog.LevelInfo,
+		// The shared LevelVar, so a settings change applies to loggers already handed
+		// out rather than only to ones created afterwards.
+		Level: Level,
 	})
 	return slog.New(h), f, nil
 }

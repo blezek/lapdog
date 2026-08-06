@@ -228,6 +228,30 @@ export function Settings() {
           </div>
         </div>
 
+        {/*
+            On by default while live reading is still being proven on real hardware.
+            The machine with the simulator has no development environment, so the log is
+            the only diagnostic channel — and a level that needed a restart to change
+            would be useless for a fault that only appears mid-session.
+        */}
+        <div className="setting">
+          <div className="setting-label">
+            Debug logging
+            <span className="setting-hint">
+              Records every step of reading telemetry: the mapping, the header fields,
+              and the full list of variables the simulator publishes. Takes effect
+              immediately. Verbose — leave it on only while diagnosing.
+            </span>
+          </div>
+          <div className="setting-control">
+            <Toggle
+              checked={c.debug}
+              onChange={(v) => set({ debug: v })}
+              label="Debug logging"
+            />
+          </div>
+        </div>
+
         <div className="setting">
           <div className="setting-label">Units</div>
           <div className="setting-control">
