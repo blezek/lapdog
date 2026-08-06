@@ -406,6 +406,34 @@ h1 {
   color: var(--delta-good);
 }
 
+/* The current rating and its movement, shown in a card's head beside the title.
+   The sign is written into the text as well as carried by colour, so the direction
+   survives a colourblind reader and a monochrome print. */
+.rating-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.rating-head strong {
+  font-size: 15px;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-primary);
+}
+
+.rating-head .good {
+  color: var(--delta-good);
+}
+
+.rating-head .bad {
+  color: var(--status-critical);
+}
+
+.rating-head .muted {
+  color: var(--text-muted);
+}
+
 .meter {
   height: 5px;
   border-radius: 99px;

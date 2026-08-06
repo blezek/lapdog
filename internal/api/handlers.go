@@ -501,6 +501,23 @@ func (s *Server) handleQualiPace(w http.ResponseWriter, r *http.Request) {
 	s.writeJSON(w, got)
 }
 
+// handleRatings serves the driver's identity and rating progression.
+//
+// Filtered like every other aggregate, so the movement it reports is the movement
+// over the range the interface is displaying rather than over all history.
+func (s *Server) handleRatings(w http.ResponseWriter, r *http.Request) {
+	f, ok := s.filterOrFail(w, r)
+	if !ok {
+		return
+	}
+	out, err := s.st.Ratings(f)
+	if err != nil {
+		s.fail(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.writeJSON(w, out)
+}
+
 func (s *Server) handleCombos(w http.ResponseWriter, r *http.Request) {
 	f, ok := s.filterOrFail(w, r)
 	if !ok {

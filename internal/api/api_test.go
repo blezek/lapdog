@@ -66,9 +66,11 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, *fakeConfig) {
 		laps, inc             int
 		best                  float64
 		isRace                bool
+		irating               int
+		sr                    float64
 	}{
-		{"900001/0", "Practice", "OfficialPractice", "2026-07-01T10:00:00Z", 3600, 2400, 2000, 20, 2, 102.5, false},
-		{"900002/2", "Race", "OfficialRace", "2026-07-08T18:45:00Z", 3000, 2900, 2800, 25, 6, 102.0, true},
+		{"900001/0", "Practice", "OfficialPractice", "2026-07-01T10:00:00Z", 3600, 2400, 2000, 20, 2, 102.5, false, 2431, 3.55},
+		{"900002/2", "Race", "OfficialRace", "2026-07-08T18:45:00Z", 3000, 2900, 2800, 25, 6, 102.0, true, 2498, 3.71},
 	}
 	for _, r := range seed {
 		rec := &store.Session{
@@ -79,6 +81,8 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, *fakeConfig) {
 			TrackID: intp(18), TrackName: strp("Watkins Glen International"),
 			CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
 			ClassifySourceJSON: "{}", IncidentSource: "yaml",
+			DriverUserID: intp(271828), DriverIRating: intp(r.irating),
+			DriverSafetyRating: f64p(r.sr), DriverLicString: strp("A 3.55"),
 		}
 		if r.isRace {
 			rec.FinishPosition = intp(4)
@@ -902,6 +906,43 @@ func TestCombosEndpoint(t *testing.T) {
 	var cells []store.ComboCell
 	if err := json.Unmarshal(rec.Body.Bytes(), &cells); err != nil {
 		t.Fatalf("decode: %v", err)
+	}
+}
+
+// The endpoint reports the identity and the movement across the range, and honours
+// the filter while doing it.
+func TestRatingsEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var got store.Ratings
+	rec := get(t, h, "/api/ratings?range=all", &got)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got.UserID == nil || *got.UserID != 271828 {
+		t.Errorf("userId = %v, want 271828", got.UserID)
+	}
+	if got.IRating == nil || *got.IRating != 2498 {
+		t.Errorf("iRating = %v, want the newest, 2498", got.IRating)
+	}
+	if got.IRatingDelta == nil || *got.IRatingDelta != 67 {
+		t.Errorf("iRatingDelta = %v, want 67", got.IRatingDelta)
+	}
+	if len(got.Points) != 2 {
+		t.Errorf("points = %d, want 2", len(got.Points))
+	}
+}
+
+// A range that admits one session reports no delta, which is what proves the
+// endpoint passes the filter through rather than aggregating all history.
+func TestRatingsEndpointHonoursTheRange(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var got store.Ratings
+	get(t, h, "/api/ratings?from=2026-07-05&to=2026-07-10", &got)
+	if len(got.Points) != 1 {
+		t.Fatalf("points = %d, want 1; the range was not applied", len(got.Points))
+	}
+	if got.IRatingDelta != nil {
+		t.Errorf("iRatingDelta = %v within a one-session range, want absent", got.IRatingDelta)
 	}
 }
 

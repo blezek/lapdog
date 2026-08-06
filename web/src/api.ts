@@ -190,6 +190,39 @@ export interface ComboCell {
   comboHours: number
 }
 
+/**
+ * One observation of the driver's ratings, from the session that saw it.
+ *
+ * Both ratings are nullable: sessions recorded before LapDog tracked identity have
+ * neither, and an offline session may carry an iRating with no licence string.
+ */
+export interface RatingPoint {
+  startedAt: string
+  sessionType: string
+  eventContext: string
+  iRating: number | null
+  safetyRating: number | null
+  licString: string | null
+}
+
+/**
+ * The driver's identity and how their ratings moved across the filtered range.
+ *
+ * The deltas are computed by the server over the same range the points cover, so
+ * the headline figures cannot disagree with the chart beside them. A null delta
+ * means fewer than two observations — different from a delta of zero.
+ */
+export interface Ratings {
+  userId: number | null
+  licString: string | null
+  iRating: number | null
+  safetyRating: number | null
+  iRatingDelta: number | null
+  safetyRatingDelta: number | null
+  peakIRating: number | null
+  points: RatingPoint[]
+}
+
 export interface Facet {
   id: number
   name: string
@@ -354,6 +387,8 @@ export const api = {
   // `limit` would silently clobber this one under the same key.
   combos: (f: Filter, top = 10) =>
     get<ComboCell[]>(`/api/combos?${toQuery(f, { top: String(top) })}`),
+
+  ratings: (f: Filter) => get<Ratings>(`/api/ratings?${toQuery(f)}`),
 
   sessions: (f: Filter) => get<ListResponse<Session>>(`/api/sessions?${toQuery(f)}`),
   session: (id: number) => get<Session>(`/api/sessions/${id}`),

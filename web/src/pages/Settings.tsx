@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api, type Config } from '../api'
-import { bytes, num } from '../format'
+import { bytes, licenceLabel, num } from '../format'
 import { applyTheme } from '../theme'
 import { Banner, Card, ErrorNote, Loading } from '../components/ui'
 
@@ -45,6 +45,15 @@ export function Settings() {
   const qc = useQueryClient()
   const config = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const status = useQuery({ queryKey: ['status'], queryFn: api.status })
+
+  // An empty filter, so the identity is read over all history rather than the
+  // current range:
+  // this row answers "whose data is in this database", which does not change with a
+  // date range. Every other figure on this screen is likewise unfiltered.
+  const identity = useQuery({
+    queryKey: ['ratings', 'identity'],
+    queryFn: () => api.ratings({}),
+  })
 
   const [restart, setRestart] = useState<string[]>([])
   const [failed, setFailed] = useState<string | null>(null)
@@ -351,6 +360,31 @@ export function Settings() {
             <div className="setting-control">{status.data.missingVars.length}</div>
           </div>
         )}
+
+        {/*
+            Read-only. The customer ID comes from the simulator's own session
+            document, so it is a fact about the recorded data rather than a
+            preference — and it is what says whose driving this database holds.
+        */}
+        <div className="setting">
+          <div className="setting-label">
+            iRacing driver
+            <span className="setting-hint mono">
+              {identity.data?.userId == null
+                ? 'not yet recorded'
+                : `customer #${identity.data.userId}`}
+            </span>
+            <span className="setting-hint">
+              {identity.data?.userId == null
+                ? 'Read from the session document the simulator publishes; it appears once a session has been recorded.'
+                : 'Read from the session document the simulator publishes.'}
+            </span>
+          </div>
+          <div className="setting-control">
+            {licenceLabel(identity.data?.licString ?? null, identity.data?.safetyRating ?? null)}
+            {identity.data?.iRating == null ? '' : ` · ${num(identity.data.iRating)} iR`}
+          </div>
+        </div>
 
         <div className="setting">
           <div className="setting-label">

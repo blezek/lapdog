@@ -214,3 +214,18 @@ export function daysAgo(n: number): string {
   d.setDate(d.getDate() - n)
   return isoDay(d)
 }
+
+/**
+ * licenceLabel renders a Safety Rating as its class and value, e.g. "A 3.94".
+ *
+ * The class comes from the simulator's licence string but the number does not: it is
+ * the same value the chart plots. Printing the string wholesale would let the
+ * headline disagree with the last point of the line beside it whenever the two were
+ * recorded at different moments, and a card that contradicts its own chart is worse
+ * than one that shows only a number.
+ */
+export function licenceLabel(licString: string | null, sr: number | null): string {
+  if (sr == null) return licString ?? '—'
+  const cls = licString?.trim().match(/^([A-Za-z]+)/)?.[1]
+  return cls ? `${cls.toUpperCase()} ${sr.toFixed(2)}` : sr.toFixed(2)
+}

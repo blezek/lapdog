@@ -15,7 +15,25 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 
 const TITLE = (process.argv[2] ?? 'CALENDAR').toUpperCase()
-const RANGES = (process.argv[3] ?? '90,365,730').split(',')
+/*
+ * Only the interface's own range ids are legal.
+ *
+ * useFilter silently falls back to 90 days for anything it does not recognise, so
+ * "730" — which looks like a range and is not one — measured the 90-day layout a
+ * second time and reported a PASS across "three ranges" that were really two. A
+ * verification tool that quietly tests less than it claims is worse than none.
+ */
+const LEGAL_RANGES = ['7', '30', '90', '365', 'all']
+const RANGES = (process.argv[3] ?? '30,90,365,all').split(',')
+for (const r of RANGES) {
+  if (!LEGAL_RANGES.includes(r)) {
+    console.error(
+      `  error: ${r} is not a range the interface offers (${LEGAL_RANGES.join(', ')}); ` +
+        `it would silently measure the 90-day layout instead`,
+    )
+    process.exit(1)
+  }
+}
 const OUT = process.argv[4] ?? '/tmp/lapdog-shots'
 const BASE = 'http://127.0.0.1:47047'
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'

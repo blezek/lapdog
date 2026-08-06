@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { api, type ComboCell, type DailyRow, type SummaryRow } from '../api'
+import { api, type ComboCell, type DailyRow, type RatingPoint, type SummaryRow } from '../api'
 import {
   hours,
   labelForKey,
@@ -11,7 +11,10 @@ import {
   position,
   day,
   dayShort,
+  dateTime,
+  label,
   lapTime,
+  licenceLabel,
 } from '../format'
 import { monthNames, weekdayNames } from '../locale'
 import { useFilter } from '../useFilter'
@@ -131,6 +134,8 @@ export function Dashboard() {
         </Card>
       </div>
 
+      <RatingPanels />
+
       <CarAndTrackBreakdown />
 
       <div className="grid two-col">
@@ -163,6 +168,230 @@ export function Dashboard() {
       </div>
     </>
   )
+}
+
+/* ---------------------------------------------------------------- ratings */
+
+/**
+ * RatingPanels shows how iRating and Safety Rating moved over the filtered range.
+ *
+ * Two charts rather than one with two y-axes. The ratings share no scale — one runs
+ * in the thousands, the other from 0 to 4.99 — and a second axis invites the reader
+ * to compare the slopes of two lines whose steepness means nothing relative to each
+ * other.
+ *
+ * The panel disappears entirely when nothing was recorded, which is the state of
+ * every session captured before LapDog tracked identity. An empty card asserting
+ * "no rating" would read as a rating of nothing.
+ */
+function RatingPanels() {
+  const { filter } = useFilter()
+  const theme = useTheme()
+  const q = useQuery({
+    queryKey: ['ratings', filter],
+    queryFn: () => api.ratings(filter),
+    ...keepPrevious,
+  })
+
+  if (q.isError) return <ErrorNote error={q.error} />
+  const data = q.data
+  // Nothing rated in range: the whole section is absent rather than empty.
+  if (!data || data.points.length === 0) return null
+
+  return (
+    <div className="grid two-col" style={{ marginBottom: 14 }}>
+      <Card
+        title="iRating"
+        actions={
+          <RatingHead
+            value={data.iRating == null ? '—' : num(data.iRating)}
+            delta={data.iRatingDelta == null ? null : signedInt(data.iRatingDelta)}
+            good={(data.iRatingDelta ?? 0) >= 0}
+            note={data.peakIRating == null ? undefined : `peak ${num(data.peakIRating)}`}
+          />
+        }
+        table={<RatingTable points={data.points} />}
+      >
+        <RatingLine
+          points={data.points}
+          pick={(p) => p.iRating}
+          format={(v) => num(v)}
+          label="iRating"
+          theme={theme}
+        />
+      </Card>
+
+      <Card
+        title="Safety Rating"
+        actions={
+          <RatingHead
+            value={licenceLabel(data.licString, data.safetyRating)}
+            delta={
+              data.safetyRatingDelta == null ? null : signedFixed(data.safetyRatingDelta, 2)
+            }
+            good={(data.safetyRatingDelta ?? 0) >= 0}
+          />
+        }
+        table={<RatingTable points={data.points} />}
+      >
+        <RatingLine
+          points={data.points}
+          pick={(p) => p.safetyRating}
+          format={(v) => v.toFixed(2)}
+          label="Safety Rating"
+          theme={theme}
+        />
+      </Card>
+    </div>
+  )
+}
+
+/** RatingHead is the current value and its movement, shown in the card's head. */
+function RatingHead({
+  value,
+  delta,
+  good,
+  note,
+}: {
+  value: string
+  delta: string | null
+  good: boolean
+  note?: string
+}) {
+  return (
+    <span className="rating-head">
+      <strong>{value}</strong>
+      {/* A null delta means one observation, not no movement, so it shows nothing
+          rather than a zero that would claim the range was flat. */}
+      {delta && <span className={good ? 'good' : 'bad'}>{delta}</span>}
+      {note && <span className="muted">{note}</span>}
+    </span>
+  )
+}
+
+/**
+ * RatingLine plots one rating against the sessions that observed it.
+ *
+ * Sessions with no reading of this particular rating are dropped rather than
+ * plotted as zero: a gap in the record is not a fall to zero, and connectNulls
+ * would draw a straight line through it as though nothing happened.
+ */
+function RatingLine({
+  points,
+  pick,
+  format,
+  label,
+  theme,
+}: {
+  points: RatingPoint[]
+  pick: (p: RatingPoint) => number | null
+  format: (v: number) => string
+  label: string
+  theme: Theme
+}) {
+  const rows = useMemo(
+    () => points.filter((p) => pick(p) != null),
+    // pick is a stable arrow per render but its identity changes; points is what
+    // actually varies, so the filter is keyed on it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [points],
+  )
+
+  const option = useMemo(
+    () => ({
+      grid: baseGrid,
+      tooltip: {
+        trigger: 'axis',
+        ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
+        formatter: (ps: { name: string; value: number }[]) => {
+          const p = ps[0]
+          return p ? `${p.name}<br/><strong>${format(p.value)}</strong> ${label}` : ''
+        },
+      },
+      xAxis: {
+        type: 'category',
+        data: rows.map((p) => day(p.startedAt)),
+        ...axisStyle(theme.textMuted, theme.baseline),
+      },
+      // scale: true keeps zero out of the range. An iRating sits in the thousands
+      // and a Safety Rating between 0 and 4.99; with zero forced in, either line
+      // presses flat and shows no movement at all.
+      yAxis: {
+        type: 'value',
+        scale: true,
+        ...valueAxisStyle(theme.textMuted, theme.line),
+        axisLabel: {
+          ...valueAxisStyle(theme.textMuted, theme.line).axisLabel,
+          formatter: (v: number) => format(v),
+        },
+      },
+      series: [
+        {
+          type: 'line',
+          data: rows.map((p) => pick(p) as number),
+          smooth: false,
+          // A rating is observed once per session, and two years of practice is over
+          // a thousand observations. Beyond a few dozen the markers merge into a band
+          // that hides the very line they were meant to mark, so past that they go
+          // and the stroke carries the shape alone. Hover still reports every point.
+          showSymbol: rows.length <= 60,
+          symbolSize: 8,
+          lineStyle: { width: 2, color: theme.accent },
+          itemStyle: { color: theme.accent },
+        },
+      ],
+    }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rows, theme, label],
+  )
+
+  if (rows.length === 0) return <Empty>No {label} recorded in this range.</Empty>
+  return (
+    <Chart
+      option={option}
+      ariaLabel={`${label} for each recorded session, oldest first`}
+    />
+  )
+}
+
+/** RatingTable is the same observations as rows, for reading exact values. */
+function RatingTable({ points }: { points: RatingPoint[] }) {
+  return (
+    <div className="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th className="no-sort">Session</th>
+            <th className="no-sort">Type</th>
+            <th className="no-sort num">iRating</th>
+            <th className="no-sort num">Safety Rating</th>
+          </tr>
+        </thead>
+        <tbody>
+          {/* Newest first, the reverse of the chart: a table is scanned from the top
+              for the latest value, while a line is read left to right. */}
+          {[...points].reverse().map((p) => (
+            <tr key={`${p.startedAt}-${p.sessionType}`}>
+              <td>{dateTime(p.startedAt)}</td>
+              <td>{label(p.sessionType, p.eventContext)}</td>
+              <td className="num">{p.iRating == null ? '—' : num(p.iRating)}</td>
+              <td className="num">{licenceLabel(p.licString, p.safetyRating)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
+}
+
+/** signedInt renders a movement with an explicit sign, so a gain reads as a gain. */
+function signedInt(v: number): string {
+  return `${v > 0 ? '+' : v < 0 ? '\u2212' : '\u00b1'}${num(Math.abs(v))}`
+}
+
+/** signedFixed is signedInt for a fractional rating. */
+function signedFixed(v: number, digits: number): string {
+  return `${v > 0 ? '+' : v < 0 ? '\u2212' : '\u00b1'}${Math.abs(v).toFixed(digits)}`
 }
 
 /* ------------------------------------------------- car and track breakdowns */

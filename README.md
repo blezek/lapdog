@@ -4,6 +4,8 @@ Records how much time you actually spend in iRacing, and what you spend it on.
 
 A Windows tray application that reads the simulator's telemetry once a second, writes sessions to a local SQLite database, and serves a web interface on `http://127.0.0.1:47047` for looking at the result. Time is split by what you were doing — public practice, race practice, qualifying, racing — and by the context it happened in, so league racing is distinguishable from official racing and from driving against AI.
 
+Each session also records who was driving and where their iRating and Safety Rating stood at the time, so the dashboard can show how both moved over any range rather than only what they are now.
+
 Everything ships as a single `.exe`. No runtime, no redistributable, no sidecar files: the interface, the icons and the database migrations are all compiled in.
 
 ## Status
