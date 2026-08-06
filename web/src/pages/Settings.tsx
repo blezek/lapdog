@@ -292,13 +292,21 @@ export function Settings() {
             <span className="setting-hint mono">{status.data?.telemetry.source ?? '—'}</span>
             <span className="setting-hint">
               {status.data?.telemetry.sourceKind ?? ''}
-              {status.data && !status.data.telemetry.available
-                ? ` · unavailable on ${status.data.telemetry.platform}, so no session will record on this machine`
-                : ''}
+              {status.data?.telemetry.available
+                ? ` · this build can read it on ${status.data.telemetry.platform}; whether it is currently reached is the iRacing row above`
+                : status.data
+                  ? ` · this build cannot read it on ${status.data.telemetry.platform}, so no session will record on this machine`
+                  : ''}
             </span>
           </div>
+          {/*
+              "Supported", not "Available": this reports only whether the build can
+              read live telemetry on this operating system. It says nothing about
+              whether the simulator was reached, and calling it Available invited
+              exactly that reading — a label must not claim more than it knows.
+          */}
           <div className="setting-control">
-            {status.data?.telemetry.available ? 'Available' : 'Unavailable'}
+            {status.data?.telemetry.available ? 'Supported' : 'Not supported'}
           </div>
         </div>
 
