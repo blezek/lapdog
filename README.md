@@ -89,6 +89,16 @@ make ci
 
 Vet, frontend build, typecheck, both test suites, Windows cross-compile, embedding check. Run this before pushing.
 
+### Everything, including the artefacts
+
+```bash
+make build
+```
+
+`make ci` first, then every binary: `lapdog.exe`, `lapdogctl.exe`, the host `lapdogctl` and `lapdog-gen`, the portable zip and the installer. `ci` runs first deliberately — a tree that does not pass has no business producing an installer, and a failing test stops the run before anything is packaged.
+
+`make build` needs `makensis` for the installer leg (`brew install makensis`, or `make tools`). It differs from `make release` only in that release also Authenticode-signs and writes `SHA256SUMS`.
+
 ## All make targets
 
 | Target | What it does |
@@ -103,6 +113,7 @@ Vet, frontend build, typecheck, both test suites, Windows cross-compile, embeddi
 | `test-ci` | Go tests with the frontend bundle required rather than skipped |
 | `vet` | `go vet` |
 | `ci` | Everything CI runs |
+| `build` | Every check, then every artefact: binaries, zip, installer |
 | `build-windows` | Cross-compile the tray app to `dist/lapdog.exe` |
 | `build-ctl` | Build `lapdogctl` for this machine |
 | `build-windows-ctl` | Cross-compile `lapdogctl` to `dist/lapdogctl.exe` |
@@ -227,6 +238,7 @@ Note that public certificate authorities stopped issuing downloadable PKCS#12 fi
 - **Live telemetry has never read a real simulator.** Everything up to the memory mapping is tested against synthetic mappings on macOS; the mapping itself needs Windows.
 - **`CarIsAI` is unverified.** The field name is a guess from the SDK headers. The procedure is to drive one AI race, read the session YAML out of the resulting capture, correct the field name, then `lapdogctl reclassify` — the provenance columns exist precisely so this is a recomputation rather than lost data.
 
-  There is a gap here: the specs and the backend plan both describe this step as `lapdogctl inspect`, and **that subcommand was never built**. `lapdogctl` has `ingest`, `summary`, `reclassify`, `serve` and `version`. Confirming the field needs `inspect` adding first, or a throwaway program that opens a `.lpd` with `internal/capture` and prints the session record.
-- **The NSIS installer has never been built.** `makensis` is not installed here.
+  `lapdogctl inspect` exists now, and `lapdogctl.exe` ships in the portable zip, so the check can be run on the machine that has the simulator.
+- **The NSIS installer builds but has never been run.** `makensis` 3.12 produces a 4.6 MB self-extractor, and the payload is confirmed present — decompressing the solid block yields 14,274,929 bytes containing both the icon set and the telemetry strings. What is untested is *installing*: whether it lands in the right place, registers uninstall correctly and starts the tray app. That needs a Windows machine.
+- **The installer carries only `lapdog.exe`.** The portable zip ships `lapdogctl.exe` too; the installer does not.
 - **No git remote.** Nothing is pushed, and the CI workflow has therefore never run.

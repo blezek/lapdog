@@ -34,7 +34,19 @@ SIGN_PKCS12   ?=
 SIGN_PASSWORD ?=
 TIMESTAMP_URL ?= http://timestamp.digicert.com
 
-.PHONY: help test test-ci vet fmt-check ui ui-clean ui-dev ci verify-embed run-ctl dataset-db \
+# Recipes run one at a time.
+#
+# Several targets write dist/lapdog.exe — portable and installer both need it — and
+# under -j two of them can be in that file at once, producing an executable that is
+# neither build. Nothing here loses anything by being serial: go build, go test and
+# vite all parallelise internally, so make-level concurrency was buying almost
+# nothing to begin with.
+#
+# Global rather than per-target because this is GNU Make 3.81; .NOTPARALLEL took
+# target arguments only from 4.4.
+.NOTPARALLEL:
+
+.PHONY: help build test test-ci vet fmt-check ui ui-clean ui-dev ci verify-embed run-ctl dataset-db \
         build-windows build-windows-ctl build-ctl build-gen \
         fixtures dataset validate portable installer sign release tools clean
 
@@ -57,6 +69,7 @@ help:
 	@echo "fixtures       regenerate the committed test fixtures (~1.7 MB)"
 	@echo "dataset        generate the full two-year dataset into .dataset (~250 MB, gitignored)"
 	@echo "validate       replay .dataset back through decode, parse and classify"
+	@echo "build          every check, then every artefact: binaries, zip, installer"
 	@echo "portable       zip both self-contained executables"
 	@echo "installer      build the NSIS installer (needs: brew install makensis)"
 	@echo "sign           Authenticode-sign the exe and installer (needs SIGN_PKCS12)"
@@ -248,6 +261,20 @@ sign:
 	    -ts "$(TIMESTAMP_URL)" -in "$$f" -out "$$f.signed" && mv "$$f.signed" "$$f"; \
 	done; \
 	echo "sign: signed $(EXE) $(SETUP)"
+
+# Everything: every check, then every artefact.
+#
+# Distinct from ci, which proves the tree is sound but leaves nothing to keep.
+# Distinct from release, which additionally signs and writes SHA256SUMS — release
+# cuts a version, build just builds one.
+#
+# ci comes first so a failing test stops the run before anything is packaged. A
+# tree that does not pass has no business producing an installer.
+build: ci build-ctl build-gen portable installer
+	@echo
+	@echo "Artefacts in $(DIST):"
+	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe lapdogctl lapdog-gen \
+	  $(notdir $(PORTABLE)) $(notdir $(SETUP))
 
 release: test-ci vet build-windows portable installer sign
 	cd $(DIST) && shasum -a 256 lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) > SHA256SUMS
