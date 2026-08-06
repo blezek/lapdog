@@ -85,7 +85,9 @@ That prints the matching session-YAML lines with line numbers. If the field is n
 
 ## Resuming this session
 
-Ten commits, `33fc186..b5f044d`, 28 files, +1679/-130. `git log` is the primary record — every message explains its reasoning, and this is the map to it. The working tree is clean and `make ci` passes.
+`SESSION.md` is the full history, newest first, covering all three days. What follows is the short version for this last one.
+
+Eleven commits, `33fc186..5081292`. The working tree is clean and `make ci` passes.
 
 | Commit | Subject |
 |---|---|

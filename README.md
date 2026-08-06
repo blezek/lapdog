@@ -222,6 +222,16 @@ Signing is optional: with no certificate configured the build emits unsigned art
 
 Note that public certificate authorities stopped issuing downloadable PKCS#12 files in June 2023 — keys must now live in hardware or a cloud service — so the `SIGN_PKCS12` path only works for a pre-2023 certificate or a private CA. Signing is not currently being pursued.
 
+## Where the rest of the writing lives
+
+| File | What it holds |
+|---|---|
+| `ToDo.md` | The next action: how to collect Windows logs and find why telemetry is not read |
+| `SESSION.md` | Running history, newest first — what changed, why, and what broke |
+| `docs/server-design-brainstorming.md` | Parked: would SQLite suit 5,000 users, with measurements |
+| `docs/superpowers/specs/` | Design specs |
+| `docs/superpowers/plans/` | Implementation plans |
+
 ## Outstanding work
 
 - **Live telemetry has never read a real simulator.** Everything up to the memory mapping is tested against synthetic mappings on macOS; the mapping itself needs Windows.
