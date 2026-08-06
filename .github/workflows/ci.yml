@@ -82,12 +82,16 @@ jobs:
       # icon set. A build that silently dropped either fails here rather than on a
       # user's machine.
       #
-      # It checks dist/lapdog.exe, the artefact users actually receive.
+      # It checks both shipped binaries, the artefacts users actually receive.
       - name: Check the interface really is inside a Windows executable
         run: make verify-embed
 
+      # Both binaries, because verify-embed builds both and the CLI is what
+      # diagnoses a telemetry problem on a machine with no Go toolchain.
       - uses: actions/upload-artifact@v4
         with:
           name: lapdog-windows-amd64
-          path: dist/lapdog.exe
+          path: |
+            dist/lapdog.exe
+            dist/lapdogctl.exe
           if-no-files-found: error
