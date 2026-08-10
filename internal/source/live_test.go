@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"errors"
 	"runtime"
 	"strings"
@@ -63,6 +64,31 @@ func TestLiveRejectsNonPositiveInterval(t *testing.T) {
 	s.SetInterval(250 * time.Millisecond)
 	if s.interval != 250*time.Millisecond {
 		t.Errorf("SetInterval(250ms) = %v", s.interval)
+	}
+}
+
+func TestLiveNextContextStopsWaitingWhenCancelled(t *testing.T) {
+	s := &live{interval: time.Hour, now: time.Now}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := s.NextContext(ctx)
+		done <- err
+	}()
+	time.Sleep(10 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("NextContext after cancel = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("NextContext did not return after cancellation")
+	}
+	if s.polls != 0 {
+		t.Errorf("polls = %d after canceled sleep, want 0", s.polls)
 	}
 }
 

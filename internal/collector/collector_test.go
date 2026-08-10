@@ -2,6 +2,7 @@ package collector
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"os"
@@ -593,6 +594,42 @@ func TestSetPausedSerializesWithActiveSegmentState(t *testing.T) {
 	}
 }
 
+func TestRunCancelsContextAwareSourcePromptly(t *testing.T) {
+	src := &blockingContextSource{started: make(chan struct{})}
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	c, err := New(Options{
+		Source: src, Store: st, Clock: RealClock{}, Interval: time.Second,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+
+	select {
+	case <-src.started:
+	case <-time.After(time.Second):
+		t.Fatal("collector did not enter the source read")
+	}
+	cancel()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run after cancellation = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run did not return after source context cancellation")
+	}
+}
+
 func TestStatusReportsProgress(t *testing.T) {
 	dir := fixtureDir(t)
 	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
@@ -743,6 +780,23 @@ type emptySource struct{}
 func (emptySource) Next() (source.Frame, error) { return source.Frame{}, io.EOF }
 func (emptySource) Meta() capture.Meta          { return capture.Meta{} }
 func (emptySource) Close() error                { return nil }
+
+type blockingContextSource struct {
+	started chan struct{}
+}
+
+func (s *blockingContextSource) Next() (source.Frame, error) {
+	return source.Frame{}, errors.New("plain Next must not be called")
+}
+
+func (s *blockingContextSource) NextContext(ctx context.Context) (source.Frame, error) {
+	close(s.started)
+	<-ctx.Done()
+	return source.Frame{}, ctx.Err()
+}
+
+func (s *blockingContextSource) Meta() capture.Meta { return capture.Meta{} }
+func (s *blockingContextSource) Close() error       { return nil }
 
 func captureKindCounts(t *testing.T, path string) map[capture.Kind]int {
 	t.Helper()

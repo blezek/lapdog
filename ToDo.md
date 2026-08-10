@@ -12,7 +12,6 @@ There is no development environment on the Windows machine, so the log is the on
 
 ## Review follow-ups from 2026-08-10
 
-- Quit can skip the final session flush when the live source is sleeping for a poll interval longer than the three-second shutdown grace.
 - The Sessions detail pane can keep showing a previously selected session after filters remove it from the current list.
 - The Laps page keeps its old page offset after filters change, which can show a false empty state for matching results.
 - `cmd/lapdogctl` still says the CLI is not shipped, but the portable zip now includes `lapdogctl.exe`.

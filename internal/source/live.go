@@ -1,6 +1,7 @@
 package source
 
 import (
+	"context"
 	"errors"
 	"io"
 	"log/slog"
@@ -138,10 +139,17 @@ func (s *live) Meta() capture.Meta {
 // as an expected state, so the tray stays alive and the interface keeps serving
 // historical data while iRacing is closed.
 func (s *live) Next() (Frame, error) {
+	return s.NextContext(context.Background())
+}
+
+// NextContext is Next with a cancelable wait for the poll interval.
+func (s *live) NextContext(ctx context.Context) (Frame, error) {
 	s.mu.Lock()
 	interval := s.interval
 	s.mu.Unlock()
-	time.Sleep(interval)
+	if err := sleepContext(ctx, interval); err != nil {
+		return Frame{}, err
+	}
 
 	s.polls++
 
@@ -280,6 +288,20 @@ func (s *live) Next() (Frame, error) {
 	}, nil
 }
 
+func sleepContext(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 // Close releases the shared memory mapping.
 func (s *live) Close() error {
 	if s.conn != nil {
@@ -292,6 +314,7 @@ func (s *live) Close() error {
 
 // compile-time assertions that live satisfies both interfaces.
 var (
-	_ Source = (*live)(nil)
-	_ Paced  = (*live)(nil)
+	_ Source        = (*live)(nil)
+	_ ContextSource = (*live)(nil)
+	_ Paced         = (*live)(nil)
 )

@@ -217,8 +217,10 @@ func (c *Collector) Run(ctx context.Context) error {
 		default:
 		}
 
-		frame, err := c.src.Next()
+		frame, err := c.next(ctx)
 		switch {
+		case errors.Is(err, context.Canceled):
+			return nil
 		case errors.Is(err, io.EOF):
 			return nil
 		case errors.Is(err, source.ErrDisconnected):
@@ -239,6 +241,13 @@ func (c *Collector) Run(ctx context.Context) error {
 			c.log.Error("frame handling failed", "err", err)
 		}
 	}
+}
+
+func (c *Collector) next(ctx context.Context) (source.Frame, error) {
+	if s, ok := c.src.(source.ContextSource); ok {
+		return s.NextContext(ctx)
+	}
+	return c.src.Next()
 }
 
 // handle processes one frame.

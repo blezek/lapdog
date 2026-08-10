@@ -3,6 +3,7 @@
 package source
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -43,6 +44,15 @@ type Source interface {
 	Next() (Frame, error)
 	Meta() capture.Meta
 	Close() error
+}
+
+// ContextSource is implemented by sources whose blocking Next call can be
+// interrupted by cancellation.
+//
+// The live source implements it so process shutdown is not held hostage by a long
+// poll interval. Replay sources do not need it because they return immediately.
+type ContextSource interface {
+	NextContext(context.Context) (Frame, error)
 }
 
 // Paced is implemented by sources whose Next blocks to achieve a poll rate.
