@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -36,6 +37,12 @@ const listenSettleTime = 250 * time.Millisecond
 // the user quits. A session in progress is worth waiting for; a hung one is not
 // worth blocking exit over.
 const shutdownGrace = 3 * time.Second
+
+type runtimeConfigTarget interface {
+	SetInterval(time.Duration)
+	SetMinSession(time.Duration)
+	SetCapture(bool, int64)
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -81,12 +88,10 @@ func run() error {
 		"port", cfg.Port,
 		"configPath", config.ConfigPath(dataDir))
 
+	exePath := ""
 	if exe, err := os.Executable(); err == nil {
-		if err := config.SetAutostart(cfg.StartWithWindows, exe); err != nil {
-			// Not being able to write the Run key is not worth refusing to start
-			// over: the application works, it just will not launch itself.
-			log.Warn("could not update the startup entry", "err", err)
-		}
+		exePath = exe
+		applyAutostart(log, cfg.StartWithWindows, exePath, config.SetAutostart)
 	}
 
 	st, err := store.Open(config.DBPath(dataDir))
@@ -123,16 +128,10 @@ func run() error {
 		return err
 	}
 
-	// A poll-interval change takes effect live; a port change does not, which the
-	// settings API reports to the user rather than silently ignoring.
+	// Runtime settings take effect live; a port change does not, which the settings
+	// API reports to the user rather than silently ignoring.
 	cfgStore.OnChange(func(c config.Config) {
-		coll.SetInterval(c.PollInterval())
-		// The level changes immediately, so switching debug on in settings starts
-		// producing detail without a restart — which matters when the only way to
-		// observe the problem is to be running while it happens.
-		applog.SetDebug(c.Debug)
-		log.Info("configuration updated",
-			"pollIntervalSeconds", c.PollIntervalSeconds, "debug", c.Debug)
+		applyRuntimeConfig(log, coll, exePath, config.SetAutostart, c)
 	})
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -189,4 +188,35 @@ func run() error {
 	}
 	log.Info("stopped")
 	return nil
+}
+
+func applyRuntimeConfig(log *slog.Logger, target runtimeConfigTarget, exePath string, setAutostart func(bool, string) error, c config.Config) {
+	target.SetInterval(c.PollInterval())
+	target.SetMinSession(c.MinSession())
+	target.SetCapture(c.CaptureEnabled, c.CaptureMaxBytes)
+	if exePath != "" {
+		applyAutostart(log, c.StartWithWindows, exePath, setAutostart)
+	}
+	// The level changes immediately, so switching debug on in settings starts
+	// producing detail without a restart — which matters when the only way to
+	// observe the problem is to be running while it happens.
+	applog.SetDebug(c.Debug)
+	log.Info("configuration updated",
+		"pollIntervalSeconds", c.PollIntervalSeconds,
+		"minSessionSeconds", c.MinSessionSeconds,
+		"captureEnabled", c.CaptureEnabled,
+		"captureMaxBytes", c.CaptureMaxBytes,
+		"startWithWindows", c.StartWithWindows,
+		"debug", c.Debug)
+}
+
+func applyAutostart(log *slog.Logger, enabled bool, exePath string, setAutostart func(bool, string) error) {
+	if setAutostart == nil {
+		return
+	}
+	if err := setAutostart(enabled, exePath); err != nil {
+		// Not being able to write the Run key is not worth refusing to start over:
+		// the application works, it just will not launch itself.
+		log.Warn("could not update the startup entry", "err", err)
+	}
 }

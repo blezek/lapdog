@@ -4,10 +4,12 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/blezek/lapdog/internal/capture"
 	"github.com/blezek/lapdog/internal/source"
 	"github.com/blezek/lapdog/internal/store"
 	"github.com/blezek/lapdog/internal/synth"
@@ -359,6 +361,238 @@ func TestIngestWritesReplayableCapture(t *testing.T) {
 	src.Close()
 }
 
+func TestSetCaptureDisablesActiveCaptureOnNextFrame(t *testing.T) {
+	dir := fixtureDir(t)
+	src, err := source.NewReplay(filepath.Join(dir, "public-practice.lpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	var c *Collector
+	hooked := &hookSource{Source: src}
+	hooked.onFrame = func(n int) {
+		if n == 2 {
+			c.SetCapture(false, 1<<30)
+		}
+	}
+
+	capDir := filepath.Join(t.TempDir(), "captures")
+	c, err = New(Options{
+		Source: hooked, Store: st, Clock: NewFakeClock(time.Date(2026, 3, 2, 18, 0, 0, 0, time.UTC)),
+		Interval: time.Second, CaptureEnabled: true, CaptureDir: capDir, CaptureMaxBytes: 1 << 30,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if hooked.frames < 2 {
+		t.Fatalf("fixture produced %d frames, need at least 2 for this test", hooked.frames)
+	}
+
+	written, err := filepath.Glob(filepath.Join(capDir, "*.lpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 1 {
+		t.Fatalf("captures written = %d, want 1", len(written))
+	}
+	counts := captureKindCounts(t, written[0])
+	if counts[capture.KindVars] != 1 {
+		t.Errorf("vars records after live disable = %d, want 1", counts[capture.KindVars])
+	}
+}
+
+func TestSetCaptureEnablesActiveCaptureOnNextFrame(t *testing.T) {
+	dir := fixtureDir(t)
+	src, err := source.NewReplay(filepath.Join(dir, "public-practice.lpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	var c *Collector
+	hooked := &hookSource{Source: src}
+	hooked.onFrame = func(n int) {
+		if n == 2 {
+			c.SetCapture(true, 1<<30)
+		}
+	}
+
+	capDir := filepath.Join(t.TempDir(), "captures")
+	c, err = New(Options{
+		Source: hooked, Store: st, Clock: NewFakeClock(time.Date(2026, 3, 2, 18, 0, 0, 0, time.UTC)),
+		Interval: time.Second, CaptureEnabled: false, CaptureDir: capDir, CaptureMaxBytes: 1 << 30,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if hooked.frames < 2 {
+		t.Fatalf("fixture produced %d frames, need at least 2 for this test", hooked.frames)
+	}
+
+	written, err := filepath.Glob(filepath.Join(capDir, "*.lpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(written) != 1 {
+		t.Fatalf("captures written = %d, want 1", len(written))
+	}
+	counts := captureKindCounts(t, written[0])
+	if counts[capture.KindSession] == 0 {
+		t.Error("capture has no session record after live enable")
+	}
+	if counts[capture.KindVars] != hooked.frames-1 {
+		t.Errorf("vars records after live enable = %d, want %d", counts[capture.KindVars], hooked.frames-1)
+	}
+	replay, err := source.NewReplay(written[0])
+	if err != nil {
+		t.Fatalf("capture enabled mid-session is not replayable: %v", err)
+	}
+	replay.Close()
+}
+
+func TestSetCaptureMaxBytesPrunesWithoutRestart(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	capDir := filepath.Join(t.TempDir(), "captures")
+	if err := os.MkdirAll(capDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := filepath.Join(capDir, "old.lpd")
+	newer := filepath.Join(capDir, "newer.lpd")
+	if err := os.WriteFile(old, []byte("1234567890"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(newer, []byte("abcdefghij"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 3, 2, 18, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(old, base, base); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(newer, base.Add(time.Minute), base.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := New(Options{
+		Source: emptySource{}, Store: st, Clock: RealClock{}, Interval: time.Second,
+		CaptureDir: capDir, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetCapture(true, 10)
+
+	if _, err := os.Stat(old); !os.IsNotExist(err) {
+		t.Errorf("old capture still exists after live prune; stat err = %v", err)
+	}
+	if _, err := os.Stat(newer); err != nil {
+		t.Errorf("newer capture was pruned, want it kept: %v", err)
+	}
+}
+
+func TestSetMinSessionUpdatesCloseThreshold(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	c, err := New(Options{
+		Source: emptySource{}, Store: st, Clock: RealClock{}, Interval: time.Second,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.SetMinSession(42 * time.Second)
+	if got := c.minSessionLen(); got != 42*time.Second {
+		t.Errorf("minSessionLen = %s, want 42s", got)
+	}
+}
+
+func TestSetPausedSerializesWithActiveSegmentState(t *testing.T) {
+	src, err := source.NewReplay(filepath.Join(fixtureDir(t), "public-practice.lpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	c, err := New(Options{
+		Source: src, Store: st, Clock: NewFakeClock(time.Date(2026, 3, 2, 18, 0, 0, 0, time.UTC)),
+		Interval: time.Second, Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := src.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.handle(frame); err != nil {
+		t.Fatal(err)
+	}
+	if c.seg == nil {
+		t.Fatal("first frame did not open a segment")
+	}
+
+	c.activeMu.Lock()
+	done := make(chan struct{})
+	go func() {
+		c.SetPaused(true)
+		close(done)
+	}()
+	waitForPaused(t, c)
+	select {
+	case <-done:
+		t.Fatal("SetPaused completed while active segment state was locked")
+	default:
+	}
+	if c.seg == nil {
+		t.Fatal("SetPaused closed the segment while active segment state was locked")
+	}
+	c.activeMu.Unlock()
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("SetPaused did not finish after active segment state unlocked")
+	}
+	if c.seg != nil {
+		t.Fatal("SetPaused did not close the active segment")
+	}
+}
+
 func TestStatusReportsProgress(t *testing.T) {
 	dir := fixtureDir(t)
 	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
@@ -484,5 +718,66 @@ func TestIngestIsIdempotent(t *testing.T) {
 	secondLaps, _ := st.LapsForSession(rows2[0].ID)
 	if len(secondLaps) != len(firstLaps) {
 		t.Errorf("re-ingesting produced %d laps, want %d", len(secondLaps), len(firstLaps))
+	}
+}
+
+type hookSource struct {
+	source.Source
+	frames  int
+	onFrame func(int)
+}
+
+func (s *hookSource) Next() (source.Frame, error) {
+	f, err := s.Source.Next()
+	if err == nil {
+		s.frames++
+		if s.onFrame != nil {
+			s.onFrame(s.frames)
+		}
+	}
+	return f, err
+}
+
+type emptySource struct{}
+
+func (emptySource) Next() (source.Frame, error) { return source.Frame{}, io.EOF }
+func (emptySource) Meta() capture.Meta          { return capture.Meta{} }
+func (emptySource) Close() error                { return nil }
+
+func captureKindCounts(t *testing.T, path string) map[capture.Kind]int {
+	t.Helper()
+	r, err := capture.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	counts := map[capture.Kind]int{}
+	for {
+		rec, err := r.Next()
+		if err == io.EOF {
+			return counts
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		counts[rec.Kind]++
+	}
+}
+
+func waitForPaused(t *testing.T, c *Collector) {
+	t.Helper()
+	deadline := time.After(time.Second)
+	tick := time.NewTicker(time.Millisecond)
+	defer tick.Stop()
+	for {
+		if c.Status().Paused {
+			return
+		}
+		select {
+		case <-deadline:
+			t.Fatal("collector did not report paused")
+		case <-tick.C:
+		}
 	}
 }

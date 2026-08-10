@@ -75,10 +75,18 @@ type Collector struct {
 	mu         sync.Mutex
 	interval   time.Duration
 	minSession time.Duration
-	paused     bool
-	status     Status
+	// activeCapturePath is protected by mu so settings changes can prune old
+	// captures without deleting the file the collector is still writing.
+	activeCapturePath string
+	paused            bool
+	status            Status
 
-	// Active segment state. A nil segment means nothing is being recorded.
+	// activeMu serializes the active segment state. Pause can arrive from the
+	// tray/API goroutine, while Run handles frames on the collector goroutine.
+	activeMu sync.Mutex
+
+	// Active segment state. A nil segment means nothing is being recorded. Fields
+	// in this block are protected by activeMu.
 	seg        *Segment
 	lapDet     *LapDetector
 	posDet     *PositionDetector
@@ -134,6 +142,35 @@ func (c *Collector) SetInterval(d time.Duration) {
 	c.status.IntervalSeconds = d.Seconds()
 	c.mu.Unlock()
 	c.applyIntervalToSource(d)
+}
+
+// SetMinSession changes the minimum segment length used when closing sessions.
+func (c *Collector) SetMinSession(d time.Duration) {
+	if d < 0 {
+		return
+	}
+	c.mu.Lock()
+	c.minSession = d
+	c.mu.Unlock()
+}
+
+// SetCapture changes capture recording and retention without restarting.
+//
+// Disabling capture closes the active capture from the collector loop on the
+// next handled frame, so a settings request never closes the writer while it is
+// being used.
+func (c *Collector) SetCapture(enabled bool, maxBytes int64) {
+	if maxBytes < 0 {
+		return
+	}
+	c.mu.Lock()
+	c.captureEnabled = enabled
+	c.captureMaxBytes = maxBytes
+	dir := c.captureDir
+	keep := c.activeCapturePath
+	c.mu.Unlock()
+
+	c.pruneCapturesWith(dir, maxBytes, keep)
 }
 
 // applyIntervalToSource forwards the poll rate to sources that pace themselves.
@@ -206,6 +243,9 @@ func (c *Collector) Run(ctx context.Context) error {
 
 // handle processes one frame.
 func (c *Collector) handle(f source.Frame) error {
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+
 	if f.YAMLChanged || c.info == nil {
 		if info, err := sessionyaml.Parse(f.SessionYAML); err == nil {
 			c.info = info
@@ -227,7 +267,7 @@ func (c *Collector) handle(f source.Frame) error {
 	// SessionNum advances through practice, qualify and race within one subsession,
 	// and SubSessionID changes when the driver joins a different event.
 	if c.seg != nil && (c.seg.SessionNum != sessionNum || c.seg.SubsessionID != subsession) {
-		c.closeSegment()
+		c.closeSegmentLocked()
 	}
 
 	if c.seg == nil {
@@ -241,6 +281,7 @@ func (c *Collector) handle(f source.Frame) error {
 	if f.YAMLChanged {
 		c.seg.ApplyInfo(c.info)
 	}
+	captureStarted := c.syncCapture(f)
 
 	sample, ok := SampleFrom(f.Row, c.info.DriverInfo.DriverCarIdx)
 	if !ok {
@@ -250,13 +291,12 @@ func (c *Collector) handle(f source.Frame) error {
 	c.seg.Acct.Add(sample)
 
 	if c.capWriter != nil {
-		if err := c.writeCapture(f); err != nil {
+		if err := c.writeCapture(f, captureStarted); err != nil {
 			// Capture must never cost session data, so disable it and carry on
 			// recording to the database.
 			c.log.Warn("capture write failed, disabling capture for this run", "err", err)
-			c.capWriter.Close()
-			c.capWriter = nil
-			c.captureEnabled = false
+			c.closeCapture()
+			c.disableCaptureForRun()
 		}
 	}
 
@@ -273,6 +313,29 @@ func (c *Collector) handle(f source.Frame) error {
 	}
 	c.refreshStatus()
 	return nil
+}
+
+// syncCapture applies the live capture setting to the active segment.
+func (c *Collector) syncCapture(f source.Frame) bool {
+	captureEnabled, captureDir, _ := c.captureSettings()
+	if !captureEnabled {
+		c.closeCapture()
+		return false
+	}
+	if c.capWriter != nil || captureDir == "" {
+		return false
+	}
+	if err := c.openCapture(c.seg, captureDir); err != nil {
+		c.log.Warn("could not start capture, continuing without it", "err", err)
+		return false
+	}
+	if err := c.capWriter.WriteSession(f.T, f.SessionUpdate, f.SessionYAML); err != nil {
+		c.log.Warn("capture write failed, disabling capture for this run", "err", err)
+		c.closeCapture()
+		c.disableCaptureForRun()
+		return false
+	}
+	return true
 }
 
 // openSegment begins recording a new session segment.
@@ -324,11 +387,6 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	seg.SetIncidentSource(f.Row.Has(OptionalIncidentVar))
 	c.seg = seg
 
-	if c.captureEnabled && c.captureDir != "" {
-		if err := c.openCapture(seg); err != nil {
-			c.log.Warn("could not start capture, continuing without it", "err", err)
-		}
-	}
 	c.log.Info("recording session", "key", seg.Key, "label", seg.Label())
 	return nil
 }
@@ -419,11 +477,13 @@ func (c *Collector) flush() error {
 
 // closeSegment ends the active segment, discarding it if it is too short.
 func (c *Collector) closeSegment() {
-	if c.capWriter != nil {
-		c.capWriter.Close()
-		c.capWriter = nil
-		c.pruneCaptures()
-	}
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+	c.closeSegmentLocked()
+}
+
+func (c *Collector) closeSegmentLocked() {
+	c.closeCapture()
 	if c.seg == nil {
 		return
 	}
@@ -466,28 +526,46 @@ func (c *Collector) closeSegment() {
 }
 
 // openCapture starts a capture file for the segment.
-func (c *Collector) openCapture(seg *Segment) error {
-	if err := os.MkdirAll(c.captureDir, 0o755); err != nil {
+func (c *Collector) openCapture(seg *Segment, captureDir string) error {
+	if err := os.MkdirAll(captureDir, 0o755); err != nil {
 		return fmt.Errorf("collector: create capture directory: %w", err)
 	}
 	// Colons are illegal in Windows filenames, so the timestamp is flattened
 	// rather than used verbatim.
 	stamp := strings.NewReplacer(":", "", "-", "").Replace(store.FormatTime(seg.StartedAt))
 	name := fmt.Sprintf("%s-%d-%d%s", stamp, seg.SubsessionID, seg.SessionNum, capture.Ext)
-	path := filepath.Join(c.captureDir, name)
+	path := filepath.Join(captureDir, name)
 
 	w, err := capture.NewWriter(path, c.src.Meta())
 	if err != nil {
 		return err
 	}
 	c.capWriter = w
+	c.mu.Lock()
+	c.activeCapturePath = path
+	c.mu.Unlock()
 	seg.SetCaptureFile(name)
 	return nil
 }
 
+// closeCapture stops writing the active capture, if any.
+func (c *Collector) closeCapture() {
+	if c.capWriter == nil {
+		return
+	}
+	if err := c.capWriter.Close(); err != nil {
+		c.log.Warn("capture close failed", "err", err)
+	}
+	c.capWriter = nil
+	c.mu.Lock()
+	c.activeCapturePath = ""
+	c.mu.Unlock()
+	c.pruneCaptures()
+}
+
 // writeCapture records this frame into the active capture file.
-func (c *Collector) writeCapture(f source.Frame) error {
-	if f.YAMLChanged {
+func (c *Collector) writeCapture(f source.Frame, sessionAlreadyWritten bool) error {
+	if f.YAMLChanged && !sessionAlreadyWritten {
 		if err := c.capWriter.WriteSession(f.T, f.SessionUpdate, f.SessionYAML); err != nil {
 			return err
 		}
@@ -497,10 +575,15 @@ func (c *Collector) writeCapture(f source.Frame) error {
 
 // pruneCaptures enforces the capture retention cap.
 func (c *Collector) pruneCaptures() {
-	if c.captureDir == "" || c.captureMaxBytes <= 0 {
+	_, dir, maxBytes := c.captureSettings()
+	c.pruneCapturesWith(dir, maxBytes, "")
+}
+
+func (c *Collector) pruneCapturesWith(dir string, maxBytes int64, keep string) {
+	if dir == "" || maxBytes <= 0 {
 		return
 	}
-	removed, freed, err := capture.PruneDir(c.captureDir, c.captureMaxBytes, "")
+	removed, freed, err := capture.PruneDir(dir, maxBytes, keep)
 	if err != nil {
 		c.log.Warn("capture pruning failed", "err", err)
 		return
@@ -557,4 +640,16 @@ func (c *Collector) minSessionLen() time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.minSession
+}
+
+func (c *Collector) captureSettings() (bool, string, int64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.captureEnabled, c.captureDir, c.captureMaxBytes
+}
+
+func (c *Collector) disableCaptureForRun() {
+	c.mu.Lock()
+	c.captureEnabled = false
+	c.mu.Unlock()
 }
