@@ -193,12 +193,18 @@ Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lap
 ## Testing
 
 ```bash
-make test                  # Go, 206 tests across 19 packages
+make test                  # Go and web, 273 Go tests across 19 packages
 cd web && npm run test     # frontend
 make ci                    # everything
 ```
 
 Go tests run with no simulator and no network. The synthetic dataset is deterministic — the same seed and a fixed base date produce byte-identical captures — so `make fixtures` only changes output when the generator genuinely changes.
+
+**One fixture comes from a real simulator:** `internal/collector/testdata/real-build-vars.json`, the variable layout a 2026 iRacing build published — 331 names, the tick rate and the buffer length. It is committed because it is the one part of a real capture that carries nothing personal, and because the question it answers cannot be answered locally: `RequiredCoreVars` and `RequiredRaceVars` were transcribed from 2015 documentation, and asserting them against `internal/synth` would only prove the generator agrees with itself, since `layout.go` declares whatever LapDog asks for. A renamed variable would otherwise surface as a refused session on a user's machine.
+
+The rest of that capture is **not** committed and should not be: it carries a real customer id, the driver's name, 24 real people's names from the licensed AI roster, and iRacing's own setup and track content. `/ignore/` is gitignored for that reason.
+
+**The generator reports what the simulator reports, including the awkward parts.** Offline weekends carry `IRating: 1` and `LicString: "R 0.01"` rather than plausible values, because that is what a real offline session publishes. Fidelity here is load-bearing: it is what stops the offline-ratings gate from being removable with every test still green.
 
 Two verification tools drive a real browser over the Chrome DevTools Protocol, with no dependencies beyond Node's built-in WebSocket:
 

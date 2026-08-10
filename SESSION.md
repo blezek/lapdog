@@ -65,6 +65,15 @@ That gate then exposed a second defect by interaction. `store.Ratings` took the 
 
 Verified against the real captures rather than only fixtures: replaying `ignore/captures` yields `driver_user_id = 1152608` on both sessions with the rating columns NULL, and `/api/ratings` returns 0 points while still naming the owner. All three fixes were mutation-checked — removing the gate, gating on `Official` instead, and reverting the identity query each produce failures.
 
+#### Keeping the value without committing the data
+
+The captures cannot go into the repository. Beyond the customer id and the driver's own name, the AI roster is 24 real people — Dale Earnhardt Jr., Christopher Bell, Steve Myers, TJ Majors are licensed names, not generated ones — and the document embeds iRacing's own content: a 70-line `CarSetup` block, the setup filename, the roster name, full track metadata. De-identifying is mechanically easy, since a capture is `Magic` plus a gzip stream of length-prefixed records and the existing Reader and Writer round-trip it without byte surgery. It is the licensing and third-party-name questions that make it not worth doing, so `/ignore/` is gitignored — in the repository's own file now, not only a developer's global one, which does not travel with a clone.
+
+Two cheaper things capture what the data was worth:
+
+- **`internal/collector/testdata/real-build-vars.json`.** The header record of a capture is the one part carrying nothing personal: 331 variable names, tick rate 60, buffer length 8609, and no customer id or name. It is committed with tests asserting every required variable is published by a real build. That question could not be answered locally — the required lists came from 2015 documentation, and `internal/synth/layout.go` declares whatever LapDog asks for, so a test against the generator proves only that it agrees with itself.
+- **The generator now reports the offline placeholders.** `internal/synth/yaml.go` emits `IRating: 1` and `LicString: "R 0.01"` for weekends with no `SubSessionID`, matching the real capture, with AI opponents at 0. This is what stops the new gate from being removable with every test still green: the offline tests would otherwise pass on `SubSessionID` alone, proving nothing about why the gate exists. Confirmed by reverting the generator and watching the fidelity test fail. Only the three offline fixtures changed; the online ones are byte-identical.
+
 ---
 
 ## 2026-08-06 — identity and ratings, packaging, make targets
@@ -288,5 +297,6 @@ Accumulated across every day above, because each was learned by getting it wrong
 - **Comments assert; they do not verify.** A comment claimed the fixed 2 MiB `MapViewOfFile` length was safe. It was the bug.
 - **A log line is a claim, and can be false.** `telemetry: connected to the simulator` fired on mapping-open rather than on connecting, so 59% of a real log was a statement contradicted by the line beneath it — and the debugging notes named that line as proof of success. Log what was actually established, at the point it becomes true.
 - **Real data disagrees with synthetic data in ways fixtures cannot predict.** The generator gave every driver a plausible iRating; the simulator reports `IRating: 1` and `"R 0.01"` offline. No amount of local testing would have surfaced that — only a capture from the real thing.
+- **A fixture that does not reproduce the awkward part of reality lets its own fix be deleted.** The generator gave offline drivers plausible ratings, so the gate discarding real placeholders could have been removed with every test still passing. Fidelity to the ugly detail is what makes the test discriminating.
 - **Look for what is correct, not only what is broken.** Three of the five anomalies in the first real data drop were the system behaving properly: zero driving time from sitting in the pits, and "not connected" lines that fell entirely between sessions. Chasing any of them would have been wasted work, and "fixing" them would have introduced bugs.
 
