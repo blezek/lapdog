@@ -178,6 +178,23 @@ func (i *Info) MyIdentity() Identity {
 		v := me.UserID
 		id.UserID = &v
 	}
+	// Ratings are read only from an online session.
+	//
+	// Offline sessions — AI races, offline testing, solo practice — do not carry the
+	// driver's real ratings. A real capture reported IRating 1, LicLevel 1, LicSubLevel 1
+	// and LicString "R 0.01" for an established account, and those values were stored as
+	// though observed: on the progression chart they read as a collapse to nothing, a
+	// fabricated cliff in the one chart whose purpose is showing how the ratings moved.
+	//
+	// Absent is the honest answer and it costs nothing downstream: store.Ratings emits a
+	// point only where a rating is non-NULL, so an offline session simply does not appear.
+	//
+	// The identity itself is kept either way. The customer id is correct offline — it is
+	// the account that drove — and it is what says whose data a database holds.
+	if !i.isOnline() {
+		return id
+	}
+
 	// iRating is taken even when zero, because zero is a licence state rather than a
 	// missing reading — but only once a driver entry was actually found.
 	ir := me.IRating
@@ -199,6 +216,18 @@ func (i *Info) MyIdentity() Identity {
 	}
 	return id
 }
+
+// isOnline reports whether the document describes a session the iRacing service
+// registered, as opposed to one driven offline.
+//
+// SubSessionID is the marker, and it is structural rather than a heuristic: the service
+// allocates it, so an offline session has none. A real offline capture shows
+// SubSessionID 0 alongside Official 0 and Unofficial 1, and the generator models the
+// same thing — FlavourAI and FlavourOfflineTest set it to zero.
+//
+// Official alone would be the wrong test: a hosted or league session is online but not
+// official, and reports real ratings.
+func (i *Info) isOnline() bool { return i.WeekendInfo.SubSessionID != 0 }
 
 // SafetyRating returns the driver's Safety Rating as a number.
 //

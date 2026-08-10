@@ -52,3 +52,58 @@ func TestIngestRecordsDriverIdentityAndRatings(t *testing.T) {
 		}
 	}
 }
+
+// An offline capture records who drove but no ratings.
+//
+// Replayed through the whole path — capture, decode, classify, upsert — because the
+// gate lives in the YAML parser and everything downstream has to carry the absence
+// rather than substituting a zero. The generator sets SubSessionID to zero for AI and
+// offline-test weekends, which is what a real offline capture reports.
+func TestIngestDropsRatingsFromOfflineCaptures(t *testing.T) {
+	dir := fixtureDir(t)
+	for _, name := range []string{"ai-race-field-present.lpd", "offline-test-drive.lpd"} {
+		t.Run(name, func(t *testing.T) {
+			st := ingest(t, filepath.Join(dir, name), nil)
+			rows, total, err := st.ListSessions(store.Filter{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if total == 0 {
+				t.Fatal("no sessions recorded")
+			}
+			for _, got := range rows {
+				// The account that drove is still known.
+				if got.DriverUserID == nil || *got.DriverUserID != synth.DriverUserID {
+					t.Errorf("session %d DriverUserID = %v, want %d even offline",
+						got.SessionNum, got.DriverUserID, synth.DriverUserID)
+				}
+				if got.DriverIRating != nil {
+					t.Errorf("session %d recorded iRating %d from an offline session",
+						got.SessionNum, *got.DriverIRating)
+				}
+				if got.DriverSafetyRating != nil {
+					t.Errorf("session %d recorded a Safety Rating of %v from an offline session",
+						got.SessionNum, *got.DriverSafetyRating)
+				}
+				if got.DriverLicString != nil {
+					t.Errorf("session %d recorded a licence string offline", got.SessionNum)
+				}
+			}
+		})
+	}
+}
+
+// And the progression simply omits them, rather than plotting a zero.
+func TestOfflineSessionsProduceNoRatingPoints(t *testing.T) {
+	st := ingest(t, filepath.Join(fixtureDir(t), "offline-test-drive.lpd"), nil)
+	got, err := st.Ratings(store.Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Points) != 0 {
+		t.Errorf("points = %d from an offline capture, want none", len(got.Points))
+	}
+	if got.UserID == nil {
+		t.Error("the identity was lost along with the ratings")
+	}
+}

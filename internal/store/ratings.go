@@ -1,6 +1,10 @@
 package store
 
-import "fmt"
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+)
 
 // RatingPoint is one observation of the driver's ratings.
 //
@@ -53,11 +57,39 @@ type Ratings struct {
 func (s *Store) Ratings(f Filter) (Ratings, error) {
 	pred, args := f.where()
 
-	// Only sessions that observed a rating take part. A session with neither value
-	// contributes nothing but would flatten the line if emitted as a gap.
+	out := Ratings{Points: []RatingPoint{}}
+
+	// The identity is read across every filtered session, not only the rated ones.
+	//
+	// These are two different questions. "Whose database is this" is answered by any
+	// session; "how did the rating move" only by sessions that observed one. Taking the
+	// id from the rating rows conflated them, so a database holding only offline
+	// sessions — which carry the account but no ratings — reported no owner at all, and
+	// the settings screen said "not yet recorded" for a known account.
+	//
+	// The newest session that names an id wins, so a database that predates the identity
+	// columns still reports whoever its recent sessions belong to.
+	idQ := fmt.Sprintf(`
+SELECT s.driver_user_id
+FROM sessions s
+WHERE (%s) AND s.driver_user_id IS NOT NULL
+ORDER BY s.started_at DESC
+LIMIT 1`, pred)
+	var userID *int
+	switch err := s.reader.QueryRow(idQ, args...).Scan(&userID); {
+	case errors.Is(err, sql.ErrNoRows):
+		// No session names an owner. Legitimate on a fresh install.
+	case err != nil:
+		return Ratings{}, fmt.Errorf("store: ratings identity: %w", err)
+	default:
+		out.UserID = userID
+	}
+
+	// Only sessions that observed a rating take part in the progression. A session with
+	// neither value contributes nothing but would flatten the line if emitted as a gap.
 	q := fmt.Sprintf(`
 SELECT s.started_at, s.session_type, s.event_context,
-       s.driver_user_id, s.driver_irating, s.driver_safety_rating, s.driver_lic_string
+       s.driver_irating, s.driver_safety_rating, s.driver_lic_string
 FROM sessions s
 WHERE (%s)
   AND (s.driver_irating IS NOT NULL OR s.driver_safety_rating IS NOT NULL)
@@ -69,20 +101,11 @@ ORDER BY s.started_at ASC`, pred)
 	}
 	defer rows.Close()
 
-	out := Ratings{Points: []RatingPoint{}}
 	for rows.Next() {
 		var p RatingPoint
-		var userID *int
 		if err := rows.Scan(&p.StartedAt, &p.SessionType, &p.EventContext,
-			&userID, &p.IRating, &p.SafetyRating, &p.LicString); err != nil {
+			&p.IRating, &p.SafetyRating, &p.LicString); err != nil {
 			return Ratings{}, fmt.Errorf("store: ratings scan: %w", err)
-		}
-
-		// The identity comes from the newest session that names one, so a database
-		// that predates the migration reports whoever its recent sessions belong to
-		// rather than nothing.
-		if userID != nil {
-			out.UserID = userID
 		}
 		out.Points = append(out.Points, p)
 	}
