@@ -95,9 +95,9 @@ func (s *Server) Handler() (http.Handler, error) {
 	return mux, nil
 }
 
-// ListenAndServe binds the loopback interface only and serves until the listener
-// fails.
-func (s *Server) ListenAndServe(port int) error {
+// InterfaceHandler returns the routed handler after confirming that the embedded
+// interface is present and usable.
+func (s *Server) InterfaceHandler() (http.Handler, error) {
 	// Refuse to start without a usable interface.
 	//
 	// The bundle is generated rather than committed, and //go:embed always finds
@@ -110,24 +110,40 @@ func (s *Server) ListenAndServe(port int) error {
 	// the API. Requiring the bundle there would make every JSON endpoint test
 	// depend on a Node toolchain to say anything about JSON.
 	if err := web.Check(); err != nil {
-		return err
+		return nil, err
 	}
-	h, err := s.Handler()
-	if err != nil {
-		return err
+	return s.Handler()
+}
+
+// Serve serves h on an already-bound listener.
+func (s *Server) Serve(ln net.Listener, h http.Handler) error {
+	if h == nil {
+		ln.Close()
+		return errors.New("api: nil handler")
 	}
-	addr := listenAddr(port)
+	addr := ln.Addr().String()
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	s.log.Info("serving user interface", "url", "http://"+addr)
+	return srv.Serve(ln)
+}
+
+// ListenAndServe binds the loopback interface only and serves until the listener
+// fails.
+func (s *Server) ListenAndServe(port int) error {
+	h, err := s.InterfaceHandler()
+	if err != nil {
+		return err
+	}
+	addr := listenAddr(port)
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("api: cannot listen on %s: %w", addr, err)
 	}
-	s.log.Info("serving user interface", "url", "http://"+addr)
-	return srv.Serve(ln)
+	return s.Serve(ln, h)
 }
 
 // writeJSON sends v as JSON with a 200 status.

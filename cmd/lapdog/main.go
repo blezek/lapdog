@@ -7,11 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
-	"sync/atomic"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -25,14 +26,6 @@ import (
 	"github.com/blezek/lapdog/internal/version"
 )
 
-// listenSettleTime is how long to wait for the HTTP listener to fail before the
-// tray reads the outcome.
-//
-// Binding fails immediately when the port is taken, so this only has to outlast a
-// syscall. Without it the tray would draw its menu before the result was known and
-// a port conflict would appear only at the first refresh tick.
-const listenSettleTime = 250 * time.Millisecond
-
 // shutdownGrace is how long the collector gets to flush the active session after
 // the user quits. A session in progress is worth waiting for; a hung one is not
 // worth blocking exit over.
@@ -42,6 +35,22 @@ type runtimeConfigTarget interface {
 	SetInterval(time.Duration)
 	SetMinSession(time.Duration)
 	SetCapture(bool, int64)
+}
+
+type interfaceServer interface {
+	InterfaceHandler() (http.Handler, error)
+	Serve(net.Listener, http.Handler) error
+}
+
+type interfaceBinding struct {
+	URL           string
+	Port          int
+	PreferredPort int
+	Notice        string
+	Error         string
+
+	fallback     bool
+	preferredErr error
 }
 
 func main() {
@@ -145,30 +154,26 @@ func run() error {
 		}
 	}()
 
-	// A port already in use is not fatal: losing the interface must not lose
-	// session data, which is the part that cannot be recovered later.
-	//
-	// portConflict is written by the server goroutine and read by the tray on the
-	// main goroutine, so it is atomic rather than a plain string.
+	// A port already in use is not fatal: losing the configured interface port must
+	// not lose session data, which is the part that cannot be recovered later.
+	// The preferred port remains the user's setting, but when it cannot be bound we
+	// keep the same single binary running by asking the OS for a random free
+	// loopback port with 127.0.0.1:0. The listener returned for that random port is
+	// passed directly to the HTTP server, so there is no gap where another process
+	// can claim the port between discovery and use.
 	srv := api.New(st, coll, cfgStore, log)
-	var portConflict atomic.Value
-	portConflict.Store("")
-	go func() {
-		err := srv.ListenAndServe(cfg.Port)
-		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Error("user interface unavailable", "port", cfg.Port, "err", err)
-			portConflict.Store(fmt.Sprintf("port %d is in use", cfg.Port))
-		}
-	}()
-	time.Sleep(listenSettleTime)
+	iface := startInterface(srv, cfg.Port, log)
 
 	tray.Run(tray.Options{
-		Status:       coll.Status,
-		SetPaused:    coll.SetPaused,
-		URL:          fmt.Sprintf("http://127.0.0.1:%d", cfg.Port),
-		DataDir:      dataDir,
-		PortConflict: portConflict.Load().(string),
-		Quit:         stop,
+		Status:          coll.Status,
+		SetPaused:       coll.SetPaused,
+		URL:             iface.URL,
+		PreferredPort:   iface.PreferredPort,
+		InterfacePort:   iface.Port,
+		InterfaceNotice: iface.Notice,
+		InterfaceError:  iface.Error,
+		DataDir:         dataDir,
+		Quit:            stop,
 		// One signal handler, owned here. The tray watches this instead of
 		// installing its own, which used to race: an interrupt during start-up
 		// went only to the context and the tray then waited forever for a signal
@@ -188,6 +193,95 @@ func run() error {
 	}
 	log.Info("stopped")
 	return nil
+}
+
+func startInterface(srv interfaceServer, preferredPort int, log *slog.Logger) interfaceBinding {
+	return startInterfaceWith(srv, preferredPort, log, net.Listen)
+}
+
+func startInterfaceWith(srv interfaceServer, preferredPort int, log *slog.Logger, listen listenFunc) interfaceBinding {
+	binding := interfaceBinding{PreferredPort: preferredPort}
+
+	h, err := srv.InterfaceHandler()
+	if err != nil {
+		log.Error("user interface unavailable", "err", err)
+		binding.Error = err.Error()
+		return binding
+	}
+
+	ln, binding, err := bindInterface(preferredPort, listen)
+	if err != nil {
+		log.Error("user interface unavailable", "preferredPort", preferredPort, "err", err)
+		binding.Error = err.Error()
+		return binding
+	}
+	if binding.fallback {
+		log.Warn("preferred interface port unavailable; using random fallback port",
+			"preferredPort", preferredPort,
+			"port", binding.Port,
+			"url", binding.URL,
+			"err", binding.preferredErr)
+	}
+
+	go func() {
+		if err := srv.Serve(ln, h); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("user interface stopped", "url", binding.URL, "err", err)
+		}
+	}()
+	return binding
+}
+
+type listenFunc func(network, address string) (net.Listener, error)
+
+func bindInterface(preferredPort int, listen listenFunc) (net.Listener, interfaceBinding, error) {
+	binding := interfaceBinding{PreferredPort: preferredPort}
+	preferredAddr := interfaceListenAddr(preferredPort)
+	ln, err := listen("tcp", preferredAddr)
+	if err != nil {
+		binding.fallback = true
+		binding.preferredErr = err
+		ln, err = listen("tcp", interfaceListenAddr(0))
+		if err != nil {
+			return nil, binding, fmt.Errorf(
+				"cannot listen on %s and random loopback fallback: preferred: %v; fallback: %w",
+				preferredAddr, binding.preferredErr, err,
+			)
+		}
+	}
+
+	binding.Port = listenerPort(ln)
+	binding.URL = interfaceURL(binding.Port)
+	if binding.fallback {
+		binding.Notice = fmt.Sprintf(
+			"Interface on port %d; %d unavailable",
+			binding.Port,
+			preferredPort,
+		)
+	}
+	return ln, binding, nil
+}
+
+func interfaceListenAddr(port int) string {
+	return net.JoinHostPort(api.LoopbackHost, strconv.Itoa(port))
+}
+
+func interfaceURL(port int) string {
+	return "http://" + interfaceListenAddr(port)
+}
+
+func listenerPort(ln net.Listener) int {
+	if addr, ok := ln.Addr().(*net.TCPAddr); ok {
+		return addr.Port
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		return 0
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return 0
+	}
+	return n
 }
 
 func applyRuntimeConfig(log *slog.Logger, target runtimeConfigTarget, exePath string, setAutostart func(bool, string) error, c config.Config) {

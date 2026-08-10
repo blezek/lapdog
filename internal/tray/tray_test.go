@@ -82,6 +82,28 @@ func TestFormatDuration(t *testing.T) {
 	}
 }
 
+func TestOpenTitleNamesFallbackPort(t *testing.T) {
+	if got := openTitle(Options{PreferredPort: 47047, InterfacePort: 53124}); got != "Open LapDog (port 53124)" {
+		t.Errorf("fallback openTitle = %q", got)
+	}
+	if got := openTitle(Options{PreferredPort: 47047, InterfacePort: 47047}); got != "Open LapDog" {
+		t.Errorf("preferred openTitle = %q", got)
+	}
+	if got := openTitle(Options{PreferredPort: 47047, InterfaceError: "no interface"}); got != "Open LapDog" {
+		t.Errorf("error openTitle = %q", got)
+	}
+}
+
+func TestIdleDetailShowsInterfaceNotice(t *testing.T) {
+	const notice = "Interface on port 53124; 47047 unavailable"
+	if got := idleDetail(Options{InterfaceNotice: notice}); got != notice {
+		t.Errorf("idleDetail with notice = %q, want %q", got, notice)
+	}
+	if got := idleDetail(Options{}); got != "No active session" {
+		t.Errorf("idleDetail without notice = %q", got)
+	}
+}
+
 // Run must return when Done closes, including when Done is already closed before
 // Run is called.
 //

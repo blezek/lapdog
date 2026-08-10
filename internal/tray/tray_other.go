@@ -19,9 +19,12 @@ package tray
 func Run(opts Options) {
 	if opts.Log != nil {
 		msg := "no system tray on this platform; interrupt to stop"
-		if opts.PortConflict != "" {
-			opts.Log.Warn(msg, "url", opts.URL, "portConflict", opts.PortConflict)
-		} else {
+		switch {
+		case opts.InterfaceError != "":
+			opts.Log.Warn(msg, "url", opts.URL, "interfaceError", opts.InterfaceError)
+		case opts.InterfaceNotice != "":
+			opts.Log.Info(msg, "url", opts.URL, "interfaceNotice", opts.InterfaceNotice)
+		default:
 			opts.Log.Info(msg, "url", opts.URL)
 		}
 	}

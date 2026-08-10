@@ -32,11 +32,19 @@ type Options struct {
 	SetPaused func(bool)
 	// URL is the address the interface is served at.
 	URL string
+	// PreferredPort is the configured port the app tries first.
+	PreferredPort int
+	// InterfacePort is the actual port the interface is served on. It may differ
+	// from PreferredPort when the app fell back to a random loopback port.
+	InterfacePort int
+	// InterfaceNotice is non-empty when the interface is available but not exactly
+	// as configured, for example because a random fallback port was selected.
+	InterfaceNotice string
+	// InterfaceError is non-empty when the interface could not be served at all.
+	// The tray reports it rather than offering a menu item that opens a dead page.
+	InterfaceError string
 	// DataDir is opened by the "Open data folder" item.
 	DataDir string
-	// PortConflict is non-empty when the interface could not bind its port. The
-	// tray reports it rather than offering a menu item that opens a dead page.
-	PortConflict string
 	// Quit is called when the user chooses Quit.
 	Quit func()
 	// Done is closed when the process should shut down for a reason other than
@@ -83,6 +91,37 @@ func stateText(s collector.Status) string {
 func formatDuration(sec float64) string {
 	d := time.Duration(sec) * time.Second
 	return fmt.Sprintf("%d:%02d", int(d.Hours()), int(d.Minutes())%60)
+}
+
+func openTitle(opts Options) string {
+	if opts.InterfaceError != "" || opts.InterfacePort == 0 || opts.InterfacePort == opts.PreferredPort {
+		return "Open LapDog"
+	}
+	return fmt.Sprintf("Open LapDog (port %d)", opts.InterfacePort)
+}
+
+func openHint(opts Options) string {
+	if opts.InterfaceError != "" {
+		return "User interface unavailable"
+	}
+	if opts.URL == "" {
+		return "Open the user interface in a browser"
+	}
+	return "Open " + opts.URL
+}
+
+func idleDetail(opts Options) string {
+	if opts.InterfaceNotice != "" {
+		return opts.InterfaceNotice
+	}
+	return "No active session"
+}
+
+func interfaceTooltipSuffix(opts Options) string {
+	if opts.InterfaceNotice != "" {
+		return "\n" + opts.InterfaceNotice
+	}
+	return ""
 }
 
 // openURL opens a URL in the default browser.

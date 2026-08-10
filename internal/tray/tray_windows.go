@@ -38,7 +38,7 @@ func onReady(opts Options) {
 	detail.Disable()
 
 	systray.AddSeparator()
-	open := systray.AddMenuItem("Open LapDog", "Open the user interface in a browser")
+	open := systray.AddMenuItem(openTitle(opts), openHint(opts))
 	pause := systray.AddMenuItemCheckbox("Pause recording", "Stop recording without exiting", false)
 
 	systray.AddSeparator()
@@ -47,9 +47,11 @@ func onReady(opts Options) {
 	systray.AddSeparator()
 	quit := systray.AddMenuItem("Quit", "Exit LapDog")
 
-	if opts.PortConflict != "" {
+	if opts.InterfaceError != "" {
 		open.Disable()
-		detail.SetTitle("Interface unavailable: " + opts.PortConflict)
+		detail.SetTitle("Interface unavailable: " + opts.InterfaceError)
+	} else if opts.InterfaceNotice != "" {
+		detail.SetTitle(opts.InterfaceNotice)
 	}
 
 	go refresh(opts, header, detail)
@@ -94,19 +96,20 @@ func refresh(opts Options, header, detail *systray.MenuItem) {
 		systray.SetIcon(icon(stateFor(s)))
 		header.SetTitle("LapDog · " + stateText(s))
 
-		// A port conflict is more important than session detail, and the detail
-		// line is where it is already displayed.
-		if opts.PortConflict != "" {
+		// An unavailable interface is more important than session detail, and the
+		// detail line is where it is already displayed.
+		if opts.InterfaceError != "" {
+			systray.SetTooltip("LapDog — " + stateText(s) + "\nInterface unavailable: " + opts.InterfaceError)
 			continue
 		}
 		if s.SessionLabel == "" {
-			detail.SetTitle("No active session")
-			systray.SetTooltip("LapDog — " + stateText(s))
+			detail.SetTitle(idleDetail(opts))
+			systray.SetTooltip("LapDog — " + stateText(s) + interfaceTooltipSuffix(opts))
 			continue
 		}
 		line := fmt.Sprintf("%s · %s", s.SessionLabel, s.TrackName)
 		detail.SetTitle(line)
 		systray.SetTooltip(fmt.Sprintf("LapDog — %s\nDriving %s · %d laps",
-			line, formatDuration(s.DrivingSeconds), s.Laps))
+			line, formatDuration(s.DrivingSeconds), s.Laps) + interfaceTooltipSuffix(opts))
 	}
 }
