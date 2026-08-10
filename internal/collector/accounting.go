@@ -155,3 +155,58 @@ func SampleFrom(row irsdk.Row, driverCarIdx int) (Sample, bool) {
 
 	return Sample{InCar: inCar, Driving: driving, Replay: replay}, true
 }
+
+// NotDrivingReason explains why driving time is not accruing.
+//
+// It exists because "zero driving seconds" is indistinguishable from a bug
+// without it: a real capture recorded 154 seconds in the car and no driving
+// time at all, which was correct — the car sat in the pit box — and could only
+// be established by reading this file.
+type NotDrivingReason string
+
+// NotDrivingReason values. The empty string means driving time is accruing.
+const (
+	ReasonNone       NotDrivingReason = ""
+	ReasonReplay     NotDrivingReason = "watching a replay"
+	ReasonNotInCar   NotDrivingReason = "not in the car"
+	ReasonPitBox     NotDrivingReason = "in the pit box"
+	ReasonNotOnTrack NotDrivingReason = "not on track"
+)
+
+// NotDrivingReasonFrom reports why driving time is not accruing for this frame,
+// or ReasonNone when it is.
+//
+// It reads exactly the values SampleFrom reads and follows Accountant.Add's
+// precedence, so the explanation cannot contradict the boolean it explains.
+// Replay comes first because Add returns before crediting anything at all.
+//
+// An unreadable row yields ReasonNone rather than a guess: the collector refuses
+// such a session, and an invented explanation would be worse than none.
+func NotDrivingReasonFrom(row irsdk.Row, driverCarIdx int) NotDrivingReason {
+	if replay, ok := row.Bool("IsReplayPlaying"); ok && replay {
+		return ReasonReplay
+	}
+	inCar, ok := row.Bool("IsOnTrackCar")
+	if !ok {
+		return ReasonNone
+	}
+	// The surface array's presence and bounds are checked here, before inCar's
+	// value is consulted, because SampleFrom refuses the row on that basis
+	// regardless of inCar: an out-of-range index makes the row unreadable, not
+	// merely "not in the car".
+	surfaces, ok := row.IntArray("CarIdxTrackSurface")
+	if !ok || driverCarIdx < 0 || driverCarIdx >= len(surfaces) {
+		return ReasonNone
+	}
+	if !inCar {
+		return ReasonNotInCar
+	}
+	switch irsdk.TrkLoc(surfaces[driverCarIdx]) {
+	case irsdk.InPitStall:
+		return ReasonPitBox
+	case irsdk.NotInWorld:
+		return ReasonNotOnTrack
+	default:
+		return ReasonNone
+	}
+}
