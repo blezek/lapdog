@@ -7,6 +7,7 @@ import { applyTheme } from './theme'
 import { Icon } from './components/ui'
 import { hm } from './format'
 
+import { Live } from './pages/Live'
 import { Dashboard } from './pages/Dashboard'
 import { EntityPage } from './pages/Entity'
 import { Sessions } from './pages/Sessions'
@@ -14,8 +15,15 @@ import { Laps } from './pages/Laps'
 import { Export } from './pages/Export'
 import { Settings } from './pages/Settings'
 
-/** nav is the four-page structure plus settings, pinned to the bottom. */
+/**
+ * nav is the seven pages, with settings pinned to the bottom separately.
+ *
+ * Live is first because it is the only page about the present moment; the rest
+ * are about the past, and the answer to "is it working" is the one worth reaching
+ * without reading the list.
+ */
 const nav = [
+  { to: '/live', label: 'Live', icon: 'steering' },
   { to: '/dashboard', label: 'Dashboard', icon: 'speedometer' },
   { to: '/cars', label: 'Cars', icon: 'car-sports' },
   { to: '/tracks', label: 'Tracks', icon: 'road-variant' },
@@ -65,6 +73,7 @@ export function App() {
       <main className="main">
         <Routes>
           <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/live" element={<Live />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/cars" element={<EntityPage dimension="car" />} />
           <Route path="/tracks" element={<EntityPage dimension="track" />} />

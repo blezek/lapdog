@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
@@ -24,9 +25,38 @@ import (
 
 // ------------------------------------------------------------- test doubles
 
-type fakeStatus struct{ s collector.Status }
+// frame is a *collector.LiveFrame rather than baked in, so one double can
+// stand in both for a session that is reporting frames and for one that has
+// not handled any yet — nil and a present zero are different fixtures on
+// purpose, the same way they are different facts on the wire.
+// fixtureIntervalSeconds is deliberately not 1.
+//
+// One is both the collector's default and the value the endpoint used to
+// substitute when it saw a non-positive interval, so a fixture set to 1 could not
+// tell a forwarded interval from a fabricated one.
+const fixtureIntervalSeconds = 2
+
+type fakeStatus struct {
+	s     collector.Status
+	frame *collector.LiveFrame
+}
 
 func (f fakeStatus) Status() collector.Status { return f.s }
+
+func (f fakeStatus) Live() collector.Live {
+	return collector.Live{Status: f.s, Frame: f.frame}
+}
+
+// stationaryCarFrame is a frame with speed present and zero, gear absent
+// entirely, so tests can tell a real zero from a missing value.
+func stationaryCarFrame() *collector.LiveFrame {
+	zero := 0.0
+	return &collector.LiveFrame{
+		At: time.Now(), InCar: true, Driving: false,
+		Reason: collector.ReasonPitBox,
+		Speed:  &zero,
+	}
+}
 
 type fakeConfig struct {
 	mu sync.Mutex
@@ -118,9 +148,9 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, *fakeConfig) {
 
 	cfg := &fakeConfig{c: config.Default()}
 	sp := fakeStatus{s: collector.Status{
-		Connected: true, IntervalSeconds: 1,
+		Connected: true, IntervalSeconds: fixtureIntervalSeconds,
 		SessionLabel: "Public Practice", TrackName: "Watkins Glen International",
-	}}
+	}, frame: stationaryCarFrame()}
 	srv := New(st, sp, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h, err := srv.Handler()
 	if err != nil {
@@ -251,6 +281,64 @@ func TestStatusEndpoint(t *testing.T) {
 	// Local, live data must never be cached or the figures go stale.
 	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
 		t.Errorf("Cache-Control = %q, want no-store", cc)
+	}
+}
+
+// The endpoint forwards the provider's own poll interval, so the interface can
+// pace itself and judge staleness rather than being told the answer.
+//
+// Equality, not "greater than zero": the endpoint once floored the interval at 1,
+// which no fixture set to 1 could have detected. The frame itself is covered by
+// TestLiveEndpointWithNoFrame and TestLiveEndpointDistinguishesZeroFromAbsent.
+func TestLiveEndpoint(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	var got liveResponse
+	rec := get(t, h, "/api/live", &got)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got.IntervalSeconds != fixtureIntervalSeconds {
+		t.Errorf("IntervalSeconds = %v, want the provider's %v",
+			got.IntervalSeconds, fixtureIntervalSeconds)
+	}
+}
+
+// With no frame handled, the response says so rather than inventing zeroes.
+//
+// This uses its own StatusProvider rather than newTestServer's, because that
+// fixture's fakeStatus reports a stationary-car frame — the two fixtures
+// exist precisely so "no frame yet" and "a frame with a real zero in it" stay
+// distinguishable in the tests, the same way they must on the wire.
+func TestLiveEndpointWithNoFrame(t *testing.T) {
+	_, st, cfg := newTestServer(t)
+	sp := fakeStatus{s: collector.Status{IntervalSeconds: 1}}
+	srv := New(st, sp, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h, err := srv.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got liveResponse
+	get(t, h, "/api/live", &got)
+	if got.Frame != nil {
+		t.Errorf("a frame was reported when none had been handled: %+v", got.Frame)
+	}
+}
+
+// A zero speed is a real reading and must not be confused with an absent one.
+func TestLiveEndpointDistinguishesZeroFromAbsent(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	// fakeStatus is configured with a stationary car: speed present and zero,
+	// gear absent entirely.
+	var got liveResponse
+	get(t, h, "/api/live", &got)
+	if got.Frame == nil {
+		t.Fatal("the fixture provides no frame; fakeStatus.Live should have returned one")
+	}
+	if got.Frame.Speed == nil || *got.Frame.Speed != 0 {
+		t.Errorf("Speed = %v, want a present zero", got.Frame.Speed)
+	}
+	if got.Frame.Gear != nil {
+		t.Errorf("Gear = %v, want absent", got.Frame.Gear)
 	}
 }
 

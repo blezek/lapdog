@@ -50,6 +50,14 @@ type Telemetry struct {
 	LogPath     string `json:"logPath"`
 }
 
+// telemetrySupported reports whether this build can read live telemetry at
+// all, and the platform it was built for. handleStatus and handleLive both
+// quote this under different field names, so the two cannot drift apart the
+// way two independent runtime.GOOS checks eventually would.
+func telemetrySupported() (supported bool, platform string) {
+	return runtime.GOOS == "windows", runtime.GOOS
+}
+
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	var st collector.Status
 	if s.sp != nil {
@@ -59,6 +67,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// it without the API needing to be told where it lives.
 	dbPath := s.st.Path()
 	dataDir := filepath.Dir(dbPath)
+	available, platform := telemetrySupported()
 
 	s.writeJSON(w, statusResponse{
 		Status:       st,
@@ -67,12 +76,51 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 		Telemetry: Telemetry{
 			Source:      irsdk.MemMapFileName,
 			SourceKind:  "live shared memory, sampled once per poll interval",
-			Available:   runtime.GOOS == "windows",
-			Platform:    runtime.GOOS,
+			Available:   available,
+			Platform:    platform,
 			DataDir:     dataDir,
 			CapturesDir: config.CapturesDir(dataDir),
 			LogPath:     config.LogPath(dataDir),
 		},
+	})
+}
+
+// liveResponse is the present moment: the last frame, the session it belongs
+// to, and the poll interval.
+//
+// The interval is included so the interface can pace its own polling and
+// decide when a frame has gone stale. The server deliberately does not decide
+// staleness itself: it does not know when the response will be read.
+type liveResponse struct {
+	Frame  *collector.LiveFrame `json:"frame"`
+	Status collector.Status     `json:"status"`
+
+	IntervalSeconds float64 `json:"intervalSeconds"`
+
+	// Supported reports whether this build can read live telemetry at all,
+	// which is a different fact from no simulator being present.
+	Supported bool   `json:"supported"`
+	Platform  string `json:"platform"`
+}
+
+// handleLive serves the collector's view of the present moment.
+func (s *Server) handleLive(w http.ResponseWriter, r *http.Request) {
+	var live collector.Live
+	if s.sp != nil {
+		live = s.sp.Live()
+	}
+	supported, platform := telemetrySupported()
+	// The interval is reported exactly as the provider states it. It used to be
+	// floored at 1, which fabricated a plausible number for a value the server did
+	// not know: New always sets a positive interval, SetInterval rejects anything
+	// else, and lapdogctl's idle provider hardcodes 1, so the floor could only ever
+	// have fired by inventing an interval nobody had configured.
+	s.writeJSON(w, liveResponse{
+		Frame:           live.Frame,
+		Status:          live.Status,
+		IntervalSeconds: live.Status.IntervalSeconds,
+		Supported:       supported,
+		Platform:        platform,
 	})
 }
 

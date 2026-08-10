@@ -264,6 +264,13 @@ func (idleStatus) Status() collector.Status {
 	return collector.Status{Connected: false, IntervalSeconds: 1}
 }
 
+// Live reports no frame, for the same reason Status reports no connection:
+// serve browses an existing database rather than reading a simulator, so
+// there is nothing live to hand back.
+func (idleStatus) Live() collector.Live {
+	return collector.Live{Status: collector.Status{Connected: false, IntervalSeconds: 1}}
+}
+
 // serve runs the API and the embedded interface over an existing database.
 //
 // It is the development counterpart to the tray application: same handlers, same

@@ -180,8 +180,12 @@ const (
 // precedence, so the explanation cannot contradict the boolean it explains.
 // Replay comes first because Add returns before crediting anything at all.
 //
-// An unreadable row yields ReasonNone rather than a guess: the collector refuses
-// such a session, and an invented explanation would be worse than none.
+// A row this function cannot read otherwise yields ReasonNone rather than a
+// guess: the collector refuses such a session, and an invented explanation would
+// be worse than none. Replay is the one exception, because it is checked first: a
+// present-and-true IsReplayPlaying is reported even when nothing else in the row
+// is readable, which is correct, since Add credits nothing during a replay
+// regardless of what the rest of the row says.
 func NotDrivingReasonFrom(row irsdk.Row, driverCarIdx int) NotDrivingReason {
 	if replay, ok := row.Bool("IsReplayPlaying"); ok && replay {
 		return ReasonReplay

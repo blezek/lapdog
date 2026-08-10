@@ -688,6 +688,7 @@ func TestStatusReportsProgress(t *testing.T) {
 		t.Errorf("active IncidentSource = %q, want live", active.IncidentSource)
 	}
 	if s.SessionLabel != "" || s.TrackName != "" || s.CarName != "" ||
+		s.ConnectedSeconds != 0 || s.InCarSeconds != 0 ||
 		s.DrivingSeconds != 0 || s.Laps != 0 || s.IncidentSource != "" {
 		t.Errorf("closed status kept active session detail: %+v", s)
 	}

@@ -167,6 +167,7 @@ iRacing ──shared memory──► internal/irsdk ──► internal/source �
 | `web/` | React + TypeScript + ECharts frontend |
 | `web/src/pages/Entity.tsx` | The Cars and Tracks pages: one component, two dimensions |
 | `web/src/entity.ts` | Consistency banding and dimension labels, kept pure for testing |
+| `web/src/pages/Live.tsx` | The `/live` page: whether telemetry is being read right now, and why driving time is or is not accruing |
 
 Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lapdog-design.md) and [packaging](docs/superpowers/specs/2026-08-04-lapdog-packaging.md). The [backend plan](docs/superpowers/plans/2026-08-04-lapdog-backend.md) is the task-by-task implementation record.
 
@@ -193,7 +194,7 @@ Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lap
 ## Testing
 
 ```bash
-make test                  # Go and web, 273 Go tests across 19 packages
+make test                  # Go and web, 298 Go tests across 19 packages
 cd web && npm run test     # frontend
 make ci                    # everything
 ```
@@ -205,6 +206,8 @@ Go tests run with no simulator and no network. The synthetic dataset is determin
 The rest of that capture is **not** committed and should not be: it carries a real customer id, the driver's name, 24 real people's names from the licensed AI roster, and iRacing's own setup and track content. `/ignore/` is gitignored for that reason.
 
 **The generator reports what the simulator reports, including the awkward parts.** Offline weekends carry `IRating: 1` and `LicString: "R 0.01"` rather than plausible values, because that is what a real offline session publishes. Fidelity here is load-bearing: it is what stops the offline-ratings gate from being removable with every test still green.
+
+**The Live page's honesty is tested where it can be.** `web/src/live.test.ts` covers the staleness rule — three poll intervals floored at two seconds, and the switch to `Not reading` driven by the clock alone while the payload is unchanged, which is the transition a stalled collector produces — and which of the four explanations an absent frame is given. The other half of the rule, that accumulated totals keep their values while instantaneous ones clear to `—`, lives in the page component; there is no DOM test harness in this repository, so it is verified in a browser rather than by a unit test. Its agreement with the accounting — that a reason is present exactly when driving time is not accruing — is pinned in `internal/collector/live_test.go` over a replayed frame stream rather than against constructed rows, which is worth more than a hand-built row because every value takes the same decoding path production uses. Those captures come from `internal/synth`, not from a simulator.
 
 Two verification tools drive a real browser over the Chrome DevTools Protocol, with no dependencies beyond Node's built-in WebSocket:
 

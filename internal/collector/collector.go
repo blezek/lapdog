@@ -43,17 +43,25 @@ type Options struct {
 // Status is a snapshot of what the collector is doing, for the tray and the
 // settings screen.
 type Status struct {
-	Connected       bool     `json:"connected"`
-	Paused          bool     `json:"paused"`
-	IntervalSeconds float64  `json:"intervalSeconds"`
-	SessionKey      string   `json:"sessionKey"`
-	SessionLabel    string   `json:"sessionLabel"`
-	TrackName       string   `json:"trackName"`
-	CarName         string   `json:"carName"`
-	DrivingSeconds  float64  `json:"drivingSeconds"`
-	Laps            int      `json:"laps"`
-	MissingVars     []string `json:"missingVars"`
-	IncidentSource  string   `json:"incidentSource"`
+	Connected       bool    `json:"connected"`
+	Paused          bool    `json:"paused"`
+	IntervalSeconds float64 `json:"intervalSeconds"`
+	SessionKey      string  `json:"sessionKey"`
+	SessionLabel    string  `json:"sessionLabel"`
+	TrackName       string  `json:"trackName"`
+	CarName         string  `json:"carName"`
+
+	// All three accounted totals, not driving alone. Driving on its own cannot be
+	// interpreted: zero driving seconds is either a bug or a car sitting in the pit
+	// box, and only the connected and in-car figures beside it say which. That is
+	// the exact ambiguity the 2026-08-06 test left unresolved for a week.
+	ConnectedSeconds float64 `json:"connectedSeconds"`
+	InCarSeconds     float64 `json:"inCarSeconds"`
+	DrivingSeconds   float64 `json:"drivingSeconds"`
+
+	Laps           int      `json:"laps"`
+	MissingVars    []string `json:"missingVars"`
+	IncidentSource string   `json:"incidentSource"`
 
 	// SessionsRecorded counts segments written since start-up, which makes an
 	// ingestion run observable without querying the database.
@@ -587,6 +595,8 @@ func (c *Collector) clearActiveStatus() {
 	c.status.SessionLabel = ""
 	c.status.TrackName = ""
 	c.status.CarName = ""
+	c.status.ConnectedSeconds = 0
+	c.status.InCarSeconds = 0
 	c.status.DrivingSeconds = 0
 	c.status.Laps = 0
 	c.status.IncidentSource = ""
@@ -737,6 +747,8 @@ func (c *Collector) refreshStatus() {
 	defer c.mu.Unlock()
 	c.status.SessionKey = c.seg.Key
 	c.status.SessionLabel = label
+	c.status.ConnectedSeconds = c.seg.Acct.Connected
+	c.status.InCarSeconds = c.seg.Acct.InCar
 	c.status.DrivingSeconds = c.seg.Acct.Driving
 	c.status.Laps = rec.LapsCompleted
 	c.status.IncidentSource = rec.IncidentSource

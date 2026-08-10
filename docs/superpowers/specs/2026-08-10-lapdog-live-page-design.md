@@ -1,5 +1,7 @@
 # Live page design
 
+**Status:** Complete and under review, on the `live-page` branch. Two commits are landed (`d40b727`, the reason derivation, and `be3192a`, the retained frame); `GET /api/live`, the `/live` page, and verification against a real capture's shape are implemented but still uncommitted, pending review.
+
 **Goal:** a page that answers "is LapDog reading telemetry right now, and what is it seeing", showing enough of what is being captured to be informative without becoming a driving HUD or a raw variable dump.
 
 ## Why this exists

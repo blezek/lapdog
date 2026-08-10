@@ -247,6 +247,11 @@ export interface Status {
   sessionLabel: string
   trackName: string
   carName: string
+  // All three accounted totals for the active session. Driving alone cannot be
+  // interpreted: zero driving seconds is either a fault or a car sitting in the
+  // pit box, and only the two figures beside it say which.
+  connectedSeconds: number
+  inCarSeconds: number
   drivingSeconds: number
   laps: number
   missingVars: string[] | null
@@ -272,6 +277,44 @@ export interface Telemetry {
   dataDir: string
   capturesDir: string
   logPath: string
+}
+
+/**
+ * One frame as the simulator reported it.
+ *
+ * Every telemetry value is nullable because absent and zero differ: a speed of
+ * zero is a stationary car, and a null speed is a variable that was not
+ * published or not readable.
+ */
+export interface LiveFrame {
+  at: string
+  inCar: boolean
+  driving: boolean
+  replay: boolean
+  /** Why driving time is not accruing; empty when it is. */
+  reason: string
+  lap: number | null
+  lapDistPct: number | null
+  lapCurrentTimeS: number | null
+  lapLastTimeS: number | null
+  lapBestTimeS: number | null
+  speed: number | null
+  gear: number | null
+  fuelLevel: number | null
+  incidents: number | null
+}
+
+export interface LiveResponse {
+  frame: LiveFrame | null
+  // The live endpoint serves collector.Status directly, not the statusResponse
+  // wrapper /api/status adds — so version, databasePath and telemetry are never
+  // present here. Omit rather than a hand-copied subset, so the two cannot drift
+  // apart on the fields they do share.
+  status: Omit<Status, 'version' | 'databasePath' | 'telemetry'>
+  intervalSeconds: number
+  /** Whether this build can read live telemetry at all. */
+  supported: boolean
+  platform: string
 }
 
 export interface Config {
@@ -361,6 +404,7 @@ async function get<T>(path: string): Promise<T> {
 
 export const api = {
   status: () => get<Status>('/api/status'),
+  live: () => get<LiveResponse>('/api/live'),
   facets: () => get<Facets>('/api/facets'),
 
   totals: (f: Filter) => get<Totals>(`/api/totals?${toQuery(f)}`),

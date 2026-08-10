@@ -23,9 +23,16 @@ import (
 // machine. There is deliberately no way to change it.
 const LoopbackHost = "127.0.0.1"
 
-// StatusProvider supplies the collector's current state.
+// StatusProvider reports the collector's state.
+//
+// Live is on the same interface rather than an optional one because it is not
+// optional: every provider that can report a status can report a frame. The
+// implementations are *collector.Collector and lapdogctl's idleStatus, which
+// reports a permanently empty present moment because it serves a database with
+// no collector behind it, plus one test double.
 type StatusProvider interface {
 	Status() collector.Status
+	Live() collector.Live
 }
 
 // ConfigStore reads and persists user settings.
@@ -57,6 +64,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /api/status", s.handleStatus)
+	mux.HandleFunc("GET /api/live", s.handleLive)
 	mux.HandleFunc("GET /api/totals", s.handleTotals)
 	mux.HandleFunc("GET /api/summary", s.handleSummary)
 	mux.HandleFunc("GET /api/daily", s.handleDaily)

@@ -801,3 +801,83 @@ tbody tr.selected td {
 .cons-fair { color: var(--status-warning); }
 .cons-poor { color: var(--status-serious); }
 .cons-none { color: var(--text-muted); }
+
+/* --------------------------------------------------------------------- live */
+
+/* One section per band, stacked. The totals band sits at the bottom, visually
+   the same as the others, because its values are just as real — only their
+   source (accumulated status, not the latest frame) differs. */
+.bands {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* Every value on this page is read while it may be changing every poll, so
+   tabular figures are what stop the digits themselves jittering sideways.
+   Scoped to the bands rather than added to .stat-value everywhere else, since
+   nowhere else on the Stat tile updates this often. */
+.bands .stat-value {
+  font-variant-numeric: tabular-nums;
+}
+
+.lights {
+  display: flex;
+  gap: 18px;
+  margin-bottom: 4px;
+}
+
+.light {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}
+
+.light-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 99px;
+  background: var(--line);
+}
+
+/* Colour is a second signal here, never the only one: every light also states
+   Yes, No or — in words beside its dot. */
+.light-on .light-dot {
+  background: var(--status-good);
+}
+
+.light-unknown .light-dot {
+  background: var(--text-muted);
+}
+
+.verdict {
+  font-size: 12.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.verdict.live {
+  color: var(--status-good);
+}
+
+.verdict.stale {
+  color: var(--text-muted);
+}
+
+.band-note {
+  margin: 8px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+/* Which session the readings belong to. Above the lights rather than in the card
+   heading, because it qualifies every value on the page: without it, a total of
+   "in car 2:34" does not say what was being driven where. */
+.session-line {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--text-secondary);
+}

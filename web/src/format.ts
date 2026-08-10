@@ -30,6 +30,22 @@ export function hm(seconds: number): string {
 }
 
 /**
+ * hms renders seconds as m:ss, or h:mm:ss once it passes an hour.
+ *
+ * Separate from hm because the live totals are read at seconds resolution. The
+ * observation the Live page exists for is 154 seconds in the car against zero
+ * driving seconds, and hm renders that as "0:02" beside "0:00" — two numbers a
+ * single digit apart for a difference of two and a half minutes.
+ */
+export function hms(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds))
+  const h = Math.floor(total / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const ss = String(total % 60).padStart(2, '0')
+  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
+}
+
+/**
  * lapTime renders a lap time as m:ss.mmm.
  *
  * Lap times are compared by eye down to thousandths, so the precision is not

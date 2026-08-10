@@ -1,6 +1,30 @@
 import { describe, expect, it } from 'vitest'
 
-import { licenceLabel } from './format'
+import { hm, hms, licenceLabel } from './format'
+
+describe('hms', () => {
+  it('keeps the seconds a live total is read at', () => {
+    // The observation the Live page exists for: 154 seconds in the car against
+    // zero driving seconds. hm renders those as "0:02" and "0:00", a single digit
+    // apart for a difference of two and a half minutes, which is why the live
+    // totals do not use it.
+    expect(hms(154)).toBe('2:34')
+    expect(hms(0)).toBe('0:00')
+    expect(hm(154)).toBe('0:02')
+  })
+
+  it('adds an hours field only once there is one', () => {
+    // A permanent "0:" in front would read as a clock rather than a duration on
+    // the sessions this page mostly shows.
+    expect(hms(3599)).toBe('59:59')
+    expect(hms(3600)).toBe('1:00:00')
+    expect(hms(3661)).toBe('1:01:01')
+  })
+
+  it('never renders a negative duration', () => {
+    expect(hms(-5)).toBe('0:00')
+  })
+})
 
 describe('licenceLabel', () => {
   it('takes the class from the licence string and the number from the rating', () => {
