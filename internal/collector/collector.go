@@ -60,6 +60,46 @@ type Status struct {
 	SessionsRecorded int `json:"sessionsRecorded"`
 }
 
+// LiveFrame is what the simulator reported on the most recently handled frame.
+//
+// Every telemetry value is a pointer because absent and zero are different
+// facts: a speed of zero is a real reading from a stationary car, and an absent
+// speed means the variable was not published or not readable.
+//
+// At is the wall-clock time the frame was handled, so the interface can decide
+// for itself whether the values are still current. Staleness is a question about
+// now, and the server does not know when the interface will read this.
+type LiveFrame struct {
+	At time.Time `json:"at"`
+
+	InCar   bool             `json:"inCar"`
+	Driving bool             `json:"driving"`
+	Replay  bool             `json:"replay"`
+	Reason  NotDrivingReason `json:"reason"`
+
+	Lap             *int     `json:"lap"`
+	LapDistPct      *float64 `json:"lapDistPct"`
+	LapCurrentTimeS *float64 `json:"lapCurrentTimeS"`
+	LapLastTimeS    *float64 `json:"lapLastTimeS"`
+	LapBestTimeS    *float64 `json:"lapBestTimeS"`
+
+	Speed     *float64 `json:"speed"`
+	Gear      *int     `json:"gear"`
+	FuelLevel *float64 `json:"fuelLevel"`
+	Incidents *int     `json:"incidents"`
+}
+
+// Live is the collector's view of the present moment.
+//
+// Frame is nil when no frame has been handled, or when the session that produced
+// it has closed. Status carries the session identity and the accumulated totals,
+// which remain meaningful after frames stop: they record what happened rather
+// than what is happening.
+type Live struct {
+	Frame  *LiveFrame `json:"frame"`
+	Status Status     `json:"status"`
+}
+
 // Collector polls a telemetry source and records sessions, laps and position
 // events.
 type Collector struct {
@@ -80,6 +120,9 @@ type Collector struct {
 	activeCapturePath string
 	paused            bool
 	status            Status
+	// lastFrame is guarded by mu, since Live is read from the HTTP goroutine
+	// while handle writes it from the collector's own.
+	lastFrame *LiveFrame
 
 	// activeMu serializes the active segment state. Pause can arrive from the
 	// tray/API goroutine, while Run handles frames on the collector goroutine.
@@ -298,6 +341,7 @@ func (c *Collector) handle(f source.Frame) error {
 	}
 	sample.T = f.T
 	c.seg.Acct.Add(sample)
+	c.recordLiveFrame(f, sample)
 
 	if c.capWriter != nil {
 		if err := c.writeCapture(f, captureStarted); err != nil {
@@ -546,6 +590,71 @@ func (c *Collector) clearActiveStatus() {
 	c.status.DrivingSeconds = 0
 	c.status.Laps = 0
 	c.status.IncidentSource = ""
+	// A finished session must not leave instantaneous values behind for the
+	// live interface to present as though they were still current.
+	c.lastFrame = nil
+}
+
+// recordLiveFrame retains what this frame reported, for the live interface.
+//
+// Read from the row rather than from the segment, because these are readings at
+// an instant and the segment holds accumulations. A value the row does not carry
+// is stored as absent rather than zero.
+func (c *Collector) recordLiveFrame(f source.Frame, sample Sample) {
+	idx := c.info.DriverInfo.DriverCarIdx
+	lf := &LiveFrame{
+		At:      time.Now(),
+		InCar:   sample.InCar,
+		Driving: sample.Driving,
+		Replay:  sample.Replay,
+		Reason:  NotDrivingReasonFrom(f.Row, idx),
+	}
+	if v, ok := f.Row.Int("Lap"); ok {
+		n := int(v)
+		lf.Lap = &n
+	}
+	if v, ok := f.Row.Int("Gear"); ok {
+		n := int(v)
+		lf.Gear = &n
+	}
+	if v, ok := f.Row.Int(OptionalIncidentVar); ok {
+		n := int(v)
+		lf.Incidents = &n
+	}
+	for _, p := range []struct {
+		name string
+		dst  **float64
+	}{
+		{"LapDistPct", &lf.LapDistPct},
+		{"LapCurrentLapTime", &lf.LapCurrentTimeS},
+		{"LapLastLapTime", &lf.LapLastTimeS},
+		{"LapBestLapTime", &lf.LapBestTimeS},
+		{"Speed", &lf.Speed},
+		{"FuelLevel", &lf.FuelLevel},
+	} {
+		if v, ok := f.Row.Float(p.name); ok {
+			val := v
+			*p.dst = &val
+		}
+	}
+
+	c.mu.Lock()
+	c.lastFrame = lf
+	c.mu.Unlock()
+}
+
+// Live returns the present moment: the last frame handled, and the session
+// totals that outlive it.
+func (c *Collector) Live() Live {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := Live{Status: c.status}
+	out.Status.MissingVars = append([]string(nil), c.status.MissingVars...)
+	if c.lastFrame != nil {
+		f := *c.lastFrame
+		out.Frame = &f
+	}
+	return out
 }
 
 // openCapture starts a capture file for the segment.
