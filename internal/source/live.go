@@ -169,7 +169,14 @@ func (s *live) Next() (Frame, error) {
 		s.noteFailure(nil)
 		s.conn = conn
 		s.loggedVars = false
-		s.logger().Info("telemetry: connected to the simulator")
+		// Deliberately not logged as a connection here. Opening the mapping proves only
+		// that the shared-memory section exists, which is true whenever iRacing is
+		// running — including at its menus, where the connected bit is clear and the
+		// header is all zeroes. This line used to claim a connection at that point, and
+		// because the mapping is reopened every poll it claimed one once a second: a real
+		// log showed 190 of them alternating with 189 "not connected", 59% of the file,
+		// each contradicted by the line beneath it. The claim now waits for a header that
+		// actually reports connected, below.
 	}
 
 	// The first read after connecting is traced in full; afterwards once a minute, so
@@ -202,14 +209,22 @@ func (s *live) Next() (Frame, error) {
 	}
 	s.noteFailure(nil)
 
-	// The full variable list, once per connection.
+	// The connection, and the full variable list, once per connection.
 	//
-	// This is the single most useful line in the log. The collector refuses a session
-	// outright when a required variable is absent, and the names it needs were taken
-	// from 2015 documentation — so when a session is refused, the question is always
-	// "what does this build of the simulator actually publish?". Answering it from a
-	// log beats guessing, and there is no other way to see it on that machine.
+	// This is reached only after a header parsed and reported the connected bit set, so
+	// it is the first point at which "connected" is a true statement rather than "the
+	// section exists". loggedVars doubles as the transition flag: a second one would be
+	// two pieces of state to keep in agreement for no gain.
+	//
+	// The variable list is the single most useful line in the log. The collector refuses
+	// a session outright when a required variable is absent, and the names it needs were
+	// taken from 2015 documentation — so when a session is refused, the question is
+	// always "what does this build of the simulator actually publish?". Answering it
+	// from a log beats guessing, and there is no other way to see it on that machine.
 	if !s.loggedVars {
+		s.logger().Info("telemetry: connected to the simulator",
+			"tickRate", hdr.TickRate, "numVars", hdr.NumVars, "bufLen", hdr.BufLen)
+
 		names := make([]string, 0, len(vh))
 		for _, v := range vh {
 			names = append(names, v.Name)
