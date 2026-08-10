@@ -25,10 +25,6 @@ import (
 
 // ------------------------------------------------------------- test doubles
 
-// frame is a *collector.LiveFrame rather than baked in, so one double can
-// stand in both for a session that is reporting frames and for one that has
-// not handled any yet — nil and a present zero are different fixtures on
-// purpose, the same way they are different facts on the wire.
 // fixtureIntervalSeconds is deliberately not 1.
 //
 // One is both the collector's default and the value the endpoint used to
@@ -37,7 +33,12 @@ import (
 const fixtureIntervalSeconds = 2
 
 type fakeStatus struct {
-	s     collector.Status
+	s collector.Status
+
+	// frame is a field rather than baked in, so one double can stand in both for a
+	// session that is reporting frames and for one that has not handled any yet.
+	// Nil and a present zero are different fixtures on purpose, the same way they
+	// are different facts on the wire.
 	frame *collector.LiveFrame
 }
 

@@ -159,7 +159,7 @@ func TestLiveFrameIsClearedWhenTheSessionCloses(t *testing.T) {
 // code. The offline-test fixture drives, so the reason is empty; what is pinned
 // here is that a reason is always present exactly when driving time is not
 // accruing.
-func TestLiveReasonMatchesAccountingOnRealFrames(t *testing.T) {
+func TestLiveReasonMatchesAccountingOnReplayedFrames(t *testing.T) {
 	c, src := collectorForFixture(t, "official-race-weekend.lpd")
 	defer src.Close()
 
@@ -223,7 +223,7 @@ func TestLiveStatusReportsAllThreeTotals(t *testing.T) {
 
 	s := c.Live().Status
 	if s.ConnectedSeconds <= 0 {
-		t.Fatalf("ConnectedSeconds = %v, want time accrued after 60 frames", s.ConnectedSeconds)
+		t.Fatalf("ConnectedSeconds = %v, want time accrued after 200 frames", s.ConnectedSeconds)
 	}
 	if s.InCarSeconds <= 0 {
 		t.Errorf("InCarSeconds = %v, want time accrued while in the car", s.InCarSeconds)

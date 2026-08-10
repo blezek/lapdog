@@ -194,7 +194,7 @@ Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lap
 ## Testing
 
 ```bash
-make test                  # Go and web, 298 Go tests across 19 packages
+make test                  # Go and web, 298 Go tests across 14 tested packages
 cd web && npm run test     # frontend
 make ci                    # everything
 ```
