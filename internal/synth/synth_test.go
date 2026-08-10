@@ -601,3 +601,97 @@ func itoa(n int) string {
 	}
 	return string(b)
 }
+
+// weekendForFlavour returns the first scheduled weekend of the given flavour.
+//
+// Taken from the real schedule rather than hand-built, so the test exercises the same
+// weekends the fixtures and the dataset are generated from.
+func weekendForFlavour(t *testing.T, flav EventFlavour) *Weekend {
+	t.Helper()
+	for _, w := range BuildSchedule(ScheduleOptions{
+		End:  time.Date(2026, 8, 4, 0, 0, 0, 0, time.UTC),
+		Seed: 20260804,
+	}) {
+		if w.Flavour == flav {
+			return w
+		}
+	}
+	t.Fatalf("no %s weekend in two years of schedule", flav)
+	return nil
+}
+
+// parseWeekendYAML renders a weekend's session document and parses it back, which is
+// the path the collector takes.
+func parseWeekendYAML(t *testing.T, w *Weekend) *sessionyaml.Info {
+	t.Helper()
+	info, err := sessionyaml.Parse([]byte(renderYAML(w, len(w.Sessions)-1)))
+	if err != nil {
+		t.Fatalf("parse the generated YAML: %v", err)
+	}
+	return info
+}
+
+// Offline weekends report the placeholder ratings a real simulator reports.
+//
+// This is not cosmetic fidelity. The generator gave every driver a plausible iRating
+// until a real AI-practice capture showed the simulator reporting IRating 1 and
+// LicString "R 0.01" for an established account, with every AI opponent at 0. LapDog
+// discards ratings from offline documents because of it, and a fixture carrying
+// plausible values would let that gate be removed with every test still passing —
+// the offline tests would keep passing on SubSessionID alone, proving nothing about
+// why the gate exists.
+func TestOfflineWeekendsReportPlaceholderRatings(t *testing.T) {
+	for _, flav := range []EventFlavour{FlavourAI, FlavourOfflineTest} {
+		t.Run(string(flav), func(t *testing.T) {
+			w := weekendForFlavour(t, flav)
+			if w.SubSessionID != 0 {
+				t.Fatalf("%s weekend has SubSessionID %d; it is meant to be offline",
+					flav, w.SubSessionID)
+			}
+			info := parseWeekendYAML(t, w)
+
+			me, ok := info.Me()
+			if !ok {
+				t.Fatal("no driver entry for the local driver")
+			}
+			if me.IRating != 1 {
+				t.Errorf("local driver IRating = %d, want the offline placeholder 1", me.IRating)
+			}
+			if me.LicString != "R 0.01" {
+				t.Errorf("local driver LicString = %q, want \"R 0.01\"", me.LicString)
+			}
+			// And the identity gate therefore drops them, which is the behaviour the
+			// placeholders exist to justify.
+			if id := info.MyIdentity(); id.IRating != nil || id.SafetyRating != nil {
+				t.Error("MyIdentity kept a rating from an offline document")
+			} else if id.UserID == nil {
+				t.Error("MyIdentity dropped the customer id along with the ratings")
+			}
+		})
+	}
+}
+
+// Online weekends still report real ratings, so the gate is not simply discarding
+// everything.
+func TestOnlineWeekendsReportRealRatings(t *testing.T) {
+	for _, flav := range []EventFlavour{FlavourOfficialRace, FlavourHosted, FlavourLeague} {
+		t.Run(string(flav), func(t *testing.T) {
+			w := weekendForFlavour(t, flav)
+			if w.SubSessionID == 0 {
+				t.Fatalf("%s weekend has no SubSessionID; it is meant to be online", flav)
+			}
+			info := parseWeekendYAML(t, w)
+			id := info.MyIdentity()
+			if id.IRating == nil {
+				t.Fatal("MyIdentity dropped the rating from an online document")
+			}
+			if *id.IRating <= 1 {
+				t.Errorf("iRating = %d on an online weekend; that is the offline placeholder",
+					*id.IRating)
+			}
+			if id.LicString == nil || *id.LicString == "R 0.01" {
+				t.Errorf("LicString = %v on an online weekend", id.LicString)
+			}
+		})
+	}
+}

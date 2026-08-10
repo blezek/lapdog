@@ -180,10 +180,32 @@ func writeDriverInfo(b *strings.Builder, w *Weekend) {
 		fmt.Fprintf(b, "   CarClassShortName: %s\n", w.Car.ClassName)
 		fmt.Fprintf(b, "   CarClassRelSpeed: 0\n")
 		fmt.Fprintf(b, "   CarClassLicenseLevel: 0\n")
-		fmt.Fprintf(b, "   IRating: %d\n", iRating)
-		fmt.Fprintf(b, "   LicLevel: %d\n", 13)
-		fmt.Fprintf(b, "   LicSubLevel: %d\n", 355)
-		fmt.Fprintf(b, "   LicString: A 3.55\n")
+		// Ratings, as the simulator actually reports them.
+		//
+		// Offline sessions do not carry real ratings. A capture from a real AI practice
+		// session gave an established account IRating 1, LicLevel 1, LicSubLevel 1 and
+		// LicString "R 0.01", and every AI opponent IRating 0 — placeholders, not the
+		// account's standing. LapDog discards ratings from offline documents for exactly
+		// that reason, and the generator reports the placeholders so the fixtures encode
+		// why rather than only that.
+		//
+		// SubSessionID is the marker, matching sessionyaml's own gate: the service
+		// allocates it, so an offline weekend has none.
+		if w.SubSessionID == 0 {
+			ir := 0
+			if !isAI {
+				ir = 1
+			}
+			fmt.Fprintf(b, "   IRating: %d\n", ir)
+			fmt.Fprintf(b, "   LicLevel: %d\n", 1)
+			fmt.Fprintf(b, "   LicSubLevel: %d\n", 1)
+			fmt.Fprintf(b, "   LicString: R 0.01\n")
+		} else {
+			fmt.Fprintf(b, "   IRating: %d\n", iRating)
+			fmt.Fprintf(b, "   LicLevel: %d\n", 13)
+			fmt.Fprintf(b, "   LicSubLevel: %d\n", 355)
+			fmt.Fprintf(b, "   LicString: A 3.55\n")
+		}
 		fmt.Fprintf(b, "   IsSpectator: 0\n")
 		fmt.Fprintf(b, "   ClubName: Midwest\n")
 		fmt.Fprintf(b, "   DivisionName: Division 3\n")
