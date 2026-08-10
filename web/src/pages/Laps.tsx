@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   createColumnHelper,
@@ -31,6 +31,8 @@ export function Laps() {
   const [page, setPage] = useState(0)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'lapTimeS', desc: false }])
   const [validOnly, setValidOnly] = useState(true)
+
+  useEffect(() => setPage(0), [filter])
 
   const query = useQuery({
     queryKey: ['laps', filter, page],

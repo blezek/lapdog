@@ -34,7 +34,8 @@ export function Sessions() {
   const facets = useQuery({ queryKey: ['facets'], queryFn: api.facets })
 
   const items = list.data?.items ?? []
-  const current = selected ?? items[0]?.id ?? null
+  const selectedInList = selected != null && items.some((s) => s.id === selected)
+  const current = selectedInList ? selected : (items[0]?.id ?? null)
 
   return (
     <>
