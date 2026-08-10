@@ -10,7 +10,11 @@ Everything ships as a single `.exe`. No runtime, no redistributable, no sidecar 
 
 ## Status
 
-The backend and interface are complete and exercised against two years of synthetic data. **Reading live telemetry has never been run against a real simulator** — that needs a Windows machine with iRacing, and it is the one part of the system with genuine unknowns. See [Outstanding work](#outstanding-work).
+The backend and interface are complete and exercised against two years of synthetic data.
+
+**Live telemetry reads a real simulator.** First confirmed 2026-08-06 on a Windows machine with iRacing: 331 variables published, every variable the collector requires present, two sessions recorded, two replayable captures written, incidents from the live variable, and the driver identity captured. `CarIsAI` — long carried as an unverified guess from the SDK headers — is confirmed, with `CarIsAI: 1` on 24 driver entries against a recorded `ai_opponent_count = 24`.
+
+What remains unexercised is **driving**: that test was conducted sitting in the pits, so lap detection, the driving counter and position events have still never run against real telemetry. See [Outstanding work](#outstanding-work).
 
 ## Running it on a Mac
 
@@ -172,6 +176,8 @@ Read the specs for the reasoning: [design](docs/superpowers/specs/2026-08-04-lap
 
 **The frontend bundle is generated, not committed.** `internal/web/dist` is gitignored apart from a `.gitkeep`, which is tracked because `//go:embed` fails at *compile* time when its pattern matches nothing — without it every Go build on a clean clone breaks, including `go vet`. CI builds the bundle and fails if it is ever committed again.
 
+**Offline sessions carry no ratings.** iRacing reports placeholders offline — a real AI-practice capture gave an established account `IRating: 1` and `LicString: "R 0.01"`. `MyIdentity` therefore records the ratings only when `WeekendInfo.SubSessionID` is non-zero, which is the structural marker of a session the service registered. The customer id is kept either way, since it is correct offline.
+
 **Bundle-dependent tests skip when the frontend is not built**, so a clone without Node still runs the Go suite. `LAPDOG_REQUIRE_BUNDLE=1` turns those skips into failures; `make test` and CI set it, because a skip that is reachable in CI is a test that has quietly stopped running.
 
 **`lapdog.exe` is a GUI-subsystem binary.** Linked `-H windowsgui` so no console window appears, which also makes it useless as a CLI — hence `lapdogctl`.
@@ -234,10 +240,8 @@ Note that public certificate authorities stopped issuing downloadable PKCS#12 fi
 
 ## Outstanding work
 
-- **Live telemetry has never read a real simulator.** Everything up to the memory mapping is tested against synthetic mappings on macOS; the mapping itself needs Windows.
-- **`CarIsAI` is unverified.** The field name is a guess from the SDK headers. The procedure is to drive one AI race, read the session YAML out of the resulting capture, correct the field name, then `lapdogctl reclassify` — the provenance columns exist precisely so this is a recomputation rather than lost data.
-
-  `lapdogctl inspect` exists now, and `lapdogctl.exe` ships in the portable zip, so the check can be run on the machine that has the simulator.
+- **Driving time and laps are unexercised.** Live telemetry now reads a real simulator (2026-08-06), but that test was conducted sitting in the pits: two sessions recorded 154s and 133s in-car with zero driving time and zero laps, all correct for the conditions and none of it exercising lap detection, the driving counter or position events. That needs a session actually on track.
+- **Ratings from an online session are unverified.** Offline sessions report placeholders, so they are now discarded (see below). What a real official or hosted session reports has never been seen, which means the rating progression has never had a genuine data point.
 - **The NSIS installer builds but has never been run.** `makensis` 3.12 produces a 4.6 MB self-extractor, and the payload is confirmed present — decompressing the solid block yields 14,274,929 bytes containing both the icon set and the telemetry strings. What is untested is *installing*: whether it lands in the right place, registers uninstall correctly and starts the tray app. That needs a Windows machine.
 - **The installer carries only `lapdog.exe`.** The portable zip ships `lapdogctl.exe` too; the installer does not.
 - **No git remote.** Nothing is pushed, and the CI workflow has therefore never run.

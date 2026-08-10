@@ -20,17 +20,50 @@ dist/lapdog-0.1.0-setup.exe                4.7 MB, payload confirmed present
 .dataset.db                               1331 sessions, 1242.6 driving hours, schema 2
 ```
 
-Never exercised against reality: **live telemetry has never read a real simulator**, and **the installer has never been installed**. Both need the Windows machine.
+**Live telemetry reads a real simulator** as of 2026-08-06. Still never exercised: **driving** (the first test was conducted in the pits, so laps, driving time and position events have not run against real telemetry), **ratings from an online session**, and **installing the installer**. All three need the Windows machine.
 
 ## Picking it up next
 
-1. **Find why telemetry is not read.** `ToDo.md` has the whole procedure — build, run on Windows, collect the log, what each step string means. This is the one thing blocking LapDog from being useful.
+1. **Drive a session on track, and one online.** `ToDo.md` has the procedure and the checks. The pits test proved the read path; these two exercise lap detection, driving time, position events and real ratings.
 2. **Add a git remote and push.** Everything is on one disk and CI has never actually run.
-3. **Confirm `CarIsAI`** once a real capture exists: `lapdogctl inspect -grep AI`, correct the field, `lapdogctl reclassify`.
-4. **Install the installer** on the Windows machine — does it land correctly, register uninstall, start the tray app?
+3. **Install the installer** on the Windows machine — does it land correctly, register uninstall, start the tray app?
 5. **Consider one calendar row per year** for the "All time" heatmap, the only way that range gets larger cells.
 
 Deliberately excluded, and recorded as such in the specs: `.ibt` file import, sector times, true overtake detection from `CarIdxLapDistPct`, and setup tracking. Central hub upload is no longer excluded but not designed — see `docs/server-design-brainstorming.md`.
+
+---
+
+## 2026-08-10 — the first real telemetry data, and two bugs in it
+
+The Windows machine produced a data drop, kept in `ignore/`: `lapdog.log`, `lapdog.db`, `config.json` and two `.lpd` captures from 2026-08-06.
+
+**Telemetry works.** The `MapViewOfFile` fix (`6faa2c4`) is confirmed against a real simulator: 331–332 variables published, every variable the collector requires present, two sessions recorded, two replayable captures written, incidents from the live variable, identity captured. That closes the question three days of work were blocked on.
+
+**`CarIsAI` is confirmed**, retiring an unverified guess carried since the SDK headers were read. The capture holds `CarIsAI: 1` on 24 driver entries and `CarIsAI: 0` on 2; the database recorded `ai_opponent_count = 24` with `ai_detection = field`. No code change was needed — the wiring was already right — only the four places that still called it a guess.
+
+Three things looked like bugs and were not, which is worth as much as the two that were. `driving_seconds = 0` and `laps_completed = 0`: the test was conducted sitting in the pits. And 189 `simulator present but not connected` lines whose timestamps fall entirely in the gaps between sessions — none during 14:06, 14:07, 14:10 or 14:11 — which is the simulator at its menus, reported correctly.
+
+#### The log claimed a connection it had not made
+
+`live.go` logged `telemetry: connected to the simulator` at INFO the moment `OpenTraced` succeeded. Opening the mapping proves only that the shared-memory section exists, which is true whenever iRacing is running — including at the menus, where the connected bit is clear and the header is all zeroes. Because the mapping is reopened every poll, the claim fired once a second:
+
+```
+14:04:34.772 INFO   telemetry: connected to the simulator
+14:04:34.772 DEBUG  telemetry: header parsed ... connected=false numVars=0 bufLen=0
+14:04:34.772 DEBUG  telemetry: simulator present but not connected  status=0 wantBitSet=1
+```
+
+190 of those against 189 "not connected" — 379 of the file's 641 lines, 59% of the log, each contradicted by the line beneath it. The sting is that `ToDo.md` named that exact string as the success indicator to grep for: the instrument written for diagnosing this pointed at a line that lied. Moved into the existing once-per-connection block, which is reached only after a header reports connected.
+
+#### Offline sessions stored fabricated ratings
+
+iRacing does not report real ratings offline. The capture gave an established account `IRating: 1`, `LicLevel: 1`, `LicSubLevel: 1`, `LicString: "R 0.01"`, and both sessions stored them. On the progression chart added on 08-06 those render as a collapse to nothing — a fabricated cliff in the one chart whose purpose is showing how the ratings moved.
+
+`MyIdentity` now takes ratings only when `WeekendInfo.SubSessionID` is non-zero. That marker is structural rather than a heuristic — the service allocates it, so an offline session has none — and `Official` would have been the wrong test, since a hosted or league session is online, unofficial, and rated. The customer id is kept either way: it is correct offline, and it is what says whose data a database holds.
+
+That gate then exposed a second defect by interaction. `store.Ratings` took the customer id only from rows carrying a rating, so a database holding nothing but offline sessions reported no owner at all and the settings screen said "not yet recorded" for a known account. "Whose database is this" and "how did the rating move" are different questions over different row sets; they now have a query each.
+
+Verified against the real captures rather than only fixtures: replaying `ignore/captures` yields `driver_user_id = 1152608` on both sessions with the rating columns NULL, and `/api/ratings` returns 0 points while still naming the owner. All three fixes were mutation-checked — removing the gate, gating on `Official` instead, and reverting the identity query each produce failures.
 
 ---
 
@@ -253,4 +286,7 @@ Accumulated across every day above, because each was learned by getting it wrong
 - **A verification tool can under-test silently.** `shoot.mjs` accepted `730` as a range, which the interface does not offer, and measured the 90-day layout instead — reporting a PASS over fewer ranges than it named. Tools that take parameters should reject ones they cannot honour.
 - **Size is not evidence of contents.** A 4.7 MB installer built from a 14 MB binary is equally consistent with packaging nothing. Decompressing it and finding the strings is the check.
 - **Comments assert; they do not verify.** A comment claimed the fixed 2 MiB `MapViewOfFile` length was safe. It was the bug.
+- **A log line is a claim, and can be false.** `telemetry: connected to the simulator` fired on mapping-open rather than on connecting, so 59% of a real log was a statement contradicted by the line beneath it — and the debugging notes named that line as proof of success. Log what was actually established, at the point it becomes true.
+- **Real data disagrees with synthetic data in ways fixtures cannot predict.** The generator gave every driver a plausible iRating; the simulator reports `IRating: 1` and `"R 0.01"` offline. No amount of local testing would have surfaced that — only a capture from the real thing.
+- **Look for what is correct, not only what is broken.** Three of the five anomalies in the first real data drop were the system behaving properly: zero driving time from sitting in the pits, and "not connected" lines that fell entirely between sessions. Chasing any of them would have been wasted work, and "fixing" them would have introduced bugs.
 

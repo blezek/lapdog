@@ -93,10 +93,15 @@ func detectAI(info *sessionyaml.Info, st SessionType) (int, AIDetection) {
 	if count, present := info.AIOpponentCount(); present {
 		return count, AIDetectField
 	}
-	// Heuristic fallback, used only while the CarIsAI field is unverified. It
-	// cannot tell an AI race from an offline hosted race with no AI, and it
-	// deliberately misses AI practice sessions. Both errors are corrected by
-	// reclassify once the field is known.
+	// Heuristic fallback for a document that does not carry CarIsAI at all.
+	//
+	// The field itself is confirmed: a real AI practice capture from 2026-08-06 held
+	// CarIsAI: 1 on 24 driver entries and CarIsAI: 0 on 2, and this function counted 24
+	// via AIDetectField. The fallback stays because not every document has the field —
+	// the generator emits a deliberate minority without it — but it is no longer the
+	// primary path, and it is weaker: it cannot tell an AI race from an offline hosted
+	// race with no AI, and it deliberately misses AI practice sessions. Both errors are
+	// still corrected by reclassify.
 	w := info.WeekendInfo
 	if st == TypeRace &&
 		w.SubSessionID == 0 &&

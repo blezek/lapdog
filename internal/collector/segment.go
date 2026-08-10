@@ -288,10 +288,9 @@ func (g *Segment) ToStore() *store.Session {
 // classifySourceJSON serialises the YAML subset the classification was derived
 // from.
 //
-// The full Drivers array is included, not just the local driver, because AI
-// detection is re-derived from it once the CarIsAI field is confirmed. Storing
-// only the player's entry would make re-classification impossible for exactly the
-// case the provenance exists to fix.
+// The full Drivers array is included, not just the local driver, so AI detection can
+// be re-derived from it. Storing only the player's entry would make re-classification
+// impossible for exactly the case the provenance exists to fix.
 func classifySourceJSON(info *sessionyaml.Info) (string, error) {
 	if info == nil {
 		return "{}", nil

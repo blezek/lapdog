@@ -28,3 +28,12 @@ internal/web/dist/*
 
 # Worktrees live here (CLAUDE.md), and are never repository content.
 /worktrees/
+
+# Real data drops off the Windows machine: databases, logs and captures carrying a
+# genuine iRacing customer id, the driver's name, and every opponent in the field.
+#
+# Ignored here rather than relying on a developer's global gitignore, which is where
+# this was covered until 2026-08-10. A global rule does not travel with the clone, so
+# on any other machine this directory would have been committable — and the contents
+# are other people's personal data, not only the user's own.
+/ignore/

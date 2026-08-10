@@ -1,6 +1,12 @@
-# ToDo: get logs off the Windows machine to find why telemetry is not read
+# ToDo: drive a session on track, and one online
 
-The one open question is why the Windows build recorded nothing from iRacing. Since the last attempt, `MapViewOfFile` was fixed to map the whole shared-memory section rather than a fixed 2 MiB — a request larger than the section fails outright, which is very likely the original cause — and the read path now logs every step. This task is to confirm it, or to find what else is wrong.
+**Telemetry works.** Confirmed 2026-08-06 from the data drop in `ignore/`: 331 variables published, every required one present, two sessions recorded, two captures written, identity captured, `CarIsAI` confirmed. The `MapViewOfFile` fix was the bug. The procedure below still applies — it is how the next round of data gets collected — but it is no longer chasing a failure.
+
+Two things remain unexercised, and one session of each settles both.
+
+**On track.** The 2026-08-06 test was conducted sitting in the pits, so it recorded 154s and 133s in-car with zero driving time and zero laps. All correct for the conditions, and none of it exercised lap detection, the driving counter or position events. Drive some laps and check: `driving_seconds` non-zero and below `in_car_seconds`, one `laps` row per completed lap, `best_lap_time_s` set, and for a race, rows in `position_events`.
+
+**Online.** Offline sessions report placeholder ratings — an established account came back as `IRating: 1`, `LicString: "R 0.01"` — so those are now discarded, and the rating progression has never had a genuine data point. One official or hosted session settles it. Check that `driver_irating` and `driver_lic_string` are populated and plausible, and that the dashboard's iRating panel appears at all; on an offline-only database it is correctly absent.
 
 There is no development environment on the Windows machine, so the log is the only instrument.
 
@@ -57,8 +63,10 @@ header parsed                      → every header field, incl. numVars, bufLen
 simulator present but not connected → normal at the menus; NOT normal on track
 variable headers parsed            → count should be in the hundreds
 session YAML read                  → classification has what it needs
-telemetry: connected to the simulator
+telemetry: connected to the simulator   → logged once per connection, with tickRate and numVars
 ```
+
+That last line is trustworthy as of 2026-08-10. It previously fired on mapping-open, before the connected bit was read, so it appeared once a second while iRacing sat at its menus and contradicted the line beneath it.
 
 Failure lines worth grepping for directly:
 
@@ -72,16 +80,9 @@ Select-String -Path "$env:LOCALAPPDATA\lapdog\lapdog.log" -Pattern "could not|fa
 - `simulator present but not connected` while on track — the status bit is not what is expected, and the raw value is logged beside it.
 - `variable headers unparseable` — the 144-byte `irsdk_varHeader` stride may be wrong for this build of iRacing.
 
-## Second task, if a capture file exists
+## Settled on 2026-08-06 — `CarIsAI`
 
-`CarIsAI` is still an unverified guess from the SDK headers, and it drives whether a session is classified as AI. With a real capture in hand:
-
-```cmd
-lapdogctl.exe inspect -grep AI path\to\capture.lpd
-lapdogctl.exe inspect -grep CarIsAI path\to\capture.lpd
-```
-
-That prints the matching session-YAML lines with line numbers. If the field is named something else, correct it and then run `lapdogctl reclassify` — the provenance columns exist precisely so this is a recomputation rather than lost data.
+Confirmed, no longer a guess. `ignore/captures/20260806T190535Z-0-0.lpd` holds `CarIsAI: 1` on 24 driver entries and `CarIsAI: 0` on 2, and the database recorded `ai_opponent_count = 24` with `ai_detection = field`. The heuristic fallback stays for documents that omit the field, but it is no longer the primary path and no `reclassify` is needed.
 
 ## Resuming this session
 
