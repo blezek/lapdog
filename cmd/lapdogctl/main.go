@@ -1,8 +1,8 @@
 // Command lapdogctl is a development tool for LapDog databases and captures.
 //
 // It is a separate binary from cmd/lapdog because that one is linked
-// -H windowsgui and therefore has no console. lapdogctl is not shipped in
-// releases.
+// -H windowsgui and therefore has no console. lapdogctl ships in the portable
+// zip so it is available on the Windows machine that needs diagnostics.
 package main
 
 import (

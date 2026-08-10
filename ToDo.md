@@ -10,10 +10,6 @@ Two things remain unexercised, and one session of each settles both.
 
 There is no development environment on the Windows machine, so the log is the only instrument.
 
-## Review follow-ups from 2026-08-10
-
-- `cmd/lapdogctl` still says the CLI is not shipped, but the portable zip now includes `lapdogctl.exe`.
-
 ## 1. Build, on the Mac
 
 ```bash
