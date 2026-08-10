@@ -644,8 +644,22 @@ func TestStatusReportsProgress(t *testing.T) {
 	}
 	defer src.Close()
 
-	c, err := New(Options{
-		Source: src, Store: st, Clock: RealClock{}, Interval: time.Second,
+	var c *Collector
+	var active Status
+	wrapped := &hookSource{
+		Source: src,
+		onFrame: func(int) {
+			if c == nil || active.SessionLabel != "" {
+				return
+			}
+			if s := c.Status(); s.SessionLabel != "" {
+				active = s
+			}
+		},
+	}
+
+	c, err = New(Options{
+		Source: wrapped, Store: st, Clock: RealClock{}, Interval: time.Second,
 		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
 	})
 	if err != nil {
@@ -659,19 +673,23 @@ func TestStatusReportsProgress(t *testing.T) {
 	if s.SessionsRecorded != 1 {
 		t.Errorf("SessionsRecorded = %d, want 1", s.SessionsRecorded)
 	}
-	if s.SessionLabel != "Public Practice" {
-		t.Errorf("SessionLabel = %q, want Public Practice", s.SessionLabel)
+	if active.SessionLabel != "Public Practice" {
+		t.Errorf("active SessionLabel = %q, want Public Practice", active.SessionLabel)
 	}
-	if s.TrackName == "" {
-		t.Error("Status has no track name")
+	if active.TrackName == "" {
+		t.Error("active status has no track name")
 	}
 	if s.IntervalSeconds != 1 {
 		t.Errorf("IntervalSeconds = %v, want 1", s.IntervalSeconds)
 	}
 	// The live incident variable is present in the synthetic layout, so it must be
 	// preferred over the YAML count.
-	if s.IncidentSource != "live" {
-		t.Errorf("IncidentSource = %q, want live", s.IncidentSource)
+	if active.IncidentSource != "live" {
+		t.Errorf("active IncidentSource = %q, want live", active.IncidentSource)
+	}
+	if s.SessionLabel != "" || s.TrackName != "" || s.CarName != "" ||
+		s.DrivingSeconds != 0 || s.Laps != 0 || s.IncidentSource != "" {
+		t.Errorf("closed status kept active session detail: %+v", s)
 	}
 }
 

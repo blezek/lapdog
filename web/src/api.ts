@@ -310,6 +310,10 @@ export interface Filter {
   offset?: number
 }
 
+export interface LapFilter extends Filter {
+  cleanLaps?: boolean
+}
+
 /** toQuery renders a Filter as URL search parameters. */
 export function toQuery(f: Filter, extra: Record<string, string> = {}): string {
   const q = new URLSearchParams()
@@ -395,7 +399,12 @@ export const api = {
   sessionLaps: (id: number) => get<Lap[]>(`/api/sessions/${id}/laps`),
   sessionPositions: (id: number) => get<PositionEvent[]>(`/api/sessions/${id}/positions`),
 
-  laps: (f: Filter) => get<ListResponse<LapRow>>(`/api/laps?${toQuery(f)}`),
+  laps: (f: LapFilter) => {
+    const { cleanLaps, ...base } = f
+    return get<ListResponse<LapRow>>(
+      `/api/laps?${toQuery(base, cleanLaps ? { clean_laps: 'true' } : {})}`,
+    )
+  },
 
   settings: () => get<Config>('/api/settings'),
   saveSettings: async (patch: Partial<Config>): Promise<SettingsResponse> => {

@@ -32,20 +32,15 @@ export function Laps() {
   const [sorting, setSorting] = useState<SortingState>([{ id: 'lapTimeS', desc: false }])
   const [validOnly, setValidOnly] = useState(true)
 
-  useEffect(() => setPage(0), [filter])
+  useEffect(() => setPage(0), [filter, validOnly])
 
   const query = useQuery({
-    queryKey: ['laps', filter, page],
-    queryFn: () => api.laps({ ...filter, limit: PAGE, offset: page * PAGE }),
+    queryKey: ['laps', filter, validOnly, page],
+    queryFn: () =>
+      api.laps({ ...filter, cleanLaps: validOnly, limit: PAGE, offset: page * PAGE }),
   })
 
-  const rows = useMemo(() => {
-    const items = query.data?.items ?? []
-    if (!validOnly) return items
-    // A pit lap or a lap with an incident is not a representative lap time, so the
-    // default view hides them rather than letting them distort a comparison.
-    return items.filter((l) => !l.isPitLap && l.incidentsOnLap === 0 && (l.lapTimeS ?? 0) > 0)
-  }, [query.data, validOnly])
+  const rows = query.data?.items ?? []
 
   const columns = useMemo(
     () => [

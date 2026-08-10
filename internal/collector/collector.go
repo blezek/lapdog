@@ -494,10 +494,12 @@ func (c *Collector) closeSegment() {
 func (c *Collector) closeSegmentLocked() {
 	c.closeCapture()
 	if c.seg == nil {
+		c.clearActiveStatus()
 		return
 	}
 	seg := c.seg
 	c.seg = nil
+	defer c.clearActiveStatus()
 
 	if c.refused {
 		c.refused = false
@@ -532,6 +534,18 @@ func (c *Collector) closeSegmentLocked() {
 		c.log.Warn("poll gaps were clamped during this session",
 			"key", seg.Key, "count", seg.Acct.Clamped)
 	}
+}
+
+func (c *Collector) clearActiveStatus() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.status.SessionKey = ""
+	c.status.SessionLabel = ""
+	c.status.TrackName = ""
+	c.status.CarName = ""
+	c.status.DrivingSeconds = 0
+	c.status.Laps = 0
+	c.status.IncidentSource = ""
 }
 
 // openCapture starts a capture file for the segment.

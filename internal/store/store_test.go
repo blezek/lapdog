@@ -677,7 +677,7 @@ func TestTotalsEmptySet(t *testing.T) {
 func TestListLapsJoinsSessionContext(t *testing.T) {
 	s := openTemp(t)
 	seed(t, s)
-	rows, total, err := s.ListLaps(Filter{TrackID: intp(341)})
+	rows, total, err := s.ListLaps(LapFilter{Filter: Filter{TrackID: intp(341)}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -687,6 +687,56 @@ func TestListLapsJoinsSessionContext(t *testing.T) {
 	for _, r := range rows {
 		if r.TrackName != "Spa" || r.SessionID == 0 || r.StartedAt == "" || r.SessionType == "" {
 			t.Errorf("session context not joined: %+v", r)
+		}
+	}
+}
+
+func TestListLapsCleanOnlyAppliesBeforePaging(t *testing.T) {
+	s := openTemp(t)
+	seed(t, s)
+
+	sessions, _, err := s.ListSessions(Filter{TrackID: intp(341), Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("seed session lookup returned %d sessions, want 1", len(sessions))
+	}
+
+	timed := 142.5
+	zero := 0.0
+	for _, lap := range []Lap{
+		{SessionID: sessions[0].ID, LapNumber: 3, LapTimeS: &timed, IsPitLap: true},
+		{SessionID: sessions[0].ID, LapNumber: 4, LapTimeS: &timed, IncidentsOnLap: 1},
+		{SessionID: sessions[0].ID, LapNumber: 5, LapTimeS: &zero},
+		{SessionID: sessions[0].ID, LapNumber: 6},
+	} {
+		if _, err := s.InsertLap(&lap); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, allTotal, err := s.ListLaps(LapFilter{Filter: Filter{TrackID: intp(341)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if allTotal != 8 {
+		t.Fatalf("all lap total = %d, want 8", allTotal)
+	}
+
+	rows, cleanTotal, err := s.ListLaps(LapFilter{
+		Filter:    Filter{TrackID: intp(341), Limit: 2},
+		CleanOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cleanTotal != 4 || len(rows) != 2 {
+		t.Fatalf("clean total=%d len=%d, want total 4 and paged len 2", cleanTotal, len(rows))
+	}
+	for _, r := range rows {
+		if r.IsPitLap || r.IncidentsOnLap != 0 || r.LapTimeS == nil || *r.LapTimeS <= 0 {
+			t.Errorf("dirty lap returned by clean filter: %+v", r)
 		}
 	}
 }

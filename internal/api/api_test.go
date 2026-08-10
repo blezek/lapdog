@@ -380,21 +380,57 @@ func TestSessionErrors(t *testing.T) {
 	if rec := get(t, h, "/api/sessions?track_id=abc", nil); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad filter: status = %d, want 400", rec.Code)
 	}
+	if rec := get(t, h, "/api/laps?clean_laps=maybe", nil); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad lap filter: status = %d, want 400", rec.Code)
+	}
 }
 
 func TestLapsAndFacetsEndpoints(t *testing.T) {
-	h, _, _ := newTestServer(t)
+	h, st, _ := newTestServer(t)
+
+	sessions, _, err := st.ListSessions(store.Filter{Limit: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("seed session lookup returned %d sessions, want 1", len(sessions))
+	}
+	timed := 103.0
+	zero := 0.0
+	for _, lap := range []store.Lap{
+		{SessionID: sessions[0].ID, LapNumber: 97, LapTimeS: &timed, IsPitLap: true},
+		{SessionID: sessions[0].ID, LapNumber: 98, LapTimeS: &timed, IncidentsOnLap: 1},
+		{SessionID: sessions[0].ID, LapNumber: 99, LapTimeS: &zero},
+	} {
+		if _, err := st.InsertLap(&lap); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	var laps struct {
 		Items []store.LapRow `json:"items"`
 		Total int            `json:"total"`
 	}
 	get(t, h, "/api/laps", &laps)
-	if laps.Total != 4 {
-		t.Errorf("lap total = %d, want 4", laps.Total)
+	if laps.Total != 7 {
+		t.Errorf("lap total = %d, want 7", laps.Total)
 	}
 	if laps.Items[0].TrackName == "" {
 		t.Error("lap rows must carry the joined session context")
+	}
+
+	var clean struct {
+		Items []store.LapRow `json:"items"`
+		Total int            `json:"total"`
+	}
+	get(t, h, "/api/laps?clean_laps=true&limit=1", &clean)
+	if clean.Total != 4 || len(clean.Items) != 1 {
+		t.Errorf("clean laps total=%d len=%d, want total 4 and paged len 1", clean.Total, len(clean.Items))
+	}
+	for _, r := range clean.Items {
+		if r.IsPitLap || r.IncidentsOnLap != 0 || r.LapTimeS == nil || *r.LapTimeS <= 0 {
+			t.Errorf("dirty lap returned by clean endpoint: %+v", r)
+		}
 	}
 
 	var facets facetsResponse

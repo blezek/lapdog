@@ -56,13 +56,11 @@ func parseFilter(q url.Values) (store.Filter, error) {
 		return f, err
 	}
 
-	switch strings.ToLower(q.Get("exclude_ai")) {
-	case "", "false", "0":
-	case "true", "1":
-		f.ExcludeAI = true
-	default:
-		return f, fmt.Errorf("%w: exclude_ai must be true or false", ErrBadRequest)
+	excludeAI, err := boolParam(q, "exclude_ai")
+	if err != nil {
+		return f, err
 	}
+	f.ExcludeAI = excludeAI
 
 	if raw := q.Get("limit"); raw != "" {
 		n, convErr := strconv.Atoi(raw)
@@ -82,6 +80,18 @@ func parseFilter(q url.Values) (store.Filter, error) {
 		f.Offset = n
 	}
 	return f, nil
+}
+
+func parseLapFilter(q url.Values) (store.LapFilter, error) {
+	f, err := parseFilter(q)
+	if err != nil {
+		return store.LapFilter{}, err
+	}
+	cleanOnly, err := boolParam(q, "clean_laps")
+	if err != nil {
+		return store.LapFilter{}, err
+	}
+	return store.LapFilter{Filter: f, CleanOnly: cleanOnly}, nil
 }
 
 // normaliseTimeBound accepts either a full RFC3339 timestamp or a bare
@@ -129,4 +139,15 @@ func intParam(q url.Values, key string) (*int, error) {
 		return nil, fmt.Errorf("%w: %s must be an integer", ErrBadRequest, key)
 	}
 	return &n, nil
+}
+
+func boolParam(q url.Values, key string) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(q.Get(key))) {
+	case "", "false", "0":
+		return false, nil
+	case "true", "1":
+		return true, nil
+	default:
+		return false, fmt.Errorf("%w: %s must be true or false", ErrBadRequest, key)
+	}
 }

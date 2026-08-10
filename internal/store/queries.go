@@ -32,6 +32,16 @@ type Filter struct {
 	Offset int
 }
 
+// LapFilter selects a subset of laps, including the session-level filter shared
+// by the rest of the query surface.
+type LapFilter struct {
+	Filter
+
+	// CleanOnly keeps only representative timed laps. Pit laps, incident laps and
+	// untimed laps are excluded before paging and counting.
+	CleanOnly bool
+}
+
 // where renders the filter as a SQL predicate over a table aliased s, plus its
 // bound arguments. Every value is bound, never interpolated.
 func (f Filter) where() (string, []any) {
@@ -77,6 +87,16 @@ func (f Filter) where() (string, []any) {
 		return "1=1", nil
 	}
 	return strings.Join(conds, " AND "), args
+}
+
+// where renders the lap filter as a SQL predicate over sessions aliased s and
+// laps aliased l.
+func (f LapFilter) where() (string, []any) {
+	pred, args := f.Filter.where()
+	if f.CleanOnly {
+		pred += " AND l.is_pit_lap = 0 AND l.incidents_on_lap = 0 AND l.lap_time_s > 0"
+	}
+	return pred, args
 }
 
 // FilterPredicate returns the SQL predicate and bound arguments for f, over a
@@ -390,7 +410,7 @@ type LapRow struct {
 
 // ListLaps returns laps across sessions matching the filter, newest first, plus
 // the total match count.
-func (s *Store) ListLaps(f Filter) ([]LapRow, int, error) {
+func (s *Store) ListLaps(f LapFilter) ([]LapRow, int, error) {
 	pred, args := f.where()
 
 	var total int

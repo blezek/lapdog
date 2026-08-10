@@ -210,8 +210,9 @@ func (s *Server) handleSessionPositions(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) handleLaps(w http.ResponseWriter, r *http.Request) {
-	f, ok := s.filterOrFail(w, r)
-	if !ok {
+	f, err := parseLapFilter(r.URL.Query())
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
 		return
 	}
 	rows, total, err := s.st.ListLaps(f)
