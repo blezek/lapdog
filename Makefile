@@ -48,7 +48,8 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 
 .PHONY: help build ci test run ui-dev dataset dataset-db release tools clean \
         lint ui verify-embed build-windows build-ctl build-gen \
-        fixtures validate portable installer sign
+        fixtures validate portable installer sign goreleaser-check \
+        release-snapshot
 
 # Only the targets worth typing. The rest are prerequisites of these — real
 # targets, still invocable, just not things anyone reaches for directly.
@@ -61,6 +62,8 @@ help:
 	@echo "dataset     generate the synthetic capture files (~250 MB, gitignored)"
 	@echo "dataset-db  replay those captures into $(DEV_DB)"
 	@echo "release     build, then Authenticode-sign and write SHA256SUMS"
+	@echo "release-snapshot  local GoReleaser release without publishing"
+	@echo "goreleaser-check  validate .goreleaser.yaml"
 	@echo "tools       install the macOS packaging toolchain via brew"
 	@echo "clean       remove build output and the generated bundle"
 	@echo
@@ -194,7 +197,7 @@ run: build-ctl
 # The whole Windows toolchain runs on macOS, which is why the release needs no
 # Windows machine. See the packaging spec, section 4.1.
 tools:
-	brew install makensis msitools osslsigncode
+	brew install goreleaser makensis msitools osslsigncode
 
 # Both executables are genuinely self-contained, so a zip is a legitimate
 # distribution channel rather than a degraded one.
@@ -264,6 +267,12 @@ release: build sign
 	@echo
 	@echo "Release artefacts in $(DIST):"
 	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) SHA256SUMS
+
+goreleaser-check:
+	goreleaser check
+
+release-snapshot:
+	goreleaser release --snapshot --clean --skip=publish
 
 # Proves the interface really is inside a Windows executable rather than read from
 # disk at runtime, by finding strings that only exist in the bundle and icon set.

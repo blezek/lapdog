@@ -105,6 +105,7 @@ This is the significant finding, and it shapes everything below: **the complete 
 | Step | Tool | Install |
 |---|---|---|
 | Compile | Go 1.26, `CGO_ENABLED=0` | already present |
+| GitHub release orchestration | GoReleaser OSS 2.x | `brew install goreleaser` |
 | Installer | NSIS 3.12 | `brew install makensis` |
 | MSI (optional, deferred) | msitools 0.106 (`wixl`) | `brew install msitools` |
 | Authenticode signing | osslsigncode 2.14 | `brew install osslsigncode` |
@@ -115,16 +116,23 @@ This is the significant finding, and it shapes everything below: **the complete 
 
 ```
 1. frontend      make ui                                -> internal/web/dist/
-2. verify        make test-ci                           -> web.Check passes, no skips
-3. compile       GOOS=windows GOARCH=amd64              -> dist/lapdog.exe
-                 -ldflags "-H windowsgui -X …Version=…"
-4. portable      zip                                    -> dist/lapdog-<ver>-portable.zip
-5. installer     makensis packaging/windows/lapdog.nsi  -> dist/lapdog-<ver>-setup.exe
-6. sign          osslsigncode (both exe and setup)      -> *-signed
-7. checksums     shasum -a 256                          -> dist/SHA256SUMS
+2. verify        make ci                                -> web.Check passes, no skips
+3. compile       GOOS=windows GOARCH=amd64              -> lapdog.exe
+                 -ldflags "-H windowsgui -X ...Version=..."
+4. update zip    goreleaser                             -> lapdog-windows-amd64.zip
+5. portable      goreleaser                             -> lapdog-<ver>-portable.zip
+6. installer     makensis packaging/windows/lapdog.nsi  -> lapdog-<ver>-setup.exe
+7. checksums     goreleaser                             -> SHA256SUMS
+8. publish       goreleaser                             -> GitHub Release for tag v<ver>
 ```
 
 Stage 3 must be linked `-H windowsgui` so no console window appears. This is precisely why `lapdogctl` and `lapdog-gen` are separate binaries: a GUI-subsystem executable has no console and is useless as a CLI.
+
+The local `make release` target still exists for building the historical local
+artifact set without publishing. GitHub publishing is handled by `.goreleaser.yaml`
+and `.github/workflows/release.yml`. GoReleaser's native NSIS support is a Pro
+feature, so the OSS configuration keeps the existing `makensis` script and
+attaches its output as a release extra file.
 
 ### 4.3 Architectures
 
@@ -198,10 +206,12 @@ A release publishes:
 ```
 lapdog-<version>-setup.exe                 installer, signed when a certificate is available
 lapdog-<version>-portable.zip              portable, containing lapdog.exe and lapdogctl.exe
-SHA256SUMS                                 checksums for both
+lapdog-windows-amd64.zip                   self-update payload, containing lapdog.exe only
+SHA256SUMS                                 checksums for release artifacts
 ```
 
-`lapdogctl` and `lapdog-gen` are development tools and are deliberately not published.
+`lapdogctl.exe` is published only inside the portable zip. `lapdog-gen` remains a
+development tool and is deliberately not published.
 
 ## 8. Decisions taken
 

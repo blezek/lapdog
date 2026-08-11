@@ -1,0 +1,72 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: lapdog
+dist: .goreleaser-dist
+
+before:
+  hooks:
+    - make ui
+    - make installer VERSION={{ .Version }}
+
+builds:
+  - id: lapdog
+    main: ./cmd/lapdog
+    binary: lapdog
+    targets:
+      - windows_amd64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -H windowsgui -X github.com/blezek/lapdog/internal/version.Version={{ .Version }}
+
+  - id: lapdogctl
+    main: ./cmd/lapdogctl
+    binary: lapdogctl
+    targets:
+      - windows_amd64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X github.com/blezek/lapdog/internal/version.Version={{ .Version }}
+
+archives:
+  - id: self-update
+    ids:
+      - lapdog
+    formats:
+      - zip
+    name_template: "{{ .ProjectName }}-{{ .Os }}-{{ .Arch }}"
+    files:
+      - none*
+
+  - id: portable
+    ids:
+      - lapdog
+      - lapdogctl
+    formats:
+      - zip
+    name_template: "{{ .ProjectName }}-{{ .Version }}-portable"
+    files:
+      - none*
+
+checksum:
+  name_template: SHA256SUMS
+  algorithm: sha256
+  extra_files:
+    - glob: ./dist/lapdog-{{ .Version }}-setup.exe
+
+release:
+  disable: "{{ .IsSnapshot }}"
+  github:
+    owner: blezek
+    name: lapdog
+  extra_files:
+    - glob: ./dist/lapdog-{{ .Version }}-setup.exe
+
+snapshot:
+  version_template: "0.0.0"

@@ -114,6 +114,8 @@ make build
 | `dataset` | Generate synthetic capture files into `.dataset` (~250 MB) |
 | `dataset-db` | Replay those captures into `.dataset.db` |
 | `release` | `build`, then Authenticode-sign and write `SHA256SUMS` |
+| `release-snapshot` | Local GoReleaser release without publishing |
+| `goreleaser-check` | Validate `.goreleaser.yaml` |
 | `tools` | Install the macOS packaging toolchain via brew |
 | `clean` | Remove build output and the generated bundle |
 
@@ -231,11 +233,22 @@ Both need a server running (`make run`). They exist because both properties are 
 
 ```bash
 make release       # test, build, zip, installer, sign, checksums
+make goreleaser-check
+make release-snapshot
 ```
 
 Signing is optional: with no certificate configured the build emits unsigned artefacts and says so. Unsigned executables show a one-time SmartScreen warning, which `SHA256SUMS` is the answer to. `make installer` needs `brew install makensis`.
 
 Note that public certificate authorities stopped issuing downloadable PKCS#12 files in June 2023 — keys must now live in hardware or a cloud service — so the `SIGN_PKCS12` path only works for a pre-2023 certificate or a private CA. Signing is not currently being pursued.
+
+GitHub Releases are built by GoReleaser from semantic version tags:
+
+```bash
+git tag -a v0.0.1 -m "LapDog v0.0.1"
+git push origin v0.0.1
+```
+
+The tag-triggered workflow publishes `lapdog-windows-amd64.zip` for self-update, `lapdog-<version>-portable.zip` for manual portable installs, the NSIS setup executable, and `SHA256SUMS`.
 
 ## Where the rest of the writing lives
 
