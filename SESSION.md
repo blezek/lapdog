@@ -63,7 +63,7 @@ iRacing does not report real ratings offline. The capture gave an established ac
 
 That gate then exposed a second defect by interaction. `store.Ratings` took the customer id only from rows carrying a rating, so a database holding nothing but offline sessions reported no owner at all and the settings screen said "not yet recorded" for a known account. "Whose database is this" and "how did the rating move" are different questions over different row sets; they now have a query each.
 
-Verified against the real captures rather than only fixtures: replaying `ignore/captures` yields `driver_user_id = 1152608` on both sessions with the rating columns NULL, and `/api/ratings` returns 0 points while still naming the owner. All three fixes were mutation-checked — removing the gate, gating on `Official` instead, and reverting the identity query each produce failures.
+Verified against the real captures rather than only fixtures: replaying `ignore/captures` yields the recording account's `driver_user_id` on both sessions with the rating columns NULL, and `/api/ratings` returns 0 points while still naming the owner. All three fixes were mutation-checked — removing the gate, gating on `Official` instead, and reverting the identity query each produce failures.
 
 #### Keeping the value without committing the data
 

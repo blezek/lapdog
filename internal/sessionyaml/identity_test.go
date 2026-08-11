@@ -99,18 +99,21 @@ func TestMyIdentityDistinguishesZeroFromAbsent(t *testing.T) {
 // gave an established account IRating 1, LicLevel 1, LicSubLevel 1 and LicString
 // "R 0.01", and storing those produced a collapse to nothing on the progression chart.
 // Absent is the honest answer; the customer id is still correct and still kept.
+//
+// The id here is synth.DriverUserID, the generator's fictional customer. A test has no
+// business carrying a real account number, and this one briefly did.
 func TestMyIdentityDropsRatingsFromAnOfflineSession(t *testing.T) {
 	i := &Info{}
 	i.WeekendInfo.SubSessionID = 0 // the offline marker
 	i.DriverInfo.DriverCarIdx = 0
-	i.DriverInfo.DriverUserID = 1152608
+	i.DriverInfo.DriverUserID = 271828
 	i.DriverInfo.Drivers = []Driver{
-		{CarIdx: 0, UserID: 1152608, IRating: 1, LicString: "R 0.01", LicLevel: 1, LicSubLevel: 1},
+		{CarIdx: 0, UserID: 271828, IRating: 1, LicString: "R 0.01", LicLevel: 1, LicSubLevel: 1},
 	}
 
 	id := i.MyIdentity()
-	if id.UserID == nil || *id.UserID != 1152608 {
-		t.Errorf("UserID = %v, want 1152608 — the account is known even offline", id.UserID)
+	if id.UserID == nil || *id.UserID != 271828 {
+		t.Errorf("UserID = %v, want 271828 — the account is known even offline", id.UserID)
 	}
 	if id.IRating != nil {
 		t.Errorf("IRating = %d from an offline session, want absent", *id.IRating)
@@ -134,7 +137,7 @@ func TestMyIdentityKeepsRatingsFromAnUnofficialOnlineSession(t *testing.T) {
 	i.WeekendInfo.Official = 0 // hosted or league
 	i.DriverInfo.DriverCarIdx = 0
 	i.DriverInfo.Drivers = []Driver{
-		{CarIdx: 0, UserID: 1152608, IRating: 2431, LicString: "A 3.55", LicLevel: 13, LicSubLevel: 355},
+		{CarIdx: 0, UserID: 271828, IRating: 2431, LicString: "A 3.55", LicLevel: 13, LicSubLevel: 355},
 	}
 
 	id := i.MyIdentity()
