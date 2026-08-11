@@ -250,6 +250,12 @@ git push origin v0.0.1
 
 The tag-triggered workflow publishes `lapdog-windows-amd64.zip` for self-update, `lapdog-<version>-portable.zip` for manual portable installs, the NSIS setup executable, and `SHA256SUMS`.
 
+Self-update is not implemented yet. The release pipeline now creates the updater
+asset that future code will consume, but the app still has no updater package,
+tray/settings update action, download path, checksum validation or executable
+replacement flow. That work is tracked in
+`docs/superpowers/plans/2026-08-10-lapdog-github-self-update.md`.
+
 ## Where the rest of the writing lives
 
 | File | What it holds |
