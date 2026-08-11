@@ -1,6 +1,75 @@
-# Agent instructions: git release workflows
+# Agent instructions
 
-This file describes three git workflows an agent may be asked to perform in this repository, written for [Codex](https://openai.com/codex) or any agent without access to Claude Code's skill system. Each was originally a Claude Code slash command; the behaviour below is the same.
+For [Codex](https://openai.com/codex) or any agent without Claude Code's skill system. Part one orients you in the project; part two describes three git workflows that were originally Claude Code slash commands.
+
+---
+
+# Part one: orientation
+
+## What this is
+
+LapDog records how much time you actually spend in iRacing, and what you spend it on. A Windows tray application reads the simulator's shared memory once a second, writes sessions to a local SQLite database, and serves a React interface on `http://127.0.0.1:47047`. Everything ships as one `.exe` — interface, icons and migrations all compiled in.
+
+macOS is the development platform. There is no simulator here, but everything else runs and the Windows binary cross-compiles.
+
+## Where it stands
+
+**Working and verified against a real simulator** (first confirmed 2026-08-06): telemetry reading, session classification, identity and rating capture, `CarIsAI` detection.
+
+**Never exercised against reality:** driving itself. That first real test was conducted sitting in the pit box, so lap detection, the driving counter and position events have never run on real telemetry. Ratings from an online session have never been seen either — offline sessions report placeholders. `ToDo.md` holds the procedure for both.
+
+**Not built:** self-update. The release pipeline produces the asset a future updater will consume; nothing consumes it.
+
+## Constraints that are load-bearing
+
+Each of these caused a real bug. None is stylistic.
+
+- **`CGO_ENABLED=0` everywhere.** It is why `modernc.org/sqlite` was chosen over the C bindings and why the Windows binary cross-compiles from macOS. Never add a dependency needing cgo.
+- **Absent and zero are different facts.** Pointers in Go, `| null` in TypeScript. A speed of zero is a real reading from a stationary car; an absent speed is not. An iRating of zero is a real value for an unrated licence.
+- **Replay time is never counted.** There is deliberately no setting for it.
+- **Offline sessions carry placeholder ratings.** iRacing reports `IRating: 1` and `LicString: "R 0.01"` offline, so ratings are recorded only when `WeekendInfo.SubSessionID` is non-zero. The customer id is kept either way.
+- **Other drivers' data stays local.** The interface shows real opponent names, which is correct for your own capture of a session you were in. It must not be published — `/ignore/` is gitignored because recorded data holds real customer ids and every opponent in the field.
+- **Accumulated totals are not stale; instantaneous values are.** A session total records what happened and survives a telemetry gap; a speed describes a moment that has passed and must clear.
+- **Nothing may claim more than it knows.** This applies to code, comments, docs, interface copy and commit messages equally.
+
+## The failure mode this project keeps hitting
+
+**Asserting instead of verifying.** Not carelessness — plausible-looking claims that nobody checked. A representative sample, all real:
+
+- A log line said "connected to the simulator" on mapping-open, before reading the connected bit. It fired once a second at the menus; 59% of a real log was a claim the next line contradicted.
+- A comment called a fixed 2 MiB `MapViewOfFile` length safe. That length was the bug that recorded nothing for a week.
+- `verify-embed` passed a `darwin/arm64` binary named `.exe`, because grepping for strings says nothing about the compilation target.
+- A dashboard card printed `A 3.55` above a chart whose last point was 3.94.
+- Six tests reached review that could not fail. Later, four of five task specs in one plan contained a test that could not fail or a claim that outran the code.
+
+**The counter-measure is mechanical, not attentive:** delete the line a test covers, confirm the test fails, restore it. Do this for every new assertion. A `git status --short && echo clean` is the same mistake in miniature — `git status` exits 0 whether or not it prints, so that check always says clean.
+
+## Verifying your work
+
+```bash
+make ci                    # fmt, vet, both suites, typecheck, cross-build, embed check
+make test                  # Go and web suites
+CGO_ENABLED=0 go test -race ./internal/collector/   # ~5 minutes; run once at the end
+make run                   # serve .dataset.db on 47047 to look at the interface
+```
+
+Anything visual needs looking at, not reasoning about. `web/tools/shoot.mjs` and `verify-animation.mjs` drive real Chrome over the DevTools protocol with no dependencies beyond Node's built-in WebSocket.
+
+## Where to read more
+
+| File | What it holds |
+|---|---|
+| `README.md` | How to run it, all make targets, what will surprise you |
+| `ToDo.md` | The next action, with the exact commands |
+| `SESSION.md` | Running history, newest first — what changed, why, and what broke |
+| `docs/superpowers/specs/` | Design specs, including the parked server-collection one |
+| `docs/superpowers/plans/` | Implementation plans |
+
+`git log` is the primary record; every message explains its reasoning.
+
+---
+
+# Part two: git workflows
 
 Invoke them by name — "commit staged", "bump version", "push and PR" — or by the original slash names `/commit-staged`, `/bump-version`, `/push-and-pr`.
 
