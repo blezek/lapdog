@@ -140,6 +140,8 @@ export interface EntityStats {
   incidentPoints: number
   incidentPointsPer100Km: number | null
   cleanLapPct: number | null
+  cleanLaps: number
+  timedLaps: number
   races: number
   wins: number
   podiums: number

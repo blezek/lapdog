@@ -173,7 +173,11 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
       <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
         <Stat
           label="Clean laps"
-          value={s.cleanLapPct == null ? '—' : pct(s.cleanLapPct / 100)}
+          value={
+            s.cleanLapPct == null
+              ? '—'
+              : `${pct(s.cleanLapPct / 100)} (${num(s.cleanLaps)}/${num(s.timedLaps)})`
+          }
           note="no incident on the lap"
         />
         <Stat

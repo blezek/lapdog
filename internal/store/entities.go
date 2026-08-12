@@ -153,6 +153,14 @@ type EntityStats struct {
 	IncidentPointsPer100Km *float64 `json:"incidentPointsPer100Km"`
 	CleanLapPct            *float64 `json:"cleanLapPct"`
 
+	// CleanLaps and TimedLaps are the numerator and denominator behind
+	// CleanLapPct: laps with no incident, over timed non-pit laps. They are
+	// surfaced so the interface can show the fraction beside the percentage rather
+	// than a bare figure, and so the two cannot disagree. Both are zero, and
+	// CleanLapPct nil, when there are no timed laps.
+	CleanLaps int `json:"cleanLaps"`
+	TimedLaps int `json:"timedLaps"`
+
 	// Races counts race sessions with a recorded finish position, not every
 	// session with SessionType "Race". That keeps one denominator across all
 	// four result metrics: Wins, Podiums, and AvgPositionsGained are each
@@ -234,6 +242,8 @@ WHERE ` + pred + ` AND ` + d.idCol + ` = ?
 	if err := s.reader.QueryRow(lapQ, append(args, id)...).Scan(&timed, &clean); err != nil {
 		return EntityStats{}, fmt.Errorf("store: entity lap stats by %s: %w", by, err)
 	}
+	out.TimedLaps = timed
+	out.CleanLaps = clean
 	if timed > 0 {
 		pct := 100.0 * float64(clean) / float64(timed)
 		out.CleanLapPct = &pct

@@ -293,6 +293,60 @@ func TestEntityStatsWithNoTimedLaps(t *testing.T) {
 	}
 }
 
+// The clean-lap percentage is a fraction of timed non-pit laps, and the interface
+// shows that fraction beside the percentage. This pins the numerator and
+// denominator against a known mix so they cannot drift from the percentage, and
+// so the denominator cannot silently become total laps: LapsCompleted is 7 here,
+// but only 5 laps are timed and non-pit, of which 3 are clean — 60%, not 3/7.
+func TestEntityStatsCleanLapCounts(t *testing.T) {
+	s := openTemp(t)
+
+	id, err := s.UpsertSession(&Session{
+		SessionKey: "7001/0", SubsessionID: 7001, SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt: "2026-07-27T10:00:00Z", DrivingSeconds: 1800, LapsCompleted: 7,
+		CarID: intp(173), CarName: strp("Porsche 911 GT3 R"),
+		TrackID: intp(18), TrackName: strp("Watkins Glen"),
+		ClassifySourceJSON: "{}", IncidentSource: "yaml",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	laps := []*Lap{
+		{LapNumber: 1, LapTimeS: f64p(100.0)},                 // clean
+		{LapNumber: 2, LapTimeS: f64p(100.5)},                 // clean
+		{LapNumber: 3, LapTimeS: f64p(101.0)},                 // clean
+		{LapNumber: 4, LapTimeS: f64p(102.0), IncidentsOnLap: 1}, // timed, dirty
+		{LapNumber: 5, LapTimeS: f64p(103.0), IncidentsOnLap: 2}, // timed, dirty
+		{LapNumber: 6, LapTimeS: f64p(140.0), IsPitLap: true},    // pit, excluded
+		{LapNumber: 7},                                           // untimed, excluded
+	}
+	for _, lap := range laps {
+		lap.SessionID = id
+		if _, err := s.InsertLap(lap); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	st, err := s.EntityStats(Filter{}, "car", 173)
+	if err != nil {
+		t.Fatalf("EntityStats: %v", err)
+	}
+	if st.Laps != 7 {
+		t.Errorf("Laps = %d, want 7 (LapsCompleted, the wrong denominator)", st.Laps)
+	}
+	if st.TimedLaps != 5 {
+		t.Errorf("TimedLaps = %d, want 5 (pit and untimed laps excluded)", st.TimedLaps)
+	}
+	if st.CleanLaps != 3 {
+		t.Errorf("CleanLaps = %d, want 3", st.CleanLaps)
+	}
+	if st.CleanLapPct == nil || *st.CleanLapPct != 60 {
+		t.Errorf("CleanLapPct = %v, want 60 (3 of 5 timed laps)", st.CleanLapPct)
+	}
+}
+
 // An entity with no rows in range is a 404 case, not a zeroed struct: a page
 // showing every stat as zero is indistinguishable from a car never driven.
 func TestEntityStatsUnknownIDIsNotFound(t *testing.T) {
