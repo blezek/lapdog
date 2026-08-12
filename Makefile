@@ -30,6 +30,10 @@ SETUP    := $(DIST)/lapdog-$(VERSION)-setup.exe
 DEV_DB   ?= .dataset.db
 DEV_PORT ?= 47047
 
+# Where `make ingest` reads captures from. Overridable so any directory of .lpd
+# files can be replayed: make ingest CAPTURES=path/to/captures
+CAPTURES ?= ignore/captures
+
 SIGN_PKCS12   ?=
 SIGN_PASSWORD ?=
 TIMESTAMP_URL ?= http://timestamp.digicert.com
@@ -46,7 +50,7 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 # target arguments only from 4.4.
 .NOTPARALLEL:
 
-.PHONY: help build ci test run ui-dev dataset dataset-db release tools clean \
+.PHONY: help build ci test run ui-dev dataset dataset-db ingest release tools clean \
         lint ui verify-embed build-windows build-ctl build-gen \
         fixtures validate portable installer sign goreleaser-check \
         release-snapshot
@@ -61,6 +65,7 @@ help:
 	@echo "ui-dev      Vite dev server with hot reload, against a running API"
 	@echo "dataset     generate the synthetic capture files (~250 MB, gitignored)"
 	@echo "dataset-db  replay those captures into $(DEV_DB)"
+	@echo "ingest      replay existing captures from $(CAPTURES) into $(DEV_DB)"
 	@echo "release     build, then Authenticode-sign and write SHA256SUMS"
 	@echo "release-snapshot  local GoReleaser release without publishing"
 	@echo "goreleaser-check  validate .goreleaser.yaml"
@@ -177,6 +182,21 @@ dataset-db: build-ctl
 	  echo "            (generates about 250 MB of captures, and is gitignored)"; exit 1; }
 	rm -f $(DEV_DB) $(DEV_DB)-wal $(DEV_DB)-shm
 	./dist/lapdogctl ingest .dataset $(DEV_DB)
+	./dist/lapdogctl summary $(DEV_DB)
+
+# Replay an existing directory of captures into the development database.
+#
+# Unlike `make dataset-db`, which replays the generated synthetic set, this ingests
+# whatever real captures already exist — the ones the tray application recorded from
+# a live simulator, kept under ignore/captures. It is the same ingest path, so the
+# resulting database has been through the same decode, classify and accounting code
+# as a live session. The glob is non-recursive: only *.lpd directly in CAPTURES are
+# read, and ingest itself fails if it finds none.
+ingest: build-ctl
+	@test -d $(CAPTURES) || { \
+	  echo "ingest: $(CAPTURES) does not exist; set CAPTURES=path/to/captures"; exit 1; }
+	rm -f $(DEV_DB) $(DEV_DB)-wal $(DEV_DB)-shm
+	./dist/lapdogctl ingest $(CAPTURES) $(DEV_DB)
 	./dist/lapdogctl summary $(DEV_DB)
 
 # Serve a database locally, for looking at the interface with real data in it.
