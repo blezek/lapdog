@@ -232,6 +232,29 @@ export function daysAgo(n: number): string {
 }
 
 /**
+ * startOfWeek returns the Sunday on or before a date, as a local YYYY-MM-DD.
+ *
+ * Sunday to match the calendar heatmap, which begins its week there. Like daysAgo
+ * these work in the viewer's own zone, so "this week" means the week they are living
+ * in rather than the one UTC happens to be in.
+ */
+export function startOfWeek(from: Date = todayLocal()): string {
+  const d = new Date(from)
+  d.setDate(d.getDate() - d.getDay())
+  return isoDay(d)
+}
+
+/** startOfMonth returns the first of a date's month, as a local YYYY-MM-DD. */
+export function startOfMonth(from: Date = todayLocal()): string {
+  return isoDay(new Date(from.getFullYear(), from.getMonth(), 1))
+}
+
+/** startOfYear returns January 1st of a date's year, as a local YYYY-MM-DD. */
+export function startOfYear(from: Date = todayLocal()): string {
+  return isoDay(new Date(from.getFullYear(), 0, 1))
+}
+
+/**
  * licenceLabel renders a Safety Rating as its class and value, e.g. "A 3.94".
  *
  * The class comes from the simulator's licence string but the number does not: it is

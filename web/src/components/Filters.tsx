@@ -2,8 +2,10 @@
 
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
-import { label } from '../format'
+import { day, label } from '../format'
+import { weekdayNames } from '../locale'
 import { rangePresets, useFilter } from '../useFilter'
+import { DateFilter } from './DateFilter'
 
 /**
  * Filters renders the controls in a single row above the content.
@@ -34,19 +36,7 @@ export function Filters({
 
   return (
     <div className="filters">
-      <label className="control control-active">
-        <select
-          value={state.range}
-          onChange={(e) => update({ range: e.target.value })}
-          aria-label="Date range"
-        >
-          {rangePresets.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.label}
-            </option>
-          ))}
-        </select>
-      </label>
+      <DateFilter />
 
       <label className={`control${state.sessionType?.length ? ' control-active' : ''}`}>
         <select
@@ -138,8 +128,24 @@ export function Filters({
 /** describeFilter renders the active filter as a sentence, for the export page. */
 export function describeFilter(state: ReturnType<typeof useFilter>['state']): string {
   const parts: string[] = []
-  const preset = rangePresets.find((p) => p.id === state.range)
-  if (preset) parts.push(preset.label.toLowerCase())
+  if (state.range === 'custom') {
+    if (state.from && state.to) parts.push(`${day(state.from)} to ${day(state.to)}`)
+    else if (state.from) parts.push(`from ${day(state.from)}`)
+    else if (state.to) parts.push(`until ${day(state.to)}`)
+    else parts.push('custom range')
+  } else {
+    const preset = rangePresets.find((p) => p.id === state.range)
+    if (preset) parts.push(preset.label.toLowerCase())
+  }
+  if (state.hourFrom != null || state.hourTo != null) {
+    const a = state.hourFrom != null ? `${String(state.hourFrom).padStart(2, '0')}:00` : '00:00'
+    const b = state.hourTo != null ? `${String(state.hourTo).padStart(2, '0')}:59` : '23:59'
+    parts.push(`${a}–${b}`)
+  }
+  if (state.weekdays?.length) {
+    const names = weekdayNames()
+    parts.push([...state.weekdays].sort((x, y) => x - y).map((i) => names[i]).join(''))
+  }
   if (state.sessionType?.length && state.eventContext?.length) {
     parts.push(label(state.sessionType[0]!, state.eventContext[0]!))
   } else {

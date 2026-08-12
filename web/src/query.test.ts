@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest'
+import { toQuery } from './api'
 import { isEmptyArray, keepPrevious, viewState } from './query'
+
+describe('toQuery time filters', () => {
+  it('emits the hour and weekday parameters the server parses', () => {
+    const q = new URLSearchParams(toQuery({ hourFrom: 18, hourTo: 23, weekdays: [0, 6] }))
+    expect(q.get('hour_from')).toBe('18')
+    expect(q.get('hour_to')).toBe('23')
+    expect(q.get('weekday')).toBe('0,6')
+  })
+
+  it('keeps an hour of zero, which is a real bound and not absent', () => {
+    // Midnight is 0. Dropping it as falsy would silently widen "from midnight" to
+    // "any time", the same absent-versus-zero trap the rest of the app guards.
+    const q = new URLSearchParams(toQuery({ hourFrom: 0 }))
+    expect(q.get('hour_from')).toBe('0')
+  })
+
+  it('omits an empty weekday set rather than sending a blank parameter', () => {
+    const q = new URLSearchParams(toQuery({ weekdays: [] }))
+    expect(q.has('weekday')).toBe(false)
+  })
+})
 
 /**
  * These pin the invariant that makes chart transitions possible: a panel whose query

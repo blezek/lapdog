@@ -189,6 +189,7 @@ func TestParseFilterAllFields(t *testing.T) {
 		"from=2026-07-01T00:00:00Z&to=2026-08-01T00:00:00Z"+
 			"&session_type=Race&session_type=Qualify&event_context=League"+
 			"&track_id=341&car_id=173&league_id=4242"+
+			"&hour_from=18&hour_to=23&weekday=1,3,5"+
 			"&exclude_ai=true&limit=50&offset=100"))
 	if err != nil {
 		t.Fatalf("parseFilter: %v", err)
@@ -201,6 +202,12 @@ func TestParseFilterAllFields(t *testing.T) {
 	}
 	if f.TrackID == nil || *f.TrackID != 341 || f.CarID == nil || f.LeagueID == nil {
 		t.Errorf("ids = %v %v %v", f.TrackID, f.CarID, f.LeagueID)
+	}
+	if f.HourFrom == nil || *f.HourFrom != 18 || f.HourTo == nil || *f.HourTo != 23 {
+		t.Errorf("hours = %v / %v", f.HourFrom, f.HourTo)
+	}
+	if len(f.Weekdays) != 3 || f.Weekdays[0] != 1 || f.Weekdays[2] != 5 {
+		t.Errorf("weekdays = %v, want [1 3 5]", f.Weekdays)
 	}
 	if !f.ExcludeAI || f.Limit != 50 || f.Offset != 100 {
 		t.Errorf("excludeAI=%v limit=%d offset=%d", f.ExcludeAI, f.Limit, f.Offset)
@@ -237,6 +244,7 @@ func TestParseFilterRejectsBadValues(t *testing.T) {
 	for _, raw := range []string{
 		"track_id=notanumber", "limit=abc", "offset=-5", "limit=-1",
 		"from=yesterday", "to=2026-13-45", "exclude_ai=maybe",
+		"hour_from=24", "hour_to=-1", "hour_from=noon", "weekday=7", "weekday=1,x",
 	} {
 		if _, err := parseFilter(mustValues(t, raw)); err == nil {
 			t.Errorf("parseFilter(%q) = nil error, want a rejection", raw)

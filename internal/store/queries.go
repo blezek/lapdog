@@ -24,6 +24,20 @@ type Filter struct {
 	CarID    *int
 	LeagueID *int
 
+	// HourFrom and HourTo bound the local hour of day a session started, each
+	// inclusive and each optional, so "evenings" is 18..23 and "before noon" is
+	// just HourTo = 11. They are matched against the hour in the machine's own
+	// zone, not UTC: started_at is stored as UTC, but the collector, the database
+	// and the browser are the same computer, so the local hour is the one the
+	// driver actually sat down at.
+	HourFrom *int
+	HourTo   *int
+
+	// Weekdays keeps only sessions that started on the given local weekdays, where
+	// 0 is Sunday through 6 is Saturday — the numbering strftime('%w') returns.
+	// Empty means every day.
+	Weekdays []int
+
 	// ExcludeAI drops event_context = 'AI'. AI results are not comparable to
 	// human ones, so pace and pass metrics default to excluding them.
 	ExcludeAI bool
@@ -79,6 +93,26 @@ func (f Filter) where() (string, []any) {
 	if f.LeagueID != nil {
 		conds = append(conds, "s.league_id = ?")
 		args = append(args, *f.LeagueID)
+	}
+	// The hour and weekday predicates read started_at in the machine's local zone.
+	// 'localtime' is what makes that correct across daylight saving: a fixed offset
+	// would misplace every session recorded on the other side of a clock change.
+	// These expressions cannot use idx_sessions_started — they apply a function to
+	// the column — but a personal database is small, and any from/to bound alongside
+	// still narrows by the index first.
+	if f.HourFrom != nil {
+		conds = append(conds, "CAST(strftime('%H', s.started_at, 'localtime') AS INTEGER) >= ?")
+		args = append(args, *f.HourFrom)
+	}
+	if f.HourTo != nil {
+		conds = append(conds, "CAST(strftime('%H', s.started_at, 'localtime') AS INTEGER) <= ?")
+		args = append(args, *f.HourTo)
+	}
+	if len(f.Weekdays) > 0 {
+		conds = append(conds, "CAST(strftime('%w', s.started_at, 'localtime') AS INTEGER) IN ("+placeholders(len(f.Weekdays))+")")
+		for _, d := range f.Weekdays {
+			args = append(args, d)
+		}
 	}
 	if f.ExcludeAI {
 		conds = append(conds, "s.event_context <> 'AI'")

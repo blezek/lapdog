@@ -315,6 +315,142 @@ h1 {
   margin-left: auto;
 }
 
+/* ------------------------------------------------------ dates & time popover */
+
+.datefilter {
+  position: relative;
+  display: inline-flex;
+}
+
+.datefilter > .control {
+  gap: 6px;
+}
+
+.datepanel {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 40;
+  width: 340px;
+  max-width: 92vw;
+  padding: 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.datepanel-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chip {
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 4px 10px;
+  cursor: pointer;
+}
+
+.chip:hover {
+  border-color: var(--baseline);
+}
+
+.chip-on {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.datepanel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.datepanel-heading {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.datepanel-dates,
+.datepanel-hours {
+  display: flex;
+  gap: 10px;
+}
+
+.datepanel-dates label,
+.datepanel-hours label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 11px;
+  color: var(--text-muted);
+  flex: 1;
+}
+
+.datepanel-dates input,
+.datepanel-hours select {
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 5px 8px;
+}
+
+.datepanel-days {
+  display: flex;
+  gap: 5px;
+}
+
+.datepanel-days .chip {
+  flex: 1;
+  padding: 5px 0;
+  text-align: center;
+}
+
+.datepanel-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.datepanel-heatmap {
+  width: 100%;
+}
+
+.chart.datepicker-cal {
+  width: 100%;
+  height: 132px;
+}
+
+.datepanel-clear {
+  align-self: flex-start;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 99px;
+  padding: 4px 11px;
+  cursor: pointer;
+}
+
+.datepanel-clear:hover {
+  border-color: var(--baseline);
+}
+
 /* ------------------------------------------------------------------- cards */
 
 .grid {

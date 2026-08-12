@@ -56,6 +56,16 @@ func parseFilter(q url.Values) (store.Filter, error) {
 		return f, err
 	}
 
+	if f.HourFrom, err = hourParam(q, "hour_from"); err != nil {
+		return f, err
+	}
+	if f.HourTo, err = hourParam(q, "hour_to"); err != nil {
+		return f, err
+	}
+	if f.Weekdays, err = weekdayParam(q, "weekday"); err != nil {
+		return f, err
+	}
+
 	excludeAI, err := boolParam(q, "exclude_ai")
 	if err != nil {
 		return f, err
@@ -139,6 +149,42 @@ func intParam(q url.Values, key string) (*int, error) {
 		return nil, fmt.Errorf("%w: %s must be an integer", ErrBadRequest, key)
 	}
 	return &n, nil
+}
+
+// hourParam parses an optional hour-of-day bound, which must be 0..23.
+//
+// Out of range is rejected rather than clamped: an hour of 24 is a mistake in the
+// caller, not a value with an obvious safe interpretation, and silently treating
+// it as 23 would hide the bug while quietly changing what the filter means.
+func hourParam(q url.Values, key string) (*int, error) {
+	raw := strings.TrimSpace(q.Get(key))
+	if raw == "" {
+		return nil, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 0 || n > 23 {
+		return nil, fmt.Errorf("%w: %s must be an hour 0..23", ErrBadRequest, key)
+	}
+	return &n, nil
+}
+
+// weekdayParam parses an optional comma-separated set of weekdays, each 0 (Sunday)
+// through 6 (Saturday) — the numbering strftime('%w') uses. Duplicates are folded
+// so the SQL IN clause stays minimal.
+func weekdayParam(q url.Values, key string) ([]int, error) {
+	seen := map[int]bool{}
+	var out []int
+	for _, part := range listParam(q, key) {
+		n, err := strconv.Atoi(part)
+		if err != nil || n < 0 || n > 6 {
+			return nil, fmt.Errorf("%w: %s must be weekdays 0..6", ErrBadRequest, key)
+		}
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 
 func boolParam(q url.Values, key string) (bool, error) {
