@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/blezek/lapdog/internal/collector"
@@ -47,6 +48,9 @@ type Server struct {
 	sp  StatusProvider
 	cfg ConfigStore
 	log *slog.Logger
+
+	reindexMu     sync.Mutex
+	reindexStatus captureReindexStatus
 }
 
 // New returns a Server.
@@ -86,6 +90,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/facets", s.handleFacets)
 	mux.HandleFunc("GET /api/export", s.handleExport)
 	mux.HandleFunc("/api/settings", s.handleSettings)
+	mux.HandleFunc("/api/captures/reindex", s.handleCaptureReindex)
 
 	// Any other /api path is a 404 rather than falling through to the interface,
 	// so a typo in an endpoint reads as a missing endpoint and not as a page of
@@ -156,10 +161,15 @@ func (s *Server) ListenAndServe(port int) error {
 
 // writeJSON sends v as JSON with a 200 status.
 func (s *Server) writeJSON(w http.ResponseWriter, v any) {
+	s.writeJSONStatus(w, http.StatusOK, v)
+}
+
+func (s *Server) writeJSONStatus(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	// The interface is same-origin and the data is local, so caching would only
 	// ever serve stale figures.
 	w.Header().Set("Cache-Control", "no-store")
+	w.WriteHeader(code)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		s.log.Error("response encoding failed", "err", err)
 	}

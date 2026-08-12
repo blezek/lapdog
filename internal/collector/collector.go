@@ -37,6 +37,13 @@ type Options struct {
 	CaptureDir      string
 	CaptureMaxBytes int64
 
+	// ReplayCaptureFile identifies the saved capture being replayed. Live
+	// collection leaves it empty and sets the filename when it opens the writer.
+	ReplayCaptureFile string
+	// StopOnError makes finite diagnostic replays return source and persistence
+	// errors instead of retrying forever as the live reader must.
+	StopOnError bool
+
 	Logger *slog.Logger
 }
 
@@ -116,9 +123,11 @@ type Collector struct {
 	clock Clock
 	log   *slog.Logger
 
-	captureEnabled  bool
-	captureDir      string
-	captureMaxBytes int64
+	captureEnabled    bool
+	captureDir        string
+	captureMaxBytes   int64
+	replayCaptureFile string
+	stopOnError       bool
 
 	mu         sync.Mutex
 	interval   time.Duration
@@ -166,17 +175,19 @@ func New(opts Options) (*Collector, error) {
 	}
 
 	c := &Collector{
-		src:             opts.Source,
-		st:              opts.Store,
-		clock:           opts.Clock,
-		log:             opts.Logger,
-		captureEnabled:  opts.CaptureEnabled,
-		captureDir:      opts.CaptureDir,
-		captureMaxBytes: opts.CaptureMaxBytes,
-		interval:        opts.Interval,
-		minSession:      opts.MinSession,
-		lapDet:          NewLapDetector(),
-		posDet:          NewPositionDetector(),
+		src:               opts.Source,
+		st:                opts.Store,
+		clock:             opts.Clock,
+		log:               opts.Logger,
+		captureEnabled:    opts.CaptureEnabled,
+		captureDir:        opts.CaptureDir,
+		captureMaxBytes:   opts.CaptureMaxBytes,
+		replayCaptureFile: opts.ReplayCaptureFile,
+		stopOnError:       opts.StopOnError,
+		interval:          opts.Interval,
+		minSession:        opts.MinSession,
+		lapDet:            NewLapDetector(),
+		posDet:            NewPositionDetector(),
 	}
 	c.status.IntervalSeconds = opts.Interval.Seconds()
 	c.applyIntervalToSource(opts.Interval)
@@ -281,6 +292,9 @@ func (c *Collector) Run(ctx context.Context) error {
 			continue
 		case err != nil:
 			c.log.Warn("telemetry read failed", "err", err)
+			if c.stopOnError {
+				return fmt.Errorf("collector: telemetry read: %w", err)
+			}
 			continue
 		}
 		c.setConnected(true)
@@ -290,6 +304,9 @@ func (c *Collector) Run(ctx context.Context) error {
 		}
 		if err := c.handle(frame); err != nil {
 			c.log.Error("frame handling failed", "err", err)
+			if c.stopOnError {
+				return err
+			}
 		}
 	}
 }
@@ -412,6 +429,9 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	c.lastFlushT = f.T
 
 	seg := NewSegment(c.info, sessionNum, c.clock.Now(), c.pollInterval())
+	if c.replayCaptureFile != "" {
+		seg.SetCaptureFile(c.replayCaptureFile)
+	}
 	if existing, err := c.st.SessionByKey(seg.Key); err == nil {
 		if started, parseErr := time.Parse(time.RFC3339, existing.StartedAt); parseErr == nil && seg.StartedAt.After(started) {
 			seg.Resume(existing)

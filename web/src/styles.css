@@ -1075,6 +1075,10 @@ tbody tr.selected td {
   line-height: 1.45;
 }
 
+.setting-hint.status-bad {
+  color: var(--status-critical);
+}
+
 .setting-control {
   margin-left: auto;
   display: flex;

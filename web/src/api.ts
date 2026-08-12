@@ -336,6 +336,24 @@ export interface SettingsResponse {
   restartRequired: string[] | null
 }
 
+export interface CaptureReindexFailure {
+  file: string
+  error: string
+}
+
+export interface CaptureReindexStatus {
+  state: 'idle' | 'running' | 'complete' | 'failed'
+  total: number
+  processed: number
+  replayed: number
+  failed: number
+  segments: number
+  failures?: CaptureReindexFailure[]
+  startedAt?: string
+  finishedAt?: string
+  error?: string
+}
+
 export interface ListResponse<T> {
   items: T[]
   total: number
@@ -461,6 +479,24 @@ export const api = {
   },
 
   settings: () => get<Config>('/api/settings'),
+  captureReindexStatus: () => get<CaptureReindexStatus>('/api/captures/reindex'),
+  startCaptureReindex: async (): Promise<CaptureReindexStatus> => {
+    const res = await fetch('/api/captures/reindex', {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+    })
+    if (!res.ok) {
+      let msg = `${res.status} ${res.statusText}`
+      try {
+        const body = (await res.json()) as { error?: string }
+        if (body.error) msg = body.error
+      } catch {
+        /* keep the status text */
+      }
+      throw new ApiError(res.status, msg)
+    }
+    return (await res.json()) as CaptureReindexStatus
+  },
   saveSettings: async (patch: Partial<Config>): Promise<SettingsResponse> => {
     const res = await fetch('/api/settings', {
       method: 'PUT',

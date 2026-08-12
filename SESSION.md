@@ -33,6 +33,41 @@ Deliberately excluded, and recorded as such in the specs: `.ibt` file import, se
 
 ---
 
+## 2026-08-12 — re-index saved captures from Settings
+
+Settings now exposes a debugging action that replays every retained `.lpd` capture
+through the collector in the running build. Matching session keys are upserted, not
+duplicated, and sessions for which no capture survives are left alone. The action is
+therefore an in-place repair of derivable data, not a destructive replacement for the
+separate-database recovery procedure in `ToDo.md`.
+
+The HTTP operation runs in the background and reports captures discovered, processed,
+replayed and failed, plus the number of session segments processed. It refuses to start
+while iRacing is connected; before the background replay begins it pauses the live
+collector for the whole run and restores the prior pause state, so a simulator reconnect
+cannot interleave live and replay writes. Per-capture failures are retained by filename
+for Settings to show, while other captures continue.
+
+The old `lapdogctl ingest` loop now uses the same `internal/reindex` implementation, so
+the diagnostic button and CLI cannot drift on filename timestamps, ordering, error
+handling or collector options. Replay collectors stop on corrupt-source or persistence
+errors instead of retrying a finite damaged file forever, and preserve the saved capture
+filename on the reconstructed session row.
+
+A real-Chrome run opened Settings against an empty temporary database, replayed nine
+generated captures into sixteen session segments, displayed the exact completion counts
+and produced the inspected Settings screenshot. Regression tests cover idempotent replay,
+filename retention, partial capture failure, connected-simulator refusal, live-collector
+pause/restore, asynchronous status and user-facing result text. Removing each of the
+filename, stop-on-error, connection guard, pause and status-message behaviours made its
+corresponding test fail.
+
+`make ci` passes, including the production interface build, all Go and web tests,
+Windows cross-builds and embed checks. The collector, API and reindex packages also
+pass together under the race detector.
+
+---
+
 ## 2026-08-12 — shared, reusable multi-value filters
 
 Historical views now carry their filter query when navigating between pages, while
