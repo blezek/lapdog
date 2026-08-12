@@ -1,0 +1,4 @@
+interface:
+  display_name: "Push and PR"
+  short_description: "Push a branch and open a prefilled PR"
+  default_prompt: "Use $push-and-pr to publish this branch and open its PR page."
