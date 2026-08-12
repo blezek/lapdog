@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canonicalFilterQuery,
   filterParams,
   readSavedFilterSets,
   removeSavedFilterSet,
+  savedFilterSummary,
   upsertSavedFilterSet,
   writeSavedFilterSets,
 } from './useFilter'
@@ -23,6 +25,20 @@ describe('shared filter parameters', () => {
 })
 
 describe('saved filter sets', () => {
+  it('matches equivalent filter queries regardless of key or list order', () => {
+    expect(canonicalFilterQuery('track=18%2C341&type=Race&sel=4')).toBe(
+      canonicalFilterQuery('type=Race&track=341%2C18'),
+    )
+    expect(canonicalFilterQuery('range=90')).toBe(canonicalFilterQuery(''))
+  })
+
+  it('summarizes the criteria needed to distinguish a saved view', () => {
+    expect(savedFilterSummary('range=30&type=Race&track=18%2C341&ai=exclude')).toBe(
+      'Last 30 days · Race · 2 tracks · No AI',
+    )
+    expect(savedFilterSummary('')).toBe('Last 90 days')
+  })
+
   it('persists and reloads named filter queries', () => {
     const storage = new MemoryStorage()
     const saved = [{ id: 'weekend', name: 'Weekend races', query: 'type=Race&dow=0%2C6' }]

@@ -161,7 +161,10 @@ async function main() {
     await evaluate(`(async () => {
       document.querySelector('[data-filter-trigger="saved"]').click();
       await new Promise((resolve) => setTimeout(resolve, 50));
-      const input = document.querySelector('input[aria-label="Filter set name"]');
+      [...document.querySelectorAll('#filter-panel-saved button')]
+        .find((button) => button.textContent.includes('Save current filters')).click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const input = document.querySelector('input[aria-label="Saved view name"]');
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
       setter.call(input, 'Two-by-two'); input.dispatchEvent(new Event('input', { bubbles: true }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
@@ -174,18 +177,50 @@ async function main() {
     await sleep(400)
     assert(!(await evaluate('location.search')).includes('car='), 'clear did not remove car filter')
 
-    await evaluate(`(async () => {
-      if (!document.querySelector('select[aria-label="Saved filter set"]')) {
-        document.querySelector('[data-filter-trigger="saved"]').click();
+    const savedView = await evaluate(`(async () => {
+      document.querySelector('[data-filter-trigger="saved"]').click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const row = [...document.querySelectorAll('#filter-panel-saved .saved-view')]
+        .find((button) => button.querySelector('strong')?.textContent === 'Two-by-two');
+      const summary = row.querySelector('small').textContent;
+      row.click();
+      const trigger = document.querySelector('[data-filter-trigger="saved"]');
+      for (let i = 0; i < 20 && trigger.textContent.trim() !== 'View: Two-by-two'; i++) {
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      const select = document.querySelector('select[aria-label="Saved filter set"]');
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-      setter.call(select, select.options[1].value);
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      return {
+        summary,
+        trigger: trigger.textContent.trim(),
+        query: location.search,
+        stored: JSON.parse(localStorage.getItem('lapdog.savedFilters.v1'))[0].query,
+      };
     })()`)
     await sleep(700)
     assert((await evaluate('location.search')).includes('car='), 'saved filter did not reload')
+    assert(savedView.summary.includes('2 tracks') && savedView.summary.includes('2 cars'),
+      `saved view summary omitted criteria: ${savedView.summary}`)
+    assert(savedView.trigger === 'View: Two-by-two',
+      `saved view trigger did not identify selection: ${JSON.stringify(savedView)}`)
+
+    const modifiedLabels = await evaluate(`(async () => {
+      const ai = [...document.querySelectorAll('.control')]
+        .find((control) => control.textContent.includes('Exclude AI')).querySelector('input');
+      const trigger = document.querySelector('[data-filter-trigger="saved"]');
+      ai.click();
+      for (let i = 0; i < 20 && !trigger.textContent.includes('Modified'); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      const modified = trigger.textContent.trim();
+      ai.click();
+      for (let i = 0; i < 20 && trigger.textContent.includes('Modified'); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return { modified, restored: trigger.textContent.trim() };
+    })()`)
+    assert(modifiedLabels.modified === 'View: Two-by-two • Modified',
+      `changed saved view was not marked modified: ${JSON.stringify(modifiedLabels)}`)
+    assert(modifiedLabels.restored === 'View: Two-by-two',
+      `restored saved view did not regain its name: ${JSON.stringify(modifiedLabels)}`)
 
     await evaluate(`document.querySelector('a[href^="/sessions"]').click()`)
     await sleep(700)
@@ -200,17 +235,11 @@ async function main() {
     writeFileSync(SHOT, Buffer.from(shot.data, 'base64'))
 
     await evaluate(`(async () => {
-      if (!document.querySelector('select[aria-label="Saved filter set"]')) {
-        document.querySelector('[data-filter-trigger="saved"]').click();
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      const select = document.querySelector('select[aria-label="Saved filter set"]');
-      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
-      setter.call(select, select.options[1].value);
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      [...document.querySelectorAll('#filter-panel-saved button')]
+        .find((button) => button.textContent.includes('Manage saved views')).click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      document.querySelector('button[aria-label="Delete Two-by-two"]').click();
     })()`)
-    await sleep(300)
-    await evaluate(`[...document.querySelectorAll('button')].find((b) => b.textContent.trim() === 'Delete').click()`)
     await sleep(300)
     assert(await evaluate(`JSON.parse(localStorage.getItem('lapdog.savedFilters.v1')).length`) === 0, 'filter set not deleted')
 

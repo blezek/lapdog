@@ -5,7 +5,13 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { day, label } from '../format'
 import { weekdayNames } from '../locale'
-import { rangePresets, useFilter } from '../useFilter'
+import {
+  canonicalFilterQuery,
+  filterParams,
+  rangePresets,
+  savedFilterSummary,
+  useFilter,
+} from '../useFilter'
 import { DateFilter } from './DateFilter'
 
 interface Option {
@@ -132,6 +138,7 @@ export function Filters({
         <FilterSetManager
           open={openMenu === 'saved'}
           onToggle={() => toggleMenu('saved')}
+          onClose={() => setOpenMenu(null)}
         />
 
         {active && (
@@ -235,18 +242,50 @@ function MultiFilter({
   )
 }
 
-function FilterSetManager({ open, onToggle }: { open: boolean; onToggle: () => void }) {
-  const { savedSets, saveSet, loadSet, deleteSet } = useFilter()
-  const [selected, setSelected] = useState('')
+function FilterSetManager({
+  open,
+  onToggle,
+  onClose,
+}: {
+  open: boolean
+  onToggle: () => void
+  onClose: () => void
+}) {
+  const { params, savedSets, saveSet, loadSet, deleteSet, clear } = useFilter()
+  const [loadedID, setLoadedID] = useState<string | null>(null)
+  const [mode, setMode] = useState<'list' | 'save' | 'manage'>('list')
   const [name, setName] = useState('')
+  const currentQuery = canonicalFilterQuery(filterParams(params))
+  const activeSet = savedSets.find((set) => canonicalFilterQuery(set.query) === currentQuery)
+  const loadedSet = savedSets.find((set) => set.id === loadedID)
+  const currentLabel = activeSet?.name
+    ?? (loadedSet ? `${loadedSet.name} • Modified` : currentQuery ? 'Custom' : 'Default')
+
+  useEffect(() => {
+    if (!open) setMode('list')
+  }, [open])
 
   const save = () => {
     const id = saveSet(name)
     if (id) {
-      setSelected(id)
+      setLoadedID(id)
       setName('')
+      onClose()
     }
   }
+
+  const load = (id: string) => {
+    if (!loadSet(id)) return
+    setLoadedID(id)
+    onClose()
+  }
+
+  const loadDefault = () => {
+    clear()
+    setLoadedID(null)
+    onClose()
+  }
+  const defaultActive = currentQuery === '' && activeSet == null
 
   return (
     <div className="filter-menu filter-sets">
@@ -260,7 +299,7 @@ function FilterSetManager({ open, onToggle }: { open: boolean; onToggle: () => v
         data-filter-trigger="saved"
         onClick={onToggle}
       >
-        Saved filters{savedSets.length > 0 ? ` · ${savedSets.length}` : ''}
+        View: {currentLabel}
       </button>
       {open && <div
         id="filter-panel-saved"
@@ -268,42 +307,91 @@ function FilterSetManager({ open, onToggle }: { open: boolean; onToggle: () => v
         role="group"
         aria-labelledby="filter-trigger-saved"
       >
-        <div className="filter-sets-title">Load or remove a saved filter</div>
-        <div className="filter-set-row">
-          <select
-            aria-label="Saved filter set"
-            value={selected}
-            onChange={(e) => {
-              setSelected(e.target.value)
-              if (e.target.value) loadSet(e.target.value)
-            }}
-          >
-            <option value="">Choose a set…</option>
-            {savedSets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}
-          </select>
-          <button
-            type="button"
-            className="control danger"
-            disabled={!selected}
-            onClick={() => {
-              deleteSet(selected)
-              setSelected('')
-            }}
-          >
-            Delete
+        {mode === 'list' && <>
+          <div className="filter-sets-title">Choose a view</div>
+          <div className="saved-view-list">
+            <button
+              type="button"
+              className={`saved-view${defaultActive ? ' saved-view-active' : ''}`}
+              data-saved-view="default"
+              onClick={loadDefault}
+            >
+              <span className="saved-view-check" aria-hidden="true">{defaultActive ? '✓' : ''}</span>
+              <span>
+                <strong>Default</strong>
+                <small>Last 90 days · no other filters</small>
+              </span>
+            </button>
+            {savedSets.map((set) => {
+              const active = activeSet?.id === set.id
+              return <button
+                key={set.id}
+                type="button"
+                className={`saved-view${active ? ' saved-view-active' : ''}`}
+                data-saved-view={set.id}
+                onClick={() => load(set.id)}
+              >
+                <span className="saved-view-check" aria-hidden="true">{active ? '✓' : ''}</span>
+                <span>
+                  <strong>{set.name}</strong>
+                  <small>{savedFilterSummary(set.query)}</small>
+                </span>
+              </button>
+            })}
+            {savedSets.length === 0 && (
+              <div className="saved-view-empty">No saved views yet.</div>
+            )}
+          </div>
+          <div className="saved-view-actions">
+            <button type="button" onClick={() => setMode('save')}>+ Save current filters…</button>
+            {savedSets.length > 0 && (
+              <button type="button" onClick={() => setMode('manage')}>Manage saved views…</button>
+            )}
+          </div>
+        </>}
+
+        {mode === 'save' && <>
+          <div className="filter-sets-title">Save current filters</div>
+          <div className="filter-set-row">
+            <input
+              autoFocus
+              aria-label="Saved view name"
+              value={name}
+              placeholder="Name this view"
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => { if (event.key === 'Enter') save() }}
+            />
+            <button type="button" className="control" disabled={!name.trim()} onClick={save}>Save</button>
+          </div>
+          <button type="button" className="saved-view-back" onClick={() => setMode('list')}>
+            ← Back to saved views
           </button>
-        </div>
-        <div className="filter-sets-title">Save the current filter</div>
-        <div className="filter-set-row">
-          <input
-            aria-label="Filter set name"
-            value={name}
-            placeholder="Name this filter"
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') save() }}
-          />
-          <button type="button" className="control" disabled={!name.trim()} onClick={save}>Save</button>
-        </div>
+        </>}
+
+        {mode === 'manage' && <>
+          <div className="filter-sets-title">Manage saved views</div>
+          <div className="saved-view-manage-list">
+            {savedSets.map((set) => (
+              <div className="saved-view-manage" key={set.id}>
+                <span>{set.name}</span>
+                <button
+                  type="button"
+                  className="danger"
+                  aria-label={`Delete ${set.name}`}
+                  onClick={() => {
+                    deleteSet(set.id)
+                    if (loadedID === set.id) setLoadedID(null)
+                  }}
+                >
+                  Delete
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" className="saved-view-back" onClick={() => setMode('list')}>
+            ← Back to saved views
+          </button>
+        </>}
       </div>}
     </div>
   )

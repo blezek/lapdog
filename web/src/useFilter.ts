@@ -61,6 +61,8 @@ export interface SavedFilterSet {
   query: string
 }
 
+const listFilterKeys = new Set(['type', 'context', 'track', 'car', 'dow'])
+
 /** filterParams drops page-local state such as an entity selection or table page. */
 export function filterParams(input: URLSearchParams): URLSearchParams {
   const out = new URLSearchParams()
@@ -68,6 +70,60 @@ export function filterParams(input: URLSearchParams): URLSearchParams {
     if (filterParamKeys.has(key)) out.append(key, value)
   }
   return out
+}
+
+/** canonicalFilterQuery makes semantically equal filter URLs comparable. */
+export function canonicalFilterQuery(input: string | URLSearchParams): string {
+  const filtered = filterParams(
+    typeof input === 'string' ? new URLSearchParams(input) : input,
+  )
+  const canonical = new URLSearchParams()
+  for (const [key, raw] of filtered) {
+    // The default range is represented both by an absent parameter and by
+    // range=90 after explicitly choosing the preset. They are the same view.
+    if (key === 'range' && raw === DEFAULT_RANGE) continue
+    const value = listFilterKeys.has(key)
+      ? raw.split(',').filter(Boolean).sort().join(',')
+      : raw
+    canonical.append(key, value)
+  }
+  canonical.sort()
+  return canonical.toString()
+}
+
+/** savedFilterSummary describes a saved query without claiming hidden details. */
+export function savedFilterSummary(query: string): string {
+  const params = new URLSearchParams(query)
+  const range = params.get('range') ?? DEFAULT_RANGE
+  const parts: string[] = []
+  if (range === 'custom') {
+    const from = params.get('from')
+    const to = params.get('to')
+    if (from && to) parts.push(`${from} to ${to}`)
+    else if (from) parts.push(`From ${from}`)
+    else if (to) parts.push(`Until ${to}`)
+    else parts.push('Custom dates')
+  } else {
+    parts.push(rangePresets.find((preset) => preset.id === range)?.label ?? 'Date filter')
+  }
+
+  const list = (key: string) => (params.get(key) ?? '').split(',').filter(Boolean)
+  const types = list('type')
+  const contexts = list('context')
+  const tracks = list('track')
+  const cars = list('car')
+  const weekdays = list('dow')
+  if (types.length === 1) parts.push(types[0]!)
+  else if (types.length > 1) parts.push(`${types.length} session types`)
+  if (contexts.length === 1) parts.push(contexts[0]!)
+  else if (contexts.length > 1) parts.push(`${contexts.length} contexts`)
+  if (tracks.length) parts.push(`${tracks.length} track${tracks.length === 1 ? '' : 's'}`)
+  if (cars.length) parts.push(`${cars.length} car${cars.length === 1 ? '' : 's'}`)
+  if (params.has('league')) parts.push('League')
+  if (params.has('hf') || params.has('ht')) parts.push('Time of day')
+  if (weekdays.length) parts.push(`${weekdays.length} weekday${weekdays.length === 1 ? '' : 's'}`)
+  if (params.get('ai') === 'exclude') parts.push('No AI')
+  return parts.join(' · ')
 }
 
 export function readSavedFilterSets(storage: Pick<Storage, 'getItem'>): SavedFilterSet[] {

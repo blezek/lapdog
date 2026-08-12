@@ -348,8 +348,7 @@ h1 {
 }
 
 .filter-search,
-.filter-sets input,
-.filter-sets select {
+.filter-sets input {
   min-width: 0;
   color: var(--text-primary);
   background: var(--surface-2);
@@ -424,7 +423,7 @@ h1 {
 .filter-sets-panel {
   left: auto;
   right: 0;
-  width: 360px;
+  width: 380px;
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -436,9 +435,124 @@ h1 {
   gap: 7px;
 }
 
-.filter-set-row select,
 .filter-set-row input {
   flex: 1;
+}
+
+.saved-view-list {
+  display: flex;
+  flex-direction: column;
+  max-height: 300px;
+  overflow-y: auto;
+  margin: 0 -4px;
+}
+
+.saved-view {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 7px;
+  width: 100%;
+  padding: 8px 7px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.saved-view:hover,
+.saved-view:focus-visible {
+  color: var(--text-primary);
+  background: var(--surface-2);
+  outline: none;
+}
+
+.saved-view-active {
+  color: var(--text-primary);
+  background: color-mix(in srgb, var(--accent) 9%, transparent);
+}
+
+.saved-view-check {
+  color: var(--accent);
+  font-weight: 700;
+  text-align: center;
+}
+
+.saved-view strong,
+.saved-view small {
+  display: block;
+}
+
+.saved-view strong {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.saved-view small {
+  overflow: hidden;
+  margin-top: 2px;
+  color: var(--text-muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.saved-view-empty {
+  padding: 10px 25px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.saved-view-actions {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.saved-view-actions button,
+.saved-view-back,
+.saved-view-manage button {
+  padding: 3px 0;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.saved-view-actions button:hover,
+.saved-view-back:hover {
+  color: var(--text-primary);
+}
+
+.saved-view-manage-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.saved-view-manage {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--ring);
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+
+.saved-view-manage button.danger {
+  color: var(--status-bad, #b42318);
+}
+
+.saved-view-back {
+  align-self: flex-start;
+  margin-top: 2px;
 }
 
 .control:disabled {
