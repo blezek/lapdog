@@ -1,4 +1,17 @@
-# ToDo: drive a session on track, and one online
+# ToDo: install the telemetry repair and rebuild the database
+
+The 2026-08-12 UTC captures did exercise real driving, laps, position events and online sessions. They also exposed lost time in the old ingestion path. After installing a build containing the repair, stop LapDog and rebuild into a separate file before replacing anything:
+
+```cmd
+lapdogctl.exe ingest "%LOCALAPPDATA%\lapdog\captures" "%LOCALAPPDATA%\lapdog\lapdog-recovered.db"
+lapdogctl.exe summary "%LOCALAPPDATA%\lapdog\lapdog-recovered.db"
+```
+
+For the 12 captures reviewed on the Mac, the repaired 2026-08-12 UTC totals are 5,378.782 connected seconds, 5,373.749 in-car seconds, 5,329.640 driving seconds (1.4805 hours), and 50 lap rows. Keep `lapdog.db` as the backup until the recovered database has been opened in the interface and checked. Replacing the live database is deliberately not automated here because that is the only copy on Windows and may contain sessions without surviving captures.
+
+The original collection procedure remains below for the next live verification.
+
+## Collection procedure
 
 **Telemetry works.** Confirmed 2026-08-06 from the data drop in `ignore/`: 331 variables published, every required one present, two sessions recorded, two captures written, identity captured, `CarIsAI` confirmed. The `MapViewOfFile` fix was the bug. The procedure below still applies — it is how the next round of data gets collected — but it is no longer chasing a failure.
 

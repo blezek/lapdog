@@ -130,7 +130,7 @@ func (a *Accountant) Add(s Sample) {
 //
 // It reports false if a variable it needs is absent, which the caller treats as
 // "do not record this session" rather than guessing.
-func SampleFrom(row irsdk.Row, driverCarIdx int) (Sample, bool) {
+func SampleFrom(row irsdk.Row) (Sample, bool) {
 	inCar, ok := row.Bool("IsOnTrackCar")
 	if !ok {
 		return Sample{}, false
@@ -139,6 +139,11 @@ func SampleFrom(row irsdk.Row, driverCarIdx int) (Sample, bool) {
 	if !ok {
 		return Sample{}, false
 	}
+	driverCarIdxValue, ok := row.Int("PlayerCarIdx")
+	if !ok {
+		return Sample{}, false
+	}
+	driverCarIdx := int(driverCarIdxValue)
 	if driverCarIdx < 0 || driverCarIdx >= len(surfaces) {
 		return Sample{}, false
 	}
@@ -186,7 +191,7 @@ const (
 // present-and-true IsReplayPlaying is reported even when nothing else in the row
 // is readable, which is correct, since Add credits nothing during a replay
 // regardless of what the rest of the row says.
-func NotDrivingReasonFrom(row irsdk.Row, driverCarIdx int) NotDrivingReason {
+func NotDrivingReasonFrom(row irsdk.Row) NotDrivingReason {
 	if replay, ok := row.Bool("IsReplayPlaying"); ok && replay {
 		return ReasonReplay
 	}
@@ -199,7 +204,9 @@ func NotDrivingReasonFrom(row irsdk.Row, driverCarIdx int) NotDrivingReason {
 	// regardless of inCar: an out-of-range index makes the row unreadable, not
 	// merely "not in the car".
 	surfaces, ok := row.IntArray("CarIdxTrackSurface")
-	if !ok || driverCarIdx < 0 || driverCarIdx >= len(surfaces) {
+	driverCarIdxValue, idxOK := row.Int("PlayerCarIdx")
+	driverCarIdx := int(driverCarIdxValue)
+	if !ok || !idxOK || driverCarIdx < 0 || driverCarIdx >= len(surfaces) {
 		return ReasonNone
 	}
 	if !inCar {

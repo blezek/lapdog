@@ -18,10 +18,12 @@ func rowWith(t *testing.T, inCar, replay bool, loc irsdk.TrkLoc) irsdk.Row {
 	if err := rb.SetBool("IsReplayPlaying", replay); err != nil {
 		t.Fatal(err)
 	}
-	// Only the local driver's slot is set, because every call here passes
-	// driverCarIdx 0 and nothing reads the others. The remaining entries stay zero,
-	// which is OffTrack — harmless, and never consulted.
-	if err := rb.SetIntAt("CarIdxTrackSurface", 0, int32(loc)); err != nil {
+	// Put the player away from slot zero so a fixed or stale index cannot make
+	// these tests pass. Real sessions change PlayerCarIdx as rosters populate.
+	if err := rb.SetInt("PlayerCarIdx", 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := rb.SetIntAt("CarIdxTrackSurface", 7, int32(loc)); err != nil {
 		t.Fatal(err)
 	}
 	return irsdk.NewRow(vh, rb.Bytes())
@@ -53,7 +55,7 @@ func TestNotDrivingReasonFollowsAccountingPrecedence(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			row := rowWith(t, c.inCar, c.replay, c.loc)
-			if got := NotDrivingReasonFrom(row, 0); got != c.want {
+			if got := NotDrivingReasonFrom(row); got != c.want {
 				t.Errorf("reason = %q, want %q", got, c.want)
 			}
 		})
@@ -69,12 +71,12 @@ func TestNotDrivingReasonAgreesWithSample(t *testing.T) {
 	} {
 		for _, inCar := range []bool{true, false} {
 			row := rowWith(t, inCar, false, loc)
-			s, ok := SampleFrom(row, 0)
+			s, ok := SampleFrom(row)
 			if !ok {
 				t.Fatalf("SampleFrom refused a complete row (loc %d, inCar %v)", loc, inCar)
 			}
 			credited := s.InCar && s.Driving
-			reason := NotDrivingReasonFrom(row, 0)
+			reason := NotDrivingReasonFrom(row)
 			if credited && reason != ReasonNone {
 				t.Errorf("loc %d inCar %v: driving time is credited but reason says %q",
 					loc, inCar, reason)
@@ -87,6 +89,31 @@ func TestNotDrivingReasonAgreesWithSample(t *testing.T) {
 	}
 }
 
+func TestSampleUsesTelemetryPlayerCarIdx(t *testing.T) {
+	vh, bufLen := synth.Layout()
+	rb := irsdk.NewRowBuilder(vh, bufLen)
+	if err := rb.SetBool("IsOnTrackCar", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := rb.SetInt("PlayerCarIdx", 7); err != nil {
+		t.Fatal(err)
+	}
+	if err := rb.SetIntAt("CarIdxTrackSurface", 0, int32(irsdk.InPitStall)); err != nil {
+		t.Fatal(err)
+	}
+	if err := rb.SetIntAt("CarIdxTrackSurface", 7, int32(irsdk.OnTrack)); err != nil {
+		t.Fatal(err)
+	}
+
+	sample, ok := SampleFrom(irsdk.NewRow(vh, rb.Bytes()))
+	if !ok {
+		t.Fatal("SampleFrom refused a complete row")
+	}
+	if !sample.Driving {
+		t.Error("Driving = false; collector read stale slot 0 instead of PlayerCarIdx 7")
+	}
+}
+
 // An incomplete row yields no reason rather than a wrong one. The collector
 // refuses such a session anyway, so inventing an explanation would be worse
 // than declining to give one.
@@ -95,7 +122,7 @@ func TestNotDrivingReasonOnAnIncompleteRow(t *testing.T) {
 	bare := irsdk.NewRow(vh, make([]byte, bufLen))
 	// A zeroed row has IsOnTrackCar false, which is a legitimate reading; the
 	// out-of-range index is what makes the surface unavailable.
-	if got := NotDrivingReasonFrom(bare, 9999); got != ReasonNone {
-		t.Errorf("reason = %q for an unreadable surface, want empty", got)
+	if got := NotDrivingReasonFrom(bare); got != ReasonNotInCar {
+		t.Errorf("reason = %q for the zero-valued player slot, want not-in-car", got)
 	}
 }

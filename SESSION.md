@@ -20,16 +20,28 @@ dist/lapdog-0.1.0-setup.exe                4.7 MB, payload confirmed present
 .dataset.db                               1331 sessions, 1242.6 driving hours, schema 2
 ```
 
-**Live telemetry reads a real simulator** as of 2026-08-06. Still never exercised: **driving** (the first test was conducted in the pits, so laps, driving time and position events have not run against real telemetry), **ratings from an online session**, and **installing the installer**. All three need the Windows machine.
+**Live telemetry, driving, laps, position events and online identity all have real-simulator captures** as of 2026-08-11. Replaying those captures now accounts for 1.4805 driving hours on 2026-08-12 UTC, matching the raw telemetry calculation. **Installing the installer remains unverified and needs the Windows machine.**
 
 ## Picking it up next
 
-1. **Drive a session on track, and one online.** `ToDo.md` has the procedure and the checks. The pits test proved the read path; these two exercise lap detection, driving time, position events and real ratings.
+1. **Install the telemetry fix and rebuild the Windows database from its captures.** `ToDo.md` has the recovery command and verification totals.
 2. **Add a git remote and push.** Everything is on one disk and CI has never actually run.
 3. **Install the installer** on the Windows machine — does it land correctly, register uninstall, start the tray app?
 5. **Consider one calendar row per year** for the "All time" heatmap, the only way that range gets larger cells.
 
 Deliberately excluded, and recorded as such in the specs: `.ibt` file import, sector times, true overtake detection from `CarIdxLapDistPct`, and setup tracking. Central hub upload is no longer excluded but not designed — see `docs/server-design-brainstorming.md`.
+
+---
+
+## 2026-08-11 — recovered missing driving time from real captures
+
+Twelve private captures in `ignore/captures` exposed three interacting ingestion defects. Session YAML containing Windows-1252 driver-name bytes was rejected by the UTF-8 YAML parser; after a prior valid document had been cached, the collector silently retained its stale `DriverCarIdx` and could read another car's track surface. Separately, reconnecting to the same online session key replaced the earlier accumulated counters, and `lapdogctl ingest` did not recognise the timestamp form used by live capture filenames.
+
+Session YAML is now decoded from Windows-1252 only when it is not valid UTF-8. Accounting and position attribution read the live telemetry `PlayerCarIdx`, which is now a required variable and part of the synthetic fixture layout. A later connection to an existing online session resumes its accumulated counters, keeps the earliest start, and reconciles lap totals with the idempotent lap rows instead of double-counting laps observed across reconnects. The ingest tool recognises both live and generated capture filename timestamps.
+
+A clean replay into a separate temporary database ingested all 12 captures into 14 sessions. For 2026-08-12 UTC it stored 5,378.782 connected seconds, 5,373.749 in-car seconds and 5,329.640 driving seconds (1.4805 hours); the one-second connected difference from the independent raw-frame calculation is the uncredited baseline sample at a segment boundary. Session totals and the laps table both contain 50 laps. The previous database stored only 3,406.245 driving seconds, so the repair recovers 1,923.395 seconds, or 32.06 minutes.
+
+The regressions were mutation-checked: disabling the character-set conversion, ignoring `PlayerCarIdx`, skipping counter resume, skipping lap reconciliation, discarding the live filename layout, and replacing the earliest-start SQL all made their corresponding tests fail.
 
 ---
 

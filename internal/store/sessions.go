@@ -228,7 +228,7 @@ ON CONFLICT(session_key) DO UPDATE SET
 	car_name = excluded.car_name,
 	car_class_id = excluded.car_class_id,
 	car_class_name = excluded.car_class_name,
-	started_at = excluded.started_at,
+	started_at = MIN(sessions.started_at, excluded.started_at),
 	ended_at = excluded.ended_at,
 	connected_seconds = excluded.connected_seconds,
 	in_car_seconds = excluded.in_car_seconds,

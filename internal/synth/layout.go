@@ -72,6 +72,7 @@ var layoutSpec = []varSpec{
 
 	{"PlayerCarPosition", irsdk.VarInt, 1, "", "Players position in race"},
 	{"PlayerCarClassPosition", irsdk.VarInt, 1, "", "Players class position in race"},
+	{"PlayerCarIdx", irsdk.VarInt, 1, "", "Players car array index"},
 	{"PlayerCarMyIncidentCount", irsdk.VarInt, 1, "", "Players own incident count for this session"},
 
 	{"AirTemp", irsdk.VarFloat, 1, "C", "Temperature of air at start/finish line"},

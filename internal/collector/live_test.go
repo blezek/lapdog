@@ -69,7 +69,7 @@ func TestLiveReportsTheLastHandledFrame(t *testing.T) {
 	// otherwise it would only pin the fixture's happenstance, not the passthrough.
 	// A swapped or dropped assignment in recordLiveFrame would go unnoticed by a
 	// literal expectation but not by this one.
-	wantSample, ok := SampleFrom(frame.Row, c.info.DriverInfo.DriverCarIdx)
+	wantSample, ok := SampleFrom(frame.Row)
 	if !ok {
 		t.Fatal("SampleFrom could not read the frame that was just handled")
 	}
