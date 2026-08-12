@@ -12,7 +12,7 @@
  * reload and travels to the export unchanged, exactly like the other filters.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type DailyRow, type Filter } from '../api'
 import { day, dayShort } from '../format'
@@ -24,40 +24,24 @@ import { Chart, tooltipStyle, useElementWidth } from './Chart'
 /** hourOptions is Any plus every hour of the day, for the two hour selects. */
 const hourOptions = Array.from({ length: 24 }, (_, h) => h)
 
-export function DateFilter() {
+export function DateFilter({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const { state } = useFilter()
-  const [open, setOpen] = useState(false)
-  const wrap = useRef<HTMLDivElement | null>(null)
-
-  // Close on an outside click or Escape, the way a menu is expected to behave.
-  useEffect(() => {
-    if (!open) return
-    const onDown = (e: MouseEvent) => {
-      if (wrap.current && !wrap.current.contains(e.target as Node)) setOpen(false)
-    }
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false)
-    }
-    document.addEventListener('mousedown', onDown)
-    document.addEventListener('keydown', onKey)
-    return () => {
-      document.removeEventListener('mousedown', onDown)
-      document.removeEventListener('keydown', onKey)
-    }
-  }, [open])
 
   const timeActive =
     state.hourFrom != null || state.hourTo != null || (state.weekdays?.length ?? 0) > 0
   const summary = summarize(state)
 
   return (
-    <div className="datefilter" ref={wrap}>
+    <div className="datefilter">
       <button
         type="button"
+        id="filter-trigger-date"
         className={`control${state.range !== '90' || timeActive ? ' control-active' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        onClick={() => setOpen((v) => !v)}
+        aria-controls="filter-panel-date"
+        data-filter-trigger="date"
+        onClick={onToggle}
       >
         <span aria-hidden="true">🗓</span>
         {summary}
@@ -107,13 +91,26 @@ function DatePanel() {
     update({ range: 'custom', [which]: value || undefined })
   }
 
-  const clearTime = () => update({ hf: undefined, ht: undefined, dow: undefined })
+  const resetDateTime = () => update({
+    range: '90',
+    from: undefined,
+    to: undefined,
+    hf: undefined,
+    ht: undefined,
+    dow: undefined,
+  })
 
   const weekdays = weekdayNames()
   const selectedDow = new Set(state.weekdays ?? [])
 
   return (
-    <div className="datepanel" role="dialog" aria-label="Dates and time filters">
+    <div
+      id="filter-panel-date"
+      className="datepanel"
+      role="dialog"
+      aria-label="Dates and time filters"
+      aria-labelledby="filter-trigger-date"
+    >
       <div className="datepanel-presets">
         {rangePresets.map((p) => (
           <button
@@ -209,9 +206,10 @@ function DatePanel() {
         </div>
       </div>
 
-      {(state.hourFrom != null || state.hourTo != null || (state.weekdays?.length ?? 0) > 0) && (
-        <button type="button" className="datepanel-clear" onClick={clearTime}>
-          Clear time filters
+      {(state.range !== '90' || state.hourFrom != null || state.hourTo != null ||
+        (state.weekdays?.length ?? 0) > 0) && (
+        <button type="button" className="datepanel-clear" onClick={resetDateTime}>
+          Reset date and time
         </button>
       )}
     </div>

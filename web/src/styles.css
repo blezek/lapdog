@@ -317,22 +317,18 @@ h1 {
   position: relative;
 }
 
-.filter-menu > summary {
-  list-style: none;
+.filter-menu > .control {
   white-space: nowrap;
 }
 
-.filter-menu > summary::-webkit-details-marker {
-  display: none;
-}
-
-.filter-menu > summary::after {
+.filter-menu > .control::after,
+.datefilter > .control::after {
   content: '▾';
   font-size: 9px;
   color: var(--text-muted);
 }
 
-.filter-menu.control-active > summary {
+.filter-menu.control-active > .control {
   border-color: var(--accent);
   color: var(--text-primary);
 }
@@ -374,6 +370,24 @@ h1 {
   overflow-y: auto;
 }
 
+.filter-menu-clear {
+  width: 100%;
+  margin-top: 7px;
+  padding: 7px 6px 1px;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-top: 1px solid var(--line);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.filter-menu-clear:hover {
+  color: var(--text-primary);
+}
+
 .filter-option {
   display: flex;
   align-items: flex-start;
@@ -397,11 +411,7 @@ h1 {
 }
 
 .filter-sets {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  padding-top: 8px;
-  border-top: 1px solid var(--ring);
+  margin-left: 2px;
 }
 
 .filter-sets-title {
@@ -411,12 +421,24 @@ h1 {
   letter-spacing: 0.04em;
 }
 
-.filter-sets select {
-  max-width: 210px;
+.filter-sets-panel {
+  left: auto;
+  right: 0;
+  width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
 }
 
-.filter-sets input {
-  width: 180px;
+.filter-set-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.filter-set-row select,
+.filter-set-row input {
+  flex: 1;
 }
 
 .control:disabled {
@@ -426,12 +448,6 @@ h1 {
 
 .control.danger:not(:disabled) {
   color: var(--status-bad, #b42318);
-}
-
-@media (max-width: 720px) {
-  .filter-sets {
-    flex-wrap: wrap;
-  }
 }
 
 .matched {

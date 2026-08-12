@@ -1,6 +1,6 @@
 /* The shared filter row, present above every historical data view. */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api'
 import { day, label } from '../format'
@@ -23,32 +23,68 @@ export function Filters({
 }) {
   const { state, update, toggleIn, clear, active } = useFilter()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
+  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  const wrap = useRef<HTMLDivElement | null>(null)
+
+  // Every filter belongs to one toolbar, so opening one dismisses the previous
+  // popover. Outside clicks and Escape dismiss the toolbar as a whole rather than
+  // making each menu install a competing document listener.
+  useEffect(() => {
+    if (openMenu == null) return
+    const onDown = (event: MouseEvent) => {
+      if (wrap.current && !wrap.current.contains(event.target as Node)) setOpenMenu(null)
+    }
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setOpenMenu(null)
+      wrap.current
+        ?.querySelector<HTMLElement>(`[data-filter-trigger="${openMenu}"]`)
+        ?.focus()
+    }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [openMenu])
+
+  const toggleMenu = (menu: string) => setOpenMenu((current) => current === menu ? null : menu)
 
   return (
-    <div className="filters-wrap">
+    <div className="filters-wrap" ref={wrap}>
       <div className="filters">
-        <DateFilter />
+        <DateFilter open={openMenu === 'date'} onToggle={() => toggleMenu('date')} />
 
         <MultiFilter
+          id="type"
           label="Session types"
           allLabel="All session types"
           param="type"
           selected={(state.sessionType ?? []).map(String)}
           options={(facets?.sessionTypes ?? []).map((value) => ({ value, label: value }))}
           toggle={toggleIn}
+          clear={() => update({ type: undefined })}
+          open={openMenu === 'type'}
+          onToggle={() => toggleMenu('type')}
         />
 
         <MultiFilter
+          id="context"
           label="Contexts"
           allLabel="All contexts"
           param="context"
           selected={(state.eventContext ?? []).map(String)}
           options={(facets?.eventContexts ?? []).map((value) => ({ value, label: value }))}
           toggle={toggleIn}
+          clear={() => update({ context: undefined })}
+          open={openMenu === 'context'}
+          onToggle={() => toggleMenu('context')}
         />
 
         {!hide?.includes('track') && (
           <MultiFilter
+            id="track"
             label="Tracks"
             allLabel="All tracks"
             param="track"
@@ -58,12 +94,16 @@ export function Filters({
               label: `${x.name} (${x.sessions})`,
             }))}
             toggle={toggleIn}
+            clear={() => update({ track: undefined })}
+            open={openMenu === 'track'}
+            onToggle={() => toggleMenu('track')}
             searchable
           />
         )}
 
         {!hide?.includes('car') && (
           <MultiFilter
+            id="car"
             label="Cars"
             allLabel="All cars"
             param="car"
@@ -73,6 +113,9 @@ export function Filters({
               label: `${x.name} (${x.sessions})`,
             }))}
             toggle={toggleIn}
+            clear={() => update({ car: undefined })}
+            open={openMenu === 'car'}
+            onToggle={() => toggleMenu('car')}
             searchable
           />
         )}
@@ -86,6 +129,11 @@ export function Filters({
           Exclude AI
         </label>
 
+        <FilterSetManager
+          open={openMenu === 'saved'}
+          onToggle={() => toggleMenu('saved')}
+        />
+
         {active && (
           <button type="button" className="control" onClick={clear}>
             Clear
@@ -94,26 +142,33 @@ export function Filters({
 
         {matched && <span className="matched">{matched}</span>}
       </div>
-      <FilterSetManager />
     </div>
   )
 }
 
 function MultiFilter({
+  id,
   label,
   allLabel,
   param,
   selected,
   options,
   toggle,
+  clear,
+  open,
+  onToggle,
   searchable = false,
 }: {
+  id: string
   label: string
   allLabel: string
   param: string
   selected: string[]
   options: Option[]
   toggle: (key: string, value: string) => void
+  clear: () => void
+  open: boolean
+  onToggle: () => void
   searchable?: boolean
 }) {
   const [search, setSearch] = useState('')
@@ -128,9 +183,26 @@ function MultiFilter({
       : `${selected.length} ${label.toLocaleLowerCase()}`
 
   return (
-    <details className={`filter-menu${selected.length ? ' control-active' : ''}`}>
-      <summary className="control" aria-label={label}>{summary}</summary>
-      <div className="filter-menu-panel">
+    <div className={`filter-menu${selected.length ? ' control-active' : ''}`}>
+      <button
+        type="button"
+        id={`filter-trigger-${id}`}
+        className="control"
+        aria-label={label}
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls={`filter-panel-${id}`}
+        data-filter-trigger={id}
+        onClick={onToggle}
+      >
+        {summary}
+      </button>
+      {open && <div
+        id={`filter-panel-${id}`}
+        className="filter-menu-panel"
+        role="group"
+        aria-labelledby={`filter-trigger-${id}`}
+      >
         {searchable && (
           <input
             type="search"
@@ -153,12 +225,17 @@ function MultiFilter({
           ))}
           {shown.length === 0 && <span className="filter-none">No matches</span>}
         </div>
-      </div>
-    </details>
+        {selected.length > 0 && (
+          <button type="button" className="filter-menu-clear" onClick={clear}>
+            Clear {label.toLocaleLowerCase()}
+          </button>
+        )}
+      </div>}
+    </div>
   )
 }
 
-function FilterSetManager() {
+function FilterSetManager({ open, onToggle }: { open: boolean; onToggle: () => void }) {
   const { savedSets, saveSet, loadSet, deleteSet } = useFilter()
   const [selected, setSelected] = useState('')
   const [name, setName] = useState('')
@@ -172,38 +249,62 @@ function FilterSetManager() {
   }
 
   return (
-    <div className="filter-sets" aria-label="Saved filter sets">
-      <span className="filter-sets-title">Saved filters</span>
-      <select
-        aria-label="Saved filter set"
-        value={selected}
-        onChange={(e) => {
-          setSelected(e.target.value)
-          if (e.target.value) loadSet(e.target.value)
-        }}
-      >
-        <option value="">Choose a set…</option>
-        {savedSets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}
-      </select>
-      <input
-        aria-label="Filter set name"
-        value={name}
-        placeholder="Name this filter"
-        onChange={(e) => setName(e.target.value)}
-        onKeyDown={(e) => { if (e.key === 'Enter') save() }}
-      />
-      <button type="button" className="control" disabled={!name.trim()} onClick={save}>Save</button>
+    <div className="filter-menu filter-sets">
       <button
         type="button"
-        className="control danger"
-        disabled={!selected}
-        onClick={() => {
-          deleteSet(selected)
-          setSelected('')
-        }}
+        id="filter-trigger-saved"
+        className="control"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-controls="filter-panel-saved"
+        data-filter-trigger="saved"
+        onClick={onToggle}
       >
-        Delete
+        Saved filters{savedSets.length > 0 ? ` · ${savedSets.length}` : ''}
       </button>
+      {open && <div
+        id="filter-panel-saved"
+        className="filter-menu-panel filter-sets-panel"
+        role="group"
+        aria-labelledby="filter-trigger-saved"
+      >
+        <div className="filter-sets-title">Load or remove a saved filter</div>
+        <div className="filter-set-row">
+          <select
+            aria-label="Saved filter set"
+            value={selected}
+            onChange={(e) => {
+              setSelected(e.target.value)
+              if (e.target.value) loadSet(e.target.value)
+            }}
+          >
+            <option value="">Choose a set…</option>
+            {savedSets.map((set) => <option key={set.id} value={set.id}>{set.name}</option>)}
+          </select>
+          <button
+            type="button"
+            className="control danger"
+            disabled={!selected}
+            onClick={() => {
+              deleteSet(selected)
+              setSelected('')
+            }}
+          >
+            Delete
+          </button>
+        </div>
+        <div className="filter-sets-title">Save the current filter</div>
+        <div className="filter-set-row">
+          <input
+            aria-label="Filter set name"
+            value={name}
+            placeholder="Name this filter"
+            onChange={(e) => setName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') save() }}
+          />
+          <button type="button" className="control" disabled={!name.trim()} onClick={save}>Save</button>
+        </div>
+      </div>}
     </div>
   )
 }

@@ -62,34 +62,105 @@ async function main() {
     await send('Page.navigate', { url: `${BASE}/dashboard?range=30&sel=999` })
     await sleep(2500)
 
-    const optionCounts = await evaluate(`(() => {
-      const count = (name) => {
-        const summary = document.querySelector('summary[aria-label="' + name + '"]');
-        summary.click();
-        const result = summary.closest('details').querySelectorAll('.filter-option input').length;
-        summary.closest('details').open = false;
+    const optionCounts = await evaluate(`(async () => {
+      const count = async (name) => {
+        const trigger = document.querySelector('button[aria-label="' + name + '"]');
+        trigger.click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const result = document.getElementById(trigger.getAttribute('aria-controls'))
+          .querySelectorAll('.filter-option input').length;
+        trigger.click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
         return result;
       };
-      return { cars: count('Cars'), tracks: count('Tracks') };
+      return { cars: await count('Cars'), tracks: await count('Tracks') };
     })()`)
     assert(optionCounts.cars >= 2 && optionCounts.tracks >= 2, 'fixture needs at least two cars and tracks')
+
+    const coordinated = await evaluate(`(async () => {
+      const cars = document.querySelector('button[aria-label="Cars"]');
+      const tracks = document.querySelector('button[aria-label="Tracks"]');
+      cars.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      tracks.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return {
+        cars: cars.getAttribute('aria-expanded'),
+        tracks: tracks.getAttribute('aria-expanded'),
+        panels: document.querySelectorAll('[id^="filter-panel-"]').length,
+      };
+    })()`)
+    assert(
+      coordinated.cars === 'false' && coordinated.tracks === 'true' && coordinated.panels === 1,
+      `filter popovers are not coordinated: ${JSON.stringify(coordinated)}`,
+    )
+    await evaluate(`document.querySelector('h1').dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))`)
+    assert(
+      await evaluate(`document.querySelectorAll('[id^="filter-panel-"]').length`) === 0,
+      'outside click did not close the filter popover',
+    )
+    const escaped = await evaluate(`(async () => {
+      const date = document.querySelector('[data-filter-trigger="date"]');
+      date.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return {
+        expanded: date.getAttribute('aria-expanded'),
+        focused: document.activeElement === date,
+      };
+    })()`)
+    assert(
+      escaped.expanded === 'false' && escaped.focused,
+      `Escape did not close the popover and restore focus: ${JSON.stringify(escaped)}`,
+    )
+
     for (const name of ['Cars', 'Tracks']) {
       for (let index = 0; index < 2; index++) {
-        await evaluate(`(() => {
-          const summary = document.querySelector('summary[aria-label="${name}"]');
-          summary.closest('details').open = true;
-          summary.closest('details').querySelectorAll('.filter-option input')[${index}].click();
+        await evaluate(`(async () => {
+          const trigger = document.querySelector('button[aria-label="${name}"]');
+          if (trigger.getAttribute('aria-expanded') !== 'true') {
+            trigger.click();
+            await new Promise((resolve) => setTimeout(resolve, 50));
+          }
+          document.getElementById(trigger.getAttribute('aria-controls'))
+            .querySelectorAll('.filter-option input')[${index}].click();
         })()`)
         await sleep(350)
       }
-      await evaluate(`document.querySelector('summary[aria-label="${name}"]').closest('details').open = false`)
+      await evaluate(`document.querySelector('button[aria-label="${name}"]').click()`)
     }
 
     const selectedQuery = await evaluate('location.search')
     assert(/car=\d+%2C\d+/.test(selectedQuery), `two cars missing from ${selectedQuery}`)
     assert(/track=\d+%2C\d+/.test(selectedQuery), `two tracks missing from ${selectedQuery}`)
 
-    await evaluate(`(() => {
+    await evaluate(`(async () => {
+      const cars = document.querySelector('button[aria-label="Cars"]');
+      cars.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      document.querySelector('#filter-panel-car .filter-menu-clear').click();
+    })()`)
+    await sleep(350)
+    const clearedQuery = await evaluate('location.search')
+    assert(!clearedQuery.includes('car='), `per-menu clear left cars in ${clearedQuery}`)
+    assert(clearedQuery.includes('track='), `per-menu clear removed another facet from ${clearedQuery}`)
+    for (let index = 0; index < 2; index++) {
+      await evaluate(`(async () => {
+        const cars = document.querySelector('button[aria-label="Cars"]');
+        if (cars.getAttribute('aria-expanded') !== 'true') {
+          cars.click();
+          await new Promise((resolve) => setTimeout(resolve, 50));
+        }
+        document.querySelectorAll('#filter-panel-car .filter-option input')[${index}].click();
+      })()`)
+      await sleep(350)
+    }
+    await evaluate(`document.querySelector('button[aria-label="Cars"]').click()`)
+
+    await evaluate(`(async () => {
+      document.querySelector('[data-filter-trigger="saved"]').click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
       const input = document.querySelector('input[aria-label="Filter set name"]');
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
       setter.call(input, 'Two-by-two'); input.dispatchEvent(new Event('input', { bubbles: true }));
@@ -103,7 +174,11 @@ async function main() {
     await sleep(400)
     assert(!(await evaluate('location.search')).includes('car='), 'clear did not remove car filter')
 
-    await evaluate(`(() => {
+    await evaluate(`(async () => {
+      if (!document.querySelector('select[aria-label="Saved filter set"]')) {
+        document.querySelector('[data-filter-trigger="saved"]').click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       const select = document.querySelector('select[aria-label="Saved filter set"]');
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
       setter.call(select, select.options[1].value);
@@ -119,10 +194,16 @@ async function main() {
     assert(destination.includes('car=') && destination.includes('track='), `navigation lost dimensions: ${destination}`)
     assert(!destination.includes('sel='), `navigation leaked local selection: ${destination}`)
 
+    await evaluate(`document.querySelector('[data-filter-trigger="saved"]').click()`)
+    await sleep(150)
     const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
     writeFileSync(SHOT, Buffer.from(shot.data, 'base64'))
 
-    await evaluate(`(() => {
+    await evaluate(`(async () => {
+      if (!document.querySelector('select[aria-label="Saved filter set"]')) {
+        document.querySelector('[data-filter-trigger="saved"]').click();
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
       const select = document.querySelector('select[aria-label="Saved filter set"]');
       const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set;
       setter.call(select, select.options[1].value);
