@@ -348,6 +348,11 @@ export interface Filter {
   trackId?: number
   carId?: number
   leagueId?: number
+  /** Inclusive local hour-of-day bounds, 0..23. Either may stand alone. */
+  hourFrom?: number
+  hourTo?: number
+  /** Local weekdays to keep, 0 (Sunday) through 6 (Saturday). Empty means all. */
+  weekdays?: number[]
   excludeAi?: boolean
   limit?: number
   offset?: number
@@ -367,6 +372,9 @@ export function toQuery(f: Filter, extra: Record<string, string> = {}): string {
   if (f.trackId != null) q.set('track_id', String(f.trackId))
   if (f.carId != null) q.set('car_id', String(f.carId))
   if (f.leagueId != null) q.set('league_id', String(f.leagueId))
+  if (f.hourFrom != null) q.set('hour_from', String(f.hourFrom))
+  if (f.hourTo != null) q.set('hour_to', String(f.hourTo))
+  if (f.weekdays?.length) q.set('weekday', f.weekdays.join(','))
   if (f.excludeAi) q.set('exclude_ai', 'true')
   if (f.limit != null) q.set('limit', String(f.limit))
   if (f.offset != null) q.set('offset', String(f.offset))

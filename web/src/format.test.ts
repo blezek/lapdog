@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { hm, hms, licenceLabel } from './format'
+import { hm, hms, licenceLabel, startOfMonth, startOfWeek, startOfYear } from './format'
 
 describe('hms', () => {
   it('keeps the seconds a live total is read at', () => {
@@ -23,6 +23,27 @@ describe('hms', () => {
 
   it('never renders a negative duration', () => {
     expect(hms(-5)).toBe('0:00')
+  })
+})
+
+describe('calendar-aligned starts', () => {
+  // A Tuesday, so a Sunday-first week began two days earlier. These snap to a
+  // boundary in the viewer's own zone, which is why "this week" means the week they
+  // are in rather than the one UTC happens to be in.
+  const tue = new Date(2026, 7, 11)
+
+  it('starts the week on the Sunday on or before', () => {
+    expect(startOfWeek(tue)).toBe('2026-08-09')
+    // A Sunday is its own week start, not pushed back seven days.
+    expect(startOfWeek(new Date(2026, 7, 9))).toBe('2026-08-09')
+  })
+
+  it('starts the month on the first', () => {
+    expect(startOfMonth(tue)).toBe('2026-08-01')
+  })
+
+  it('starts the year on January 1st', () => {
+    expect(startOfYear(tue)).toBe('2026-01-01')
   })
 })
 
