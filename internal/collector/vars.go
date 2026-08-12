@@ -33,6 +33,7 @@ var RequiredCoreVars = []string{
 	"FuelLevel",
 	"PlayerCarPosition",
 	"PlayerCarClassPosition",
+	"PlayerCarIdx",
 	"CarIdxTrackSurface",
 }
 

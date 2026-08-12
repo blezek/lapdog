@@ -388,6 +388,7 @@ func setBase(sw *writer, w *Weekend, s *Session, sessionT float64) error {
 		rb.SetInt("SessionLapsRemain", int32(lapsRemaining(s))),
 		rb.SetInt("SessionUniqueID", int32(w.SubSessionID%1000000)),
 		rb.SetBitField("SessionFlags", 0x00000004), // green
+		rb.SetInt("PlayerCarIdx", int32(w.DriverCarIdx)),
 		rb.SetFloat("AirTemp", w.AirTempC),
 		rb.SetFloat("TrackTempCrew", w.TrackTempC),
 		rb.SetInt("SessionState", int32(irsdk.StateWarmup)),

@@ -229,6 +229,32 @@ func TestUpsertSessionPreservesIdentityAcrossFlushes(t *testing.T) {
 	}
 }
 
+func TestUpsertSessionPreservesEarliestStartAcrossReconnects(t *testing.T) {
+	s := openTemp(t)
+	rec := minimalSession("55667788/2")
+	rec.StartedAt = "2026-08-12T02:00:00Z"
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	rec.StartedAt = "2026-08-12T01:00:00Z"
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+	rec.StartedAt = "2026-08-12T03:00:00Z"
+	if _, err := s.UpsertSession(rec); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.SessionByKey(rec.SessionKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StartedAt != "2026-08-12T01:00:00Z" {
+		t.Errorf("StartedAt = %q, want earliest reconnect time", got.StartedAt)
+	}
+}
+
 // Nullable columns must come back nil, not zero, when never set.
 func TestUpsertSessionNullsStayNull(t *testing.T) {
 	s := openTemp(t)
@@ -384,6 +410,9 @@ func TestInsertLapIsIdempotent(t *testing.T) {
 	}
 	if *laps[0].LapTimeS != 100 {
 		t.Errorf("LapTimeS = %v, want the first write preserved", *laps[0].LapTimeS)
+	}
+	if n, err := s.LapCount(sid); err != nil || n != 1 {
+		t.Errorf("LapCount = %d, %v; want 1, nil", n, err)
 	}
 }
 

@@ -183,8 +183,17 @@ func ingest(dir, dbPath string) error {
 // timeFromName recovers the start time a generated capture encodes in its
 // filename, falling back to now when the name carries no timestamp.
 func timeFromName(name string) time.Time {
-	if len(name) >= 15 {
-		if t, err := time.Parse("20060102-150405", name[:15]); err == nil {
+	for _, layout := range []struct {
+		format string
+		length int
+	}{
+		{"20060102T150405Z", 16}, // live capture: 20260812T014837Z
+		{"20060102-150405", 15},  // generated capture
+	} {
+		if len(name) < layout.length {
+			continue
+		}
+		if t, err := time.Parse(layout.format, name[:layout.length]); err == nil {
 			return t.UTC()
 		}
 	}

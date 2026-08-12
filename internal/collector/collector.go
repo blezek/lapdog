@@ -314,6 +314,11 @@ func (c *Collector) handle(f source.Frame) error {
 			// this frame cannot be attributed to a session.
 			c.log.Warn("session YAML unparseable and none cached", "err", err)
 			return nil
+		} else {
+			// Carrying the previous document is safer than dropping an active
+			// segment, but the failure must be visible: stale classification data
+			// once selected another car's telemetry without leaving a log line.
+			c.log.Warn("session YAML unparseable; retaining previous document", "err", err)
 		}
 	}
 
@@ -343,7 +348,7 @@ func (c *Collector) handle(f source.Frame) error {
 	}
 	captureStarted := c.syncCapture(f)
 
-	sample, ok := SampleFrom(f.Row, c.info.DriverInfo.DriverCarIdx)
+	sample, ok := SampleFrom(f.Row)
 	if !ok {
 		return nil
 	}
@@ -407,6 +412,13 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	c.lastFlushT = f.T
 
 	seg := NewSegment(c.info, sessionNum, c.clock.Now(), c.pollInterval())
+	if existing, err := c.st.SessionByKey(seg.Key); err == nil {
+		if started, parseErr := time.Parse(time.RFC3339, existing.StartedAt); parseErr == nil && seg.StartedAt.After(started) {
+			seg.Resume(existing)
+		}
+	} else if !errors.Is(err, store.ErrNotFound) {
+		return fmt.Errorf("collector: inspect existing session %s: %w", seg.Key, err)
+	}
 
 	// Refuse the session outright if a required variable is absent, rather than
 	// recording data that would be wrong.
@@ -486,6 +498,12 @@ func (c *Collector) observeLaps(f source.Frame) {
 		t = *lap.LapTimeS
 	}
 	c.seg.NoteLap(lap.LapNumber, t)
+	lapCount, err := c.st.LapCount(c.seg.StoreID)
+	if err != nil {
+		c.log.Error("lap count reconciliation failed", "err", err)
+		return
+	}
+	c.seg.SetLapsCompleted(lapCount)
 }
 
 // observePositions records position changes, in races only.
@@ -493,7 +511,11 @@ func (c *Collector) observePositions(f source.Frame) {
 	if !c.seg.IsRace() {
 		return
 	}
-	ev, ok := c.posDet.Observe(f.Row, c.info.DriverInfo.DriverCarIdx, f.T, c.info)
+	playerCarIdx, ok := f.Row.Int("PlayerCarIdx")
+	if !ok {
+		return
+	}
+	ev, ok := c.posDet.Observe(f.Row, int(playerCarIdx), f.T, c.info)
 	if !ok || ev == nil {
 		return
 	}
@@ -611,13 +633,12 @@ func (c *Collector) clearActiveStatus() {
 // an instant and the segment holds accumulations. A value the row does not carry
 // is stored as absent rather than zero.
 func (c *Collector) recordLiveFrame(f source.Frame, sample Sample) {
-	idx := c.info.DriverInfo.DriverCarIdx
 	lf := &LiveFrame{
 		At:      time.Now(),
 		InCar:   sample.InCar,
 		Driving: sample.Driving,
 		Replay:  sample.Replay,
-		Reason:  NotDrivingReasonFrom(f.Row, idx),
+		Reason:  NotDrivingReasonFrom(f.Row),
 	}
 	if v, ok := f.Row.Int("Lap"); ok {
 		n := int(v)

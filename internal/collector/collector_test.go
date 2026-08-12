@@ -66,6 +66,66 @@ func ingest(t *testing.T, capturePath string, tune func(*Options)) *store.Store 
 	return st
 }
 
+func ingestInto(t *testing.T, st *store.Store, capturePath string, startedAt time.Time) {
+	t.Helper()
+	src, err := source.NewReplay(capturePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	c, err := New(Options{
+		Source: src, Store: st, Clock: NewFakeClock(startedAt),
+		Interval: time.Second, MinSession: 0,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestReconnectAccumulatesTimeWithoutDuplicatingLaps(t *testing.T) {
+	path := filepath.Join(fixtureDir(t), "public-practice.lpd")
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	firstStart := time.Date(2026, 8, 12, 1, 0, 0, 0, time.UTC)
+
+	ingestInto(t, st, path, firstStart)
+	first, _, err := st.ListSessions(store.Filter{})
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first ingest sessions = %d, %v; want 1, nil", len(first), err)
+	}
+	firstDriving := first[0].DrivingSeconds
+	firstLaps := first[0].LapsCompleted
+	if firstDriving <= 0 || firstLaps <= 0 {
+		t.Fatalf("fixture did not exercise counters: driving %.3f laps %d", firstDriving, firstLaps)
+	}
+
+	ingestInto(t, st, path, firstStart.Add(time.Hour))
+	resumed, _, err := st.ListSessions(store.Filter{})
+	if err != nil || len(resumed) != 1 {
+		t.Fatalf("reconnect sessions = %d, %v; want 1, nil", len(resumed), err)
+	}
+	if resumed[0].DrivingSeconds < firstDriving*1.9 {
+		t.Errorf("driving after reconnect = %.3f, want about twice %.3f", resumed[0].DrivingSeconds, firstDriving)
+	}
+	if resumed[0].LapsCompleted != firstLaps {
+		t.Errorf("laps after reconnect = %d, want %d distinct laps", resumed[0].LapsCompleted, firstLaps)
+	}
+	laps, err := st.LapsForSession(resumed[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resumed[0].LapsCompleted != len(laps) {
+		t.Errorf("session laps = %d, lap rows = %d", resumed[0].LapsCompleted, len(laps))
+	}
+}
+
 // A race weekend capture must land as three separate session rows, with the
 // practice one classified as race practice because a race shares the weekend.
 func TestIngestRaceWeekendProducesThreeSegments(t *testing.T) {

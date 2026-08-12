@@ -114,3 +114,14 @@ func (s *Store) LapsForSession(sessionID int64) ([]Lap, error) {
 	}
 	return out, nil
 }
+
+// LapCount returns the number of distinct laps stored for a session.
+func (s *Store) LapCount(sessionID int64) (int, error) {
+	var n int
+	if err := s.reader.QueryRow(
+		`SELECT COUNT(*) FROM laps WHERE session_id = ?`, sessionID,
+	).Scan(&n); err != nil {
+		return 0, fmt.Errorf("store: count laps for session %d: %w", sessionID, err)
+	}
+	return n, nil
+}

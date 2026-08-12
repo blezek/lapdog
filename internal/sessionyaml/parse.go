@@ -5,12 +5,26 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
+	"golang.org/x/text/encoding/charmap"
 	"gopkg.in/yaml.v3"
 )
 
 // Parse decodes a session-info YAML document. Unknown keys are ignored.
 func Parse(b []byte) (*Info, error) {
+	// iRacing's session-info buffer is not consistently UTF-8. Real driver names
+	// with accented characters have arrived as Windows-1252 bytes (for example,
+	// e9 for é), which yaml.v3 correctly rejects as invalid UTF-8. ASCII and valid
+	// UTF-8 pass through byte-for-byte; only an invalid document is decoded from
+	// the Windows character set used by the simulator on Windows.
+	if !utf8.Valid(b) {
+		decoded, err := charmap.Windows1252.NewDecoder().Bytes(b)
+		if err != nil {
+			return nil, fmt.Errorf("sessionyaml: decode Windows-1252: %w", err)
+		}
+		b = decoded
+	}
 	if len(strings.TrimSpace(string(b))) == 0 {
 		return nil, errors.New("sessionyaml: empty document")
 	}

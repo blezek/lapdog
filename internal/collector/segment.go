@@ -82,6 +82,28 @@ func NewSegment(info *sessionyaml.Info, sessionNum int, startedAt time.Time, int
 // SetCaptureFile records which capture file this segment is being written to.
 func (g *Segment) SetCaptureFile(name string) { g.captureFile = &name }
 
+// Resume carries accumulated facts into a later connection to the same online
+// session. The new segment's timestamps remain its own so its capture filename
+// is unique; UpsertSession keeps the session row's earliest start time.
+func (g *Segment) Resume(existing *store.Session) {
+	if existing == nil {
+		return
+	}
+	g.Acct.Connected = existing.ConnectedSeconds
+	g.Acct.InCar = existing.InCarSeconds
+	g.Acct.Driving = existing.DrivingSeconds
+	g.lapsCompleted = existing.LapsCompleted
+	g.incidents = existing.Incidents
+	g.bestLapTimeS = existing.BestLapTimeS
+	g.startingPosition = existing.StartingPosition
+	g.finishPosition = existing.FinishPosition
+	g.finishClassPosition = existing.FinishClassPosition
+	g.qualifyPosition = existing.QualifyPosition
+	g.qualifyClassPosition = existing.QualifyClassPosition
+	g.qualifyBestTimeS = existing.QualifyBestTimeS
+	g.fieldSize = existing.FieldSize
+}
+
 // ApplyInfo refreshes everything derived from the session YAML.
 //
 // This runs on every YAML change rather than once at session start, because
@@ -174,6 +196,11 @@ func (g *Segment) NoteLap(lapNumber int, lapTimeS float64) {
 		g.bestLapTimeS = &t
 	}
 }
+
+// SetLapsCompleted reconciles the in-memory counter with the store after an
+// idempotent lap insert. A reconnect can observe a lap already in SQLite, so
+// blindly incrementing would make the session total exceed its lap rows.
+func (g *Segment) SetLapsCompleted(n int) { g.lapsCompleted = n }
 
 // BestLapTimeS returns the session best so far, for lap delta computation.
 func (g *Segment) BestLapTimeS() (float64, bool) {
