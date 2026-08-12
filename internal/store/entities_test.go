@@ -314,13 +314,13 @@ func TestEntityStatsCleanLapCounts(t *testing.T) {
 	}
 
 	laps := []*Lap{
-		{LapNumber: 1, LapTimeS: f64p(100.0)},                 // clean
-		{LapNumber: 2, LapTimeS: f64p(100.5)},                 // clean
-		{LapNumber: 3, LapTimeS: f64p(101.0)},                 // clean
+		{LapNumber: 1, LapTimeS: f64p(100.0)},                    // clean
+		{LapNumber: 2, LapTimeS: f64p(100.5)},                    // clean
+		{LapNumber: 3, LapTimeS: f64p(101.0)},                    // clean
 		{LapNumber: 4, LapTimeS: f64p(102.0), IncidentsOnLap: 1}, // timed, dirty
 		{LapNumber: 5, LapTimeS: f64p(103.0), IncidentsOnLap: 2}, // timed, dirty
 		{LapNumber: 6, LapTimeS: f64p(140.0), IsPitLap: true},    // pit, excluded
-		{LapNumber: 7},                                           // untimed, excluded
+		{LapNumber: 7}, // untimed, excluded
 	}
 	for _, lap := range laps {
 		lap.SessionID = id
