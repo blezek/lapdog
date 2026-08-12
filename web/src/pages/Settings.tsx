@@ -1,7 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { api, type Config } from '../api'
+import { api, type CaptureReindexStatus, type Config } from '../api'
 import { bytes, licenceLabel, num } from '../format'
 import { applyTheme } from '../theme'
 import { Banner, Card, ErrorNote, Loading } from '../components/ui'
@@ -34,6 +34,23 @@ function formatSeconds(v: number): string {
   return `${Number.isInteger(m) ? m : m.toFixed(1)} min`
 }
 
+export function captureReindexMessage(status: CaptureReindexStatus): string | null {
+  if (status.state === 'running') {
+    return `Processed ${status.processed} of ${status.total} capture(s).`
+  }
+  if (status.state === 'complete') {
+    return `Last run replayed ${status.replayed} of ${status.total} capture(s) and processed ${
+      status.segments
+    } session segment(s)${
+      status.failed > 0 ? `; ${status.failed} failed.` : '.'
+    }`
+  }
+  if (status.state === 'failed') {
+    return `Re-index failed: ${status.error ?? 'unknown error'}`
+  }
+  return null
+}
+
 /**
  * Settings edits the server's configuration.
  *
@@ -45,6 +62,11 @@ export function Settings() {
   const qc = useQueryClient()
   const config = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const status = useQuery({ queryKey: ['status'], queryFn: api.status })
+  const captureReindex = useQuery({
+    queryKey: ['capture-reindex'],
+    queryFn: api.captureReindexStatus,
+    refetchInterval: (query) => query.state.data?.state === 'running' ? 500 : false,
+  })
 
   // An empty filter, so the identity is read over all history rather than the
   // current range:
@@ -57,6 +79,7 @@ export function Settings() {
 
   const [restart, setRestart] = useState<string[]>([])
   const [failed, setFailed] = useState<string | null>(null)
+  const lastReindexRefresh = useRef<string | undefined>(undefined)
 
   const save = useMutation({
     mutationFn: (patch: Partial<Config>) => api.saveSettings(patch),
@@ -70,6 +93,26 @@ export function Settings() {
     // the field and the legal range.
     onError: (e: unknown) => setFailed(e instanceof Error ? e.message : String(e)),
   })
+
+  const startReindex = useMutation({
+    mutationFn: api.startCaptureReindex,
+    onSuccess: (result) => {
+      setFailed(null)
+      qc.setQueryData(['capture-reindex'], result)
+    },
+    onError: (e: unknown) => setFailed(e instanceof Error ? e.message : String(e)),
+  })
+
+  useEffect(() => {
+    const finished = captureReindex.data?.finishedAt
+    if (!finished || finished === lastReindexRefresh.current) return
+    lastReindexRefresh.current = finished
+    // Re-indexing can change any historical aggregate, list, or facet. Settings,
+    // live status, and the job itself are process state rather than indexed data.
+    qc.invalidateQueries({
+      predicate: (query) => !['settings', 'status', 'capture-reindex'].includes(String(query.queryKey[0])),
+    })
+  }, [captureReindex.data?.finishedAt, qc])
 
   if (config.isLoading) return <Loading />
   if (config.isError) return <ErrorNote error={config.error} />
@@ -202,6 +245,45 @@ export function Settings() {
                 </option>
               ))}
             </select>
+          </div>
+        </div>
+
+        <div className="setting">
+          <div className="setting-label">
+            Re-index saved captures
+            <span className="setting-hint">
+              Replays every saved capture through this build's collector. Existing
+              sessions are updated rather than duplicated. Intended for debugging
+              ingestion changes; disconnect from iRacing before starting.
+            </span>
+            {captureReindex.data && captureReindexMessage(captureReindex.data) && (
+              <span className={`setting-hint${captureReindex.data.state === 'failed' ? ' status-bad' : ''}`}>
+                {captureReindexMessage(captureReindex.data)}
+              </span>
+            )}
+            {captureReindex.data?.failures?.map((failure) => (
+              <span className="setting-hint mono" key={failure.file}>
+                {failure.file}: {failure.error}
+              </span>
+            ))}
+          </div>
+          <div className="setting-control">
+            <button
+              type="button"
+              className="control"
+              disabled={
+                status.data?.connected === true ||
+                captureReindex.data?.state === 'running' ||
+                startReindex.isPending
+              }
+              onClick={() => {
+                if (window.confirm(
+                  'Replay every saved capture into the current database? Existing sessions will be updated.',
+                )) startReindex.mutate()
+              }}
+            >
+              {captureReindex.data?.state === 'running' ? 'Re-indexing…' : 'Re-index captures'}
+            </button>
           </div>
         </div>
 

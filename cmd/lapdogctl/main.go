@@ -8,19 +8,15 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
-	"sort"
 	"strconv"
 	"time"
 
 	"github.com/blezek/lapdog/internal/api"
-	"github.com/blezek/lapdog/internal/capture"
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
-	"github.com/blezek/lapdog/internal/source"
+	"github.com/blezek/lapdog/internal/reindex"
 	"github.com/blezek/lapdog/internal/store"
 	"github.com/blezek/lapdog/internal/version"
 )
@@ -109,14 +105,10 @@ func run(cmd string, args []string) error {
 // This is the same code path the live application uses, with the replay source
 // substituted for the shared-memory reader. Nothing about ingestion is bypassed.
 func ingest(dir, dbPath string) error {
-	paths, err := filepath.Glob(filepath.Join(dir, "*"+capture.Ext))
+	paths, err := reindex.Discover(dir)
 	if err != nil {
 		return err
 	}
-	if len(paths) == 0 {
-		return fmt.Errorf("no capture files in %s", dir)
-	}
-	sort.Strings(paths)
 
 	st, err := store.Open(dbPath)
 	if err != nil {
@@ -124,57 +116,23 @@ func ingest(dir, dbPath string) error {
 	}
 	defer st.Close()
 
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	start := time.Now()
-	var failures int
-
-	for i, path := range paths {
-		src, err := source.NewReplay(path)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "  %s: %v\n", filepath.Base(path), err)
-			failures++
-			continue
-		}
-
-		// The clock supplies each segment's started_at. Deriving it from the
-		// capture's filename timestamp keeps an ingested dataset's dates matching
-		// the history it represents, rather than stamping everything with now.
-		//
-		// The per-capture offset matters: an offline session's key is
-		// "offline/<num>/<started_at>" at one-second resolution, because that is
-		// all the live application ever needs. Bulk ingest processes many captures
-		// within the same second, so without a distinct time per capture two
-		// offline sessions would collide on that key and the second would silently
-		// overwrite the first.
-		started := timeFromName(filepath.Base(path)).Add(time.Duration(i) * time.Second)
-
-		c, err := collector.New(collector.Options{
-			Source:   src,
-			Store:    st,
-			Clock:    collector.NewFakeClock(started),
-			Interval: time.Second,
-			// Captures are already-recorded history, so nothing is discarded for
-			// being short; that filter belongs to live recording.
-			MinSession: 0,
-			Logger:     log,
-		})
-		if err != nil {
-			src.Close()
-			return err
-		}
-		if err := c.Run(context.Background()); err != nil {
-			fmt.Fprintf(os.Stderr, "  %s: %v\n", filepath.Base(path), err)
-			failures++
-		}
-		src.Close()
-
-		if (i+1)%50 == 0 || i+1 == len(paths) {
-			fmt.Printf("\r  %d/%d captures", i+1, len(paths))
-		}
+	result, err := reindex.Run(context.Background(), paths, st, reindex.Options{
+		OnProgress: func(p reindex.Progress) {
+			if p.Processed > 0 && (p.Processed%50 == 0 || p.Processed == p.Total) {
+				fmt.Printf("\r  %d/%d captures", p.Processed, p.Total)
+			}
+		},
+	})
+	if err != nil {
+		return err
 	}
-	fmt.Printf("\n\nIngested %d captures in %s", len(paths)-failures, time.Since(start).Round(time.Millisecond))
-	if failures > 0 {
-		fmt.Printf(" (%d failed)", failures)
+	for _, failure := range result.Failures {
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", failure.File, failure.Error)
+	}
+	fmt.Printf("\n\nIngested %d captures in %s", result.Replayed, time.Since(start).Round(time.Millisecond))
+	if result.Failed > 0 {
+		fmt.Printf(" (%d failed)", result.Failed)
 	}
 	fmt.Println()
 	return summaryOf(st)
@@ -183,21 +141,7 @@ func ingest(dir, dbPath string) error {
 // timeFromName recovers the start time a generated capture encodes in its
 // filename, falling back to now when the name carries no timestamp.
 func timeFromName(name string) time.Time {
-	for _, layout := range []struct {
-		format string
-		length int
-	}{
-		{"20060102T150405Z", 16}, // live capture: 20260812T014837Z
-		{"20060102-150405", 15},  // generated capture
-	} {
-		if len(name) < layout.length {
-			continue
-		}
-		if t, err := time.Parse(layout.format, name[:layout.length]); err == nil {
-			return t.UTC()
-		}
-	}
-	return time.Now().UTC()
+	return reindex.TimeFromName(name, time.Now().UTC())
 }
 
 func summary(dbPath string) error {

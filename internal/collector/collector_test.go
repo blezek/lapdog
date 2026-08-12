@@ -860,6 +860,28 @@ func (emptySource) Next() (source.Frame, error) { return source.Frame{}, io.EOF 
 func (emptySource) Meta() capture.Meta          { return capture.Meta{} }
 func (emptySource) Close() error                { return nil }
 
+type errorSource struct{ err error }
+
+func (s errorSource) Next() (source.Frame, error) { return source.Frame{}, s.err }
+func (errorSource) Meta() capture.Meta            { return capture.Meta{} }
+func (errorSource) Close() error                  { return nil }
+
+func TestRunStopOnErrorReturnsSourceFailure(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	want := errors.New("damaged replay")
+	c, err := New(Options{Source: errorSource{err: want}, Store: st, StopOnError: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Run(context.Background()); !errors.Is(err, want) {
+		t.Errorf("Run error = %v, want %v", err, want)
+	}
+}
+
 type blockingContextSource struct {
 	started chan struct{}
 }

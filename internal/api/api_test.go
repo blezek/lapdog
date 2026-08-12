@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -20,6 +21,7 @@ import (
 	"github.com/blezek/lapdog/internal/config"
 	"github.com/blezek/lapdog/internal/irsdk"
 	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/synth"
 	"github.com/blezek/lapdog/internal/web/webtest"
 )
 
@@ -46,6 +48,33 @@ func (f fakeStatus) Status() collector.Status { return f.s }
 
 func (f fakeStatus) Live() collector.Live {
 	return collector.Live{Status: f.s, Frame: f.frame}
+}
+
+type pausableStatus struct {
+	mu    sync.Mutex
+	s     collector.Status
+	calls []bool
+}
+
+func (p *pausableStatus) Status() collector.Status {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.s
+}
+
+func (p *pausableStatus) Live() collector.Live { return collector.Live{Status: p.Status()} }
+
+func (p *pausableStatus) SetPaused(paused bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.s.Paused = paused
+	p.calls = append(p.calls, paused)
+}
+
+func (p *pausableStatus) pauseCalls() []bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]bool(nil), p.calls...)
 }
 
 // stationaryCarFrame is a frame with speed present and zero, gear absent
@@ -628,6 +657,98 @@ func TestSettingsRejectsWrongMethod(t *testing.T) {
 	}
 	if allow := rec.Header().Get("Allow"); allow == "" {
 		t.Error("405 response has no Allow header")
+	}
+}
+
+func TestCaptureReindexRefusesConnectedSimulator(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	if rec.Code != http.StatusConflict {
+		t.Errorf("status = %d, want 409 while connected; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCaptureReindexReportsNoSavedCaptures(t *testing.T) {
+	_, st, cfg := newTestServer(t)
+	srv := New(st, fakeStatus{s: collector.Status{Connected: false}}, cfg,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h, err := srv.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400 with no captures; body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestCaptureReindexRunsInBackgroundAndReportsResult(t *testing.T) {
+	_, st, cfg := newTestServer(t)
+	capturesDir := config.CapturesDir(filepath.Dir(st.Path()))
+	if err := os.MkdirAll(capturesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	name := "20260812T014837Z-public-practice.lpd"
+	fixtureDir := t.TempDir()
+	if _, err := synth.WriteFixtures(fixtureDir); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(fixtureDir, "public-practice.lpd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(capturesDir, name), body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	provider := &pausableStatus{s: collector.Status{Connected: false}}
+	srv := New(st, provider, cfg,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	h, err := srv.Handler()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); got != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", got)
+	}
+	if calls := provider.pauseCalls(); len(calls) == 0 || !calls[0] {
+		t.Fatalf("first SetPaused call after POST = %v, want true", calls)
+	}
+
+	var status captureReindexStatus
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		get(t, h, "/api/captures/reindex", &status)
+		if status.State != "running" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if status.State != "complete" || status.Total != 1 || status.Replayed != 1 || status.Segments != 1 || status.Failed != 0 {
+		t.Fatalf("status = %+v", status)
+	}
+	if calls := provider.pauseCalls(); len(calls) != 2 || !calls[0] || calls[1] {
+		t.Errorf("SetPaused calls = %v, want [true false]", calls)
+	}
+	rows, _, err := st.ListSessions(store.Filter{Limit: 100})
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, row := range rows {
+		if row.CaptureFile != nil && *row.CaptureFile == name {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no indexed session retained capture filename %q", name)
 	}
 }
 
