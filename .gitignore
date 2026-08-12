@@ -30,6 +30,10 @@ internal/web/dist/*
 # Worktrees live here (CLAUDE.md), and are never repository content.
 /worktrees/
 
+# The $worktree skill's own directory is real content, not a worktree. A personal
+# global ignore of the bare word "worktree" otherwise catches it; re-include it.
+!/.agents/skills/worktree/
+
 # Real data drops off the Windows machine: databases, logs and captures carrying a
 # genuine iRacing customer id, the driver's name, and every opponent in the field.
 #

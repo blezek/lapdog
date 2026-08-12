@@ -1,0 +1,4 @@
+interface:
+  display_name: "Worktree"
+  short_description: "Name a branch from a description and check it out under ./worktrees"
+  default_prompt: "Use $worktree <describe the work> to start it in an isolated worktree under ./worktrees."
