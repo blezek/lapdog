@@ -273,6 +273,10 @@ h1 {
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  margin-bottom: 8px;
+}
+
+.filters-wrap {
   margin-bottom: 16px;
 }
 
@@ -307,6 +311,127 @@ h1 {
 .control-active {
   border-color: var(--accent);
   color: var(--text-primary);
+}
+
+.filter-menu {
+  position: relative;
+}
+
+.filter-menu > summary {
+  list-style: none;
+  white-space: nowrap;
+}
+
+.filter-menu > summary::-webkit-details-marker {
+  display: none;
+}
+
+.filter-menu > summary::after {
+  content: '▾';
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.filter-menu.control-active > summary {
+  border-color: var(--accent);
+  color: var(--text-primary);
+}
+
+.filter-menu-panel {
+  position: absolute;
+  z-index: 50;
+  top: calc(100% + 6px);
+  left: 0;
+  width: 280px;
+  max-width: 88vw;
+  padding: 9px;
+  background: var(--surface-1);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.18);
+}
+
+.filter-search,
+.filter-sets input,
+.filter-sets select {
+  min-width: 0;
+  color: var(--text-primary);
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 12.5px;
+}
+
+.filter-search {
+  width: 100%;
+  margin-bottom: 7px;
+}
+
+.filter-options {
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.filter-option {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 6px;
+  border-radius: 5px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.filter-option:hover {
+  color: var(--text-primary);
+  background: var(--surface-2);
+}
+
+.filter-none {
+  display: block;
+  padding: 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.filter-sets {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ring);
+}
+
+.filter-sets-title {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.filter-sets select {
+  max-width: 210px;
+}
+
+.filter-sets input {
+  width: 180px;
+}
+
+.control:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.control.danger:not(:disabled) {
+  color: var(--status-bad, #b42318);
+}
+
+@media (max-width: 720px) {
+  .filter-sets {
+    flex-wrap: wrap;
+  }
 }
 
 .matched {

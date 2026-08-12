@@ -46,10 +46,10 @@ func parseFilter(q url.Values) (store.Filter, error) {
 	f.EventContext = listParam(q, "event_context")
 
 	var err error
-	if f.TrackID, err = intParam(q, "track_id"); err != nil {
+	if f.TrackIDs, err = intListParam(q, "track_id"); err != nil {
 		return f, err
 	}
-	if f.CarID, err = intParam(q, "car_id"); err != nil {
+	if f.CarIDs, err = intListParam(q, "car_id"); err != nil {
 		return f, err
 	}
 	if f.LeagueID, err = intParam(q, "league_id"); err != nil {
@@ -90,6 +90,23 @@ func parseFilter(q url.Values) (store.Filter, error) {
 		f.Offset = n
 	}
 	return f, nil
+}
+
+func intListParam(q url.Values, key string) ([]int, error) {
+	parts := listParam(q, key)
+	out := make([]int, 0, len(parts))
+	seen := map[int]bool{}
+	for _, raw := range parts {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 {
+			return nil, fmt.Errorf("%w: %s must contain non-negative integers", ErrBadRequest, key)
+		}
+		if !seen[n] {
+			seen[n] = true
+			out = append(out, n)
+		}
+	}
+	return out, nil
 }
 
 func parseLapFilter(q url.Values) (store.LapFilter, error) {

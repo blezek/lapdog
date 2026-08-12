@@ -41,22 +41,22 @@ describe('pageFilter', () => {
     // /cars?car=105 is reachable by a bookmark or a hand-edited URL even though
     // the car dropdown is hidden, and left in place it collapsed the left-hand
     // list to the single car being chosen from.
-    const cars = pageFilter({ carId: 105, trackId: 18, from: '2026-01-01' }, 'car')
-    expect(cars.carId).toBeUndefined()
-    expect(cars.trackId).toBe(18)
+    const cars = pageFilter({ carIds: [105], trackIds: [18], from: '2026-01-01' }, 'car')
+    expect(cars.carIds).toBeUndefined()
+    expect(cars.trackIds).toEqual([18])
     expect(cars.from).toBe('2026-01-01')
 
     // The mirror image: "this track, in this car" stays expressible.
-    const tracks = pageFilter({ carId: 105, trackId: 18 }, 'track')
-    expect(tracks.trackId).toBeUndefined()
-    expect(tracks.carId).toBe(105)
+    const tracks = pageFilter({ carIds: [105], trackIds: [18] }, 'track')
+    expect(tracks.trackIds).toBeUndefined()
+    expect(tracks.carIds).toEqual([105])
   })
 
   it('does not mutate the filter it was given', () => {
     // The filter is memoised by useFilter and shared with every other query on
     // the page, so mutating it in place would strip the dimension from all of them.
-    const original = { carId: 105 }
+    const original = { carIds: [105] }
     pageFilter(original, 'car')
-    expect(original.carId).toBe(105)
+    expect(original.carIds).toEqual([105])
   })
 })

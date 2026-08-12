@@ -1,11 +1,12 @@
 import { useEffect } from 'react'
-import { NavLink, Navigate, Route, Routes } from 'react-router-dom'
+import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from './api'
 import { applyTheme } from './theme'
 import { Icon } from './components/ui'
 import { hm } from './format'
+import { filterParams } from './useFilter'
 
 import { Live } from './pages/Live'
 import { Dashboard } from './pages/Dashboard'
@@ -33,6 +34,9 @@ const nav = [
 ]
 
 export function App() {
+  const location = useLocation()
+  const sharedSearch = filterParams(new URLSearchParams(location.search)).toString()
+  const routeTo = (pathname: string) => ({ pathname, search: sharedSearch ? `?${sharedSearch}` : '' })
   // The theme preference lives in settings, so it is applied as soon as it loads.
   const { data: config } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   useEffect(() => {
@@ -50,7 +54,7 @@ export function App() {
         {nav.map((item) => (
           <NavLink
             key={item.to}
-            to={item.to}
+            to={routeTo(item.to)}
             className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
           >
             <Icon name={item.icon} />
@@ -60,7 +64,7 @@ export function App() {
 
         <div className="nav-spacer" />
         <NavLink
-          to="/settings"
+          to={routeTo('/settings')}
           className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
         >
           <Icon name="cog" />
@@ -72,7 +76,7 @@ export function App() {
 
       <main className="main">
         <Routes>
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          <Route path="/" element={<Navigate to={routeTo('/dashboard')} replace />} />
           <Route path="/live" element={<Live />} />
           <Route path="/dashboard" element={<Dashboard />} />
           <Route path="/cars" element={<EntityPage dimension="car" />} />
@@ -81,7 +85,7 @@ export function App() {
           <Route path="/laps" element={<Laps />} />
           <Route path="/export" element={<Export />} />
           <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<Navigate to="/dashboard" replace />} />
+          <Route path="*" element={<Navigate to={routeTo('/dashboard')} replace />} />
         </Routes>
       </main>
     </div>

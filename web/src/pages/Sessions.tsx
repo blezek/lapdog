@@ -24,7 +24,7 @@ import { Filters } from '../components/Filters'
  * matched, and the right pane shows the selected session in full.
  */
 export function Sessions() {
-  const { filter, state, toggleIn, update } = useFilter()
+  const { filter, state, toggleIn } = useFilter()
   const [selected, setSelected] = useState<number | null>(null)
 
   const list = useQuery({
@@ -95,10 +95,10 @@ export function Sessions() {
                     border: 0,
                     width: '100%',
                     font: 'inherit',
-                    color: state.trackId === t.id ? 'var(--accent)' : undefined,
+                    color: state.trackIds?.includes(t.id) ? 'var(--accent)' : undefined,
                   }}
                   onClick={() =>
-                    update({ track: state.trackId === t.id ? undefined : String(t.id) })
+                    toggleIn('track', String(t.id))
                   }
                 >
                   {t.name}

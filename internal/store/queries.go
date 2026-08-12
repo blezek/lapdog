@@ -23,6 +23,8 @@ type Filter struct {
 	TrackID  *int
 	CarID    *int
 	LeagueID *int
+	TrackIDs []int
+	CarIDs   []int
 
 	// HourFrom and HourTo bound the local hour of day a session started, each
 	// inclusive and each optional, so "evenings" is 18..23 and "before noon" is
@@ -86,9 +88,21 @@ func (f Filter) where() (string, []any) {
 		conds = append(conds, "s.track_id = ?")
 		args = append(args, *f.TrackID)
 	}
+	if len(f.TrackIDs) > 0 {
+		conds = append(conds, "s.track_id IN ("+placeholders(len(f.TrackIDs))+")")
+		for _, id := range f.TrackIDs {
+			args = append(args, id)
+		}
+	}
 	if f.CarID != nil {
 		conds = append(conds, "s.car_id = ?")
 		args = append(args, *f.CarID)
+	}
+	if len(f.CarIDs) > 0 {
+		conds = append(conds, "s.car_id IN ("+placeholders(len(f.CarIDs))+")")
+		for _, id := range f.CarIDs {
+			args = append(args, id)
+		}
 	}
 	if f.LeagueID != nil {
 		conds = append(conds, "s.league_id = ?")

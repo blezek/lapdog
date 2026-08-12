@@ -33,6 +33,32 @@ Deliberately excluded, and recorded as such in the specs: `.ibt` file import, se
 
 ---
 
+## 2026-08-12 — shared, reusable multi-value filters
+
+Historical views now carry their filter query when navigating between pages, while
+page-local state such as the selected entity or table page is deliberately dropped.
+Cars and tracks accept multiple selections: values within one dimension are ORed,
+and the car and track dimensions are ANDed together. Entity pages continue to own
+their displayed dimension, so a Cars page ignores the carried car constraint while
+retaining a carried track constraint, and vice versa.
+
+The shared filter row replaces the single-value car and track selects with searchable
+checkbox menus. Named filter sets can be saved, loaded and deleted; they live in the
+browser's local storage, keeping this local configuration out of the database and
+preserving LapDog's one-file data model. Loading a set replaces the current filter
+query rather than merging it with hidden state.
+
+The backend accepts both repeated and comma-separated car and track ids and builds
+parameterised `IN` predicates for each dimension. A real-Chrome exercise selected two
+cars and two tracks, saved and reloaded the set, navigated to Sessions, verified that
+the filters propagated without the local selection, and deleted the set. All Go and
+web tests, the production web build, TypeScript check, Windows cross-build/embed check,
+and the collector race suite pass. Disabling the multi-track predicate, list parsing,
+query serialization, route filtering, same-name update or deletion made its
+corresponding regression fail.
+
+---
+
 ## 2026-08-11 — recovered missing driving time from real captures
 
 Twelve private captures in `ignore/captures` exposed three interacting ingestion defects. Session YAML containing Windows-1252 driver-name bytes was rejected by the UTF-8 YAML parser; after a prior valid document had been cached, the collector silently retained its stale `DriverCarIdx` and could read another car's track surface. Separately, reconnecting to the same online session key replaced the earlier accumulated counters, and `lapdogctl ingest` did not recognise the timestamp form used by live capture filenames.

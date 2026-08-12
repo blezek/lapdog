@@ -347,8 +347,8 @@ export interface Filter {
   to?: string
   sessionType?: string[]
   eventContext?: string[]
-  trackId?: number
-  carId?: number
+  trackIds?: number[]
+  carIds?: number[]
   leagueId?: number
   /** Inclusive local hour-of-day bounds, 0..23. Either may stand alone. */
   hourFrom?: number
@@ -371,8 +371,8 @@ export function toQuery(f: Filter, extra: Record<string, string> = {}): string {
   if (f.to) q.set('to', f.to)
   if (f.sessionType?.length) q.set('session_type', f.sessionType.join(','))
   if (f.eventContext?.length) q.set('event_context', f.eventContext.join(','))
-  if (f.trackId != null) q.set('track_id', String(f.trackId))
-  if (f.carId != null) q.set('car_id', String(f.carId))
+  if (f.trackIds?.length) q.set('track_id', f.trackIds.join(','))
+  if (f.carIds?.length) q.set('car_id', f.carIds.join(','))
   if (f.leagueId != null) q.set('league_id', String(f.leagueId))
   if (f.hourFrom != null) q.set('hour_from', String(f.hourFrom))
   if (f.hourTo != null) q.set('hour_to', String(f.hourTo))

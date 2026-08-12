@@ -7,7 +7,7 @@
  * what makes an export match what is on screen.
  */
 
-import { useCallback, useMemo } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Filter } from './api'
 import {
@@ -48,6 +48,70 @@ export interface FilterState extends Filter {
 }
 
 const DEFAULT_RANGE: RangeId = '90'
+const SAVED_FILTERS_KEY = 'lapdog.savedFilters.v1'
+
+export const filterParamKeys = new Set([
+  'range', 'from', 'to', 'type', 'context', 'track', 'car', 'league',
+  'hf', 'ht', 'dow', 'ai',
+])
+
+export interface SavedFilterSet {
+  id: string
+  name: string
+  query: string
+}
+
+/** filterParams drops page-local state such as an entity selection or table page. */
+export function filterParams(input: URLSearchParams): URLSearchParams {
+  const out = new URLSearchParams()
+  for (const [key, value] of input) {
+    if (filterParamKeys.has(key)) out.append(key, value)
+  }
+  return out
+}
+
+export function readSavedFilterSets(storage: Pick<Storage, 'getItem'>): SavedFilterSet[] {
+  try {
+    const raw = storage.getItem(SAVED_FILTERS_KEY)
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((x): x is SavedFilterSet => {
+      if (typeof x !== 'object' || x == null) return false
+      const item = x as Record<string, unknown>
+      return typeof item.id === 'string' && typeof item.name === 'string' && typeof item.query === 'string'
+    })
+  } catch {
+    return []
+  }
+}
+
+export function writeSavedFilterSets(
+  storage: Pick<Storage, 'setItem'>,
+  sets: SavedFilterSet[],
+) {
+  storage.setItem(SAVED_FILTERS_KEY, JSON.stringify(sets))
+}
+
+export function upsertSavedFilterSet(
+  sets: SavedFilterSet[],
+  name: string,
+  query: string,
+  newID: string,
+): { sets: SavedFilterSet[]; id: string } {
+  const existing = sets.find((s) => s.name.toLocaleLowerCase() === name.toLocaleLowerCase())
+  const id = existing?.id ?? newID
+  return {
+    id,
+    sets: existing
+      ? sets.map((s) => s.id === id ? { ...s, name, query } : s)
+      : [...sets, { id, name, query }],
+  }
+}
+
+export function removeSavedFilterSet(sets: SavedFilterSet[], id: string): SavedFilterSet[] {
+  return sets.filter((s) => s.id !== id)
+}
 
 /**
  * rangeBounds turns a preset into the from/to dates to send the server.
@@ -118,8 +182,8 @@ export function useFilter() {
       to: bounds.to,
       sessionType: list('type'),
       eventContext: list('context'),
-      trackId: int('track'),
-      carId: int('car'),
+      trackIds: intList('track'),
+      carIds: intList('car'),
       leagueId: int('league'),
       hourFrom: int('hf'),
       hourTo: int('ht'),
@@ -157,6 +221,39 @@ export function useFilter() {
     setParams(new URLSearchParams(), { replace: false })
   }, [setParams])
 
+  const [savedSets, setSavedSets] = useState<SavedFilterSet[]>(() =>
+    typeof localStorage === 'undefined' ? [] : readSavedFilterSets(localStorage),
+  )
+
+  const saveSet = useCallback((name: string): string | null => {
+    const trimmed = name.trim()
+    if (!trimmed || typeof localStorage === 'undefined') return null
+    const query = filterParams(params).toString()
+    const result = upsertSavedFilterSet(
+      savedSets,
+      trimmed,
+      query,
+      globalThis.crypto?.randomUUID?.() ?? `${Date.now()}`,
+    )
+    writeSavedFilterSets(localStorage, result.sets)
+    setSavedSets(result.sets)
+    return result.id
+  }, [params, savedSets])
+
+  const loadSet = useCallback((id: string) => {
+    const found = savedSets.find((s) => s.id === id)
+    if (!found) return false
+    setParams(new URLSearchParams(found.query), { replace: false })
+    return true
+  }, [savedSets, setParams])
+
+  const deleteSet = useCallback((id: string) => {
+    if (typeof localStorage === 'undefined') return
+    const next = removeSavedFilterSet(savedSets, id)
+    writeSavedFilterSets(localStorage, next)
+    setSavedSets(next)
+  }, [savedSets])
+
   /** filter is the plain Filter to send to the API. */
   const filter: Filter = useMemo(() => {
     const { range: _range, ...rest } = state
@@ -167,8 +264,8 @@ export function useFilter() {
     return (
       (state.sessionType?.length ?? 0) > 0 ||
       (state.eventContext?.length ?? 0) > 0 ||
-      state.trackId != null ||
-      state.carId != null ||
+      (state.trackIds?.length ?? 0) > 0 ||
+      (state.carIds?.length ?? 0) > 0 ||
       state.leagueId != null ||
       state.hourFrom != null ||
       state.hourTo != null ||
@@ -178,5 +275,5 @@ export function useFilter() {
     )
   }, [state])
 
-  return { state, filter, update, toggleIn, clear, active, params }
+  return { state, filter, update, toggleIn, clear, active, params, savedSets, saveSet, loadSet, deleteSet }
 }
