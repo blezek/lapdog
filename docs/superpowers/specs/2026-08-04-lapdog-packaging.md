@@ -165,7 +165,7 @@ Alternatives:
 | Start with Windows | Checkbox, default on, writes the same `HKCU` Run key the app manages | The app already owns this setting, so the installer writes the identical value rather than a competing mechanism. |
 | Uninstaller | Registered under `HKCU` Uninstall so it appears in Settings → Apps | |
 | Data on uninstall | **Kept by default**, with an explicit opt-in checkbox to delete | Years of racing history must not be destroyed by an uninstall. Deleting it is the user's decision, made deliberately. |
-| Running instance | Detected and the user asked to quit before proceeding | Overwriting a running executable fails on Windows. |
+| Running instance | Asked to stop through its tray window; installer waits for process exit before proceeding | Overwriting a running executable fails on Windows, and the process needs time to flush its active session. |
 | Upgrade | Same product key overwrites in place; settings and database untouched | |
 | Architecture guard | Refuses to run on non-64-bit Windows | |
 

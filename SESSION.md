@@ -20,13 +20,13 @@ dist/lapdog-0.1.0-setup.exe                4.7 MB, payload confirmed present
 .dataset.db                               1331 sessions, 1242.6 driving hours, schema 2
 ```
 
-**Live telemetry, driving, laps, position events and online identity all have real-simulator captures** as of 2026-08-11. Replaying those captures now accounts for 1.4805 driving hours on 2026-08-12 UTC, matching the raw telemetry calculation. **Installing the installer remains unverified and needs the Windows machine.**
+**Live telemetry, driving, laps, position events and online identity all have real-simulator captures** as of 2026-08-11. Replaying those captures now accounts for 1.4805 driving hours on 2026-08-12 UTC, matching the raw telemetry calculation. An installer upgrade has now been attempted on Windows; it failed to replace the running executable, and the corrected shutdown path needs a second Windows run.
 
 ## Picking it up next
 
 1. **Install the telemetry fix and rebuild the Windows database from its captures.** `ToDo.md` has the recovery command and verification totals.
 2. **Add a git remote and push.** Everything is on one disk and CI has never actually run.
-3. **Install the installer** on the Windows machine — does it land correctly, register uninstall, start the tray app?
+3. **Re-test an installer upgrade with LapDog running** — does it stop cleanly, replace the executable and launch the new version?
 5. **Consider one calendar row per year** for the "All time" heatmap, the only way that range gets larger cells.
 
 Deliberately excluded, and recorded as such in the specs: `.ibt` file import, sector times, true overtake detection from `CarIdxLapDistPct`, and setup tracking. Central hub upload is no longer excluded but not designed — see `docs/server-design-brainstorming.md`.
@@ -311,4 +311,3 @@ Accumulated across every day above, because each was learned by getting it wrong
 - **Real data disagrees with synthetic data in ways fixtures cannot predict.** The generator gave every driver a plausible iRating; the simulator reports `IRating: 1` and `"R 0.01"` offline. No amount of local testing would have surfaced that — only a capture from the real thing.
 - **A fixture that does not reproduce the awkward part of reality lets its own fix be deleted.** The generator gave offline drivers plausible ratings, so the gate discarding real placeholders could have been removed with every test still passing. Fidelity to the ugly detail is what makes the test discriminating.
 - **Look for what is correct, not only what is broken.** Three of the five anomalies in the first real data drop were the system behaving properly: zero driving time from sitting in the pits, and "not connected" lines that fell entirely between sessions. Chasing any of them would have been wasted work, and "fixing" them would have introduced bugs.
-

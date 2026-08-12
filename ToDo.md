@@ -149,5 +149,5 @@ On a database that predates the migration the panels are **absent** rather than 
 ## Also outstanding, unrelated to telemetry
 
 - **No git remote.** Everything is local only, and the CI workflow has never actually run — it is verified to parse and `make ci` passes, nothing more.
-- **The installer has never been installed.** `make build` produces `lapdog-0.1.0-setup.exe` and the payload is confirmed present, but whether it installs, registers uninstall and starts the tray app is untested. Needs the same Windows machine.
+- **Re-test an installer upgrade while LapDog is running.** The first Windows attempt failed to replace the live executable because the installer searched for a visible window titled `LapDog`; a tray application has no such window. It now closes LapDog through the tray library's hidden window and waits for the process to finish flushing before replacement. Confirm that the running app exits, the file is replaced and the finish-page launch starts the new version.
 - **Server-side collection** is parked in `docs/server-design-brainstorming.md`. No action pending.

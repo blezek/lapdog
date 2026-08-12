@@ -46,7 +46,71 @@ SetCompressor /SOLID lzma
 
 !include "MUI2.nsh"
 !include "LogicLib.nsh"
+!include "WinMessages.nsh"
 !include "x64.nsh"
+
+; fyne.io/systray creates this hidden top-level window. LapDog's process path is
+; checked before the window is used: the class is shared by other applications
+; using the library, so the class name alone does not identify LapDog.
+!define SYSTRAYCLASS "SystrayClass"
+; PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE.
+!define PROCESS_ACCESS 0x00101000
+!define WAIT_OBJECT_0 0
+!define STOP_TIMEOUT_MS 5000
+
+; Ask the installed LapDog process to close through its tray window, then wait
+; for the process itself rather than merely waiting for the window to disappear.
+; The window is destroyed before main finishes flushing the active session, so
+; copying lapdog.exe as soon as FindWindow returns zero still races shutdown.
+!macro StopRunningFunction PREFIX
+Function ${PREFIX}StopRunningLapDog
+  retry:
+  StrCpy $5 0
+
+  find_window:
+  FindWindow $0 "${SYSTRAYCLASS}" "" 0 $5
+  ${If} $0 == 0
+    Return
+  ${EndIf}
+  StrCpy $5 $0
+
+  ; Several applications use fyne.io/systray. Match the process image to the
+  ; selected installation directory before sending anything to its window.
+  System::Call 'user32.dll::GetWindowThreadProcessId(p r0, *i .r1) i'
+  System::Call 'kernel32.dll::OpenProcess(i ${PROCESS_ACCESS}, i 0, i r1) p .r2'
+  ${If} $2 == 0
+    Goto find_window
+  ${EndIf}
+
+  StrCpy $3 ${NSIS_MAX_STRLEN}
+  System::Call 'kernel32.dll::QueryFullProcessImageNameW(p r2, i 0, w .r4, *i r3) i .r3'
+  ${If} $3 == 0
+    System::Call 'kernel32.dll::CloseHandle(p r2)'
+    Goto find_window
+  ${EndIf}
+  ${If} $4 != "$INSTDIR\${EXENAME}"
+    System::Call 'kernel32.dll::CloseHandle(p r2)'
+    Goto find_window
+  ${EndIf}
+
+  DetailPrint "Stopping ${APPNAME}..."
+  SendMessage $0 ${WM_CLOSE} 0 0 /TIMEOUT=2000
+  System::Call 'kernel32.dll::WaitForSingleObject(p r2, i ${STOP_TIMEOUT_MS}) i .r3'
+  System::Call 'kernel32.dll::CloseHandle(p r2)'
+  ${If} $3 == ${WAIT_OBJECT_0}
+    DetailPrint "${APPNAME} stopped."
+    Return
+  ${EndIf}
+
+  MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
+    "${APPNAME} did not stop. Quit it from the tray icon, then choose Retry." \
+    IDRETRY retry
+  Abort "Operation cancelled: ${APPNAME} is still running."
+FunctionEnd
+!macroend
+
+!insertmacro StopRunningFunction ""
+!insertmacro StopRunningFunction "un."
 
 VIProductVersion "${VERSION}.0"
 VIAddVersionKey "ProductName" "${APPNAME}"
@@ -85,16 +149,9 @@ Function .onInit
 FunctionEnd
 
 Section "-CheckRunning"
-  ; Windows will not let a running executable be overwritten, so ask the user to
-  ; quit rather than failing partway through with an opaque error.
-  retry:
-  FindWindow $0 "" "${APPNAME}"
-  ${If} $0 != 0
-    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION \
-      "${APPNAME} is running. Quit it from the tray icon, then choose Retry." \
-      IDRETRY retry
-    Abort "Installation cancelled: ${APPNAME} is still running."
-  ${EndIf}
+  ; Windows will not overwrite a running executable. Stop it before the core
+  ; section tries to replace the file.
+  Call StopRunningLapDog
 SectionEnd
 
 Section "${APPNAME}" SecCore
@@ -152,6 +209,9 @@ SectionEnd
 
 Section "un.${APPNAME}" UnSecCore
   SectionIn RO
+
+  ; Uninstalling has the same locked-executable failure mode as upgrading.
+  Call un.StopRunningLapDog
 
   Delete "$INSTDIR\${EXENAME}"
   Delete "$INSTDIR\uninstall.exe"
