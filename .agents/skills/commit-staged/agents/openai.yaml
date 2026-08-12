@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit Staged"
+  short_description: "Commit exactly the curated Git index safely"
+  default_prompt: "Use $commit-staged to review and commit exactly what is staged."

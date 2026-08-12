@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bump Version"
+  short_description: "Prepare and publish a verified LapDog release"
+  default_prompt: "Use $bump-version to prepare the next LapDog release tag."
