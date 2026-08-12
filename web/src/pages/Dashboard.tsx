@@ -411,8 +411,8 @@ function signedFixed(v: number, digits: number): string {
 function CarAndTrackBreakdown() {
   const { filter, state } = useFilter()
 
-  const oneCar = state.carId != null
-  const oneTrack = state.trackId != null
+  const oneCar = state.carIds?.length === 1
+  const oneTrack = state.trackIds?.length === 1
 
   const carTitle = oneCar
     ? 'Where this car was driven, by track'

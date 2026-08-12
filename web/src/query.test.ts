@@ -3,6 +3,11 @@ import { toQuery } from './api'
 import { isEmptyArray, keepPrevious, viewState } from './query'
 
 describe('toQuery time filters', () => {
+  it('emits multiple cars and tracks as lists', () => {
+    const q = new URLSearchParams(toQuery({ carIds: [173, 45], trackIds: [18, 341] }))
+    expect(q.get('car_id')).toBe('173,45')
+    expect(q.get('track_id')).toBe('18,341')
+  })
   it('emits the hour and weekday parameters the server parses', () => {
     const q = new URLSearchParams(toQuery({ hourFrom: 18, hourTo: 23, weekdays: [0, 6] }))
     expect(q.get('hour_from')).toBe('18')

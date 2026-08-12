@@ -47,7 +47,7 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
 
   // The selection lives under a dimension-agnostic key rather than `car` or
   // `track`: useFilter already reads those two keys as hard filters
-  // (carId/trackId), so reusing either name here would make selecting a row
+  // (carIds/trackIds), so reusing either name here would make selecting a row
   // silently filter the list down to that one row. `sel` is outside
   // useFilter's vocabulary and each route has exactly one dimension, so one
   // key suffices for both pages.
@@ -158,7 +158,7 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
 
   // The entity's own dimension is fixed by the selection, so the filter passed to
   // the shared breakdown must carry it.
-  const scoped: Filter = { ...filter, [dimension === 'car' ? 'carId' : 'trackId']: id }
+  const scoped: Filter = { ...filter, [dimension === 'car' ? 'carIds' : 'trackIds']: [id] }
 
   return (
     <>
@@ -173,7 +173,11 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
       <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(4, 1fr)' }}>
         <Stat
           label="Clean laps"
-          value={s.cleanLapPct == null ? '—' : pct(s.cleanLapPct / 100)}
+          value={
+            s.cleanLapPct == null
+              ? '—'
+              : `${pct(s.cleanLapPct / 100)} (${num(s.cleanLaps)}/${num(s.timedLaps)})`
+          }
           note="no incident on the lap"
         />
         <Stat

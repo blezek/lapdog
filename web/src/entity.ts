@@ -16,7 +16,7 @@ export type Dimension = 'car' | 'track'
  * The page's dimension is chosen by the left-hand list, and the filter bar hides
  * its dropdown for exactly that reason. Hiding the control does not clear the
  * value, though: a bookmarked or hand-edited `/cars?car=105` still parses to
- * carId, which collapsed the list to the single car being chosen from with no
+ * carIds, which collapsed the list to the selected cars with no
  * visible control to undo it — the only escape was the generic Clear button,
  * which also discarded the range.
  *
@@ -26,8 +26,8 @@ export type Dimension = 'car' | 'track'
  */
 export function pageFilter(f: Filter, d: Dimension): Filter {
   const out = { ...f }
-  if (d === 'car') delete out.carId
-  else delete out.trackId
+  if (d === 'car') delete out.carIds
+  else delete out.trackIds
   return out
 }
 

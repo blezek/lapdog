@@ -100,6 +100,33 @@ func TestWeekdayFilterMatchesLocalDay(t *testing.T) {
 	}
 }
 
+func TestMultipleCarsAndTracksMatchWithinEachDimension(t *testing.T) {
+	s := openTemp(t)
+	rows := []struct {
+		key            string
+		carID, trackID int
+	}{
+		{"wanted/a", 10, 100},
+		{"wanted/b", 20, 200},
+		{"wrong/car", 30, 100},
+		{"wrong/track", 10, 300},
+	}
+	for _, row := range rows {
+		rec := minimalSession(row.key)
+		rec.CarID = intp(row.carID)
+		rec.TrackID = intp(row.trackID)
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got := filteredKeys(t, s, Filter{CarIDs: []int{10, 20}, TrackIDs: []int{100, 200}})
+	want := []string{"wanted/a", "wanted/b"}
+	if !equalStrings(got, want) {
+		t.Errorf("multi-entity filter\n got  %v\n want %v", got, want)
+	}
+}
+
 func equalStrings(a, b []string) bool {
 	if len(a) != len(b) {
 		return false

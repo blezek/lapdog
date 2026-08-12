@@ -188,7 +188,7 @@ func TestParseFilterAllFields(t *testing.T) {
 	f, err := parseFilter(mustValues(t,
 		"from=2026-07-01T00:00:00Z&to=2026-08-01T00:00:00Z"+
 			"&session_type=Race&session_type=Qualify&event_context=League"+
-			"&track_id=341&car_id=173&league_id=4242"+
+			"&track_id=341,18&car_id=173&car_id=45&league_id=4242"+
 			"&hour_from=18&hour_to=23&weekday=1,3,5"+
 			"&exclude_ai=true&limit=50&offset=100"))
 	if err != nil {
@@ -200,8 +200,9 @@ func TestParseFilterAllFields(t *testing.T) {
 	if len(f.SessionType) != 2 || len(f.EventContext) != 1 {
 		t.Errorf("types=%v contexts=%v", f.SessionType, f.EventContext)
 	}
-	if f.TrackID == nil || *f.TrackID != 341 || f.CarID == nil || f.LeagueID == nil {
-		t.Errorf("ids = %v %v %v", f.TrackID, f.CarID, f.LeagueID)
+	if len(f.TrackIDs) != 2 || f.TrackIDs[0] != 341 || f.TrackIDs[1] != 18 ||
+		len(f.CarIDs) != 2 || f.CarIDs[0] != 173 || f.CarIDs[1] != 45 || f.LeagueID == nil {
+		t.Errorf("ids = %v %v %v", f.TrackIDs, f.CarIDs, f.LeagueID)
 	}
 	if f.HourFrom == nil || *f.HourFrom != 18 || f.HourTo == nil || *f.HourTo != 23 {
 		t.Errorf("hours = %v / %v", f.HourFrom, f.HourTo)
@@ -242,7 +243,7 @@ func TestParseFilterBareDateCoversWholeDay(t *testing.T) {
 
 func TestParseFilterRejectsBadValues(t *testing.T) {
 	for _, raw := range []string{
-		"track_id=notanumber", "limit=abc", "offset=-5", "limit=-1",
+		"track_id=notanumber", "track_id=1,x", "car_id=-1", "limit=abc", "offset=-5", "limit=-1",
 		"from=yesterday", "to=2026-13-45", "exclude_ai=maybe",
 		"hour_from=24", "hour_to=-1", "hour_from=noon", "weekday=7", "weekday=1,x",
 	} {
