@@ -41,6 +41,7 @@ func collectorForFixture(t *testing.T, name string) (*Collector, source.Source) 
 // A handled frame is retained, so the interface can report what the simulator
 // last said rather than only what has been accumulated.
 func TestLiveReportsTheLastHandledFrame(t *testing.T) {
+	t.Parallel()
 	c, src := collectorForFixture(t, "public-practice.lpd")
 	defer src.Close()
 
@@ -126,6 +127,7 @@ func TestLiveReportsTheLastHandledFrame(t *testing.T) {
 // instantaneous values behind for the interface to present as current — the
 // same rule that made clearActiveStatus necessary.
 func TestLiveFrameIsClearedWhenTheSessionCloses(t *testing.T) {
+	t.Parallel()
 	c, src := collectorForFixture(t, "public-practice.lpd")
 	defer src.Close()
 
@@ -160,6 +162,7 @@ func TestLiveFrameIsClearedWhenTheSessionCloses(t *testing.T) {
 // here is that a reason is always present exactly when driving time is not
 // accruing.
 func TestLiveReasonMatchesAccountingOnReplayedFrames(t *testing.T) {
+	t.Parallel()
 	c, src := collectorForFixture(t, "official-race-weekend.lpd")
 	defer src.Close()
 
@@ -201,6 +204,7 @@ func TestLiveReasonMatchesAccountingOnReplayedFrames(t *testing.T) {
 // alone cannot be read: zero driving is either a bug or a parked car, and only
 // the connected and in-car figures beside it say which.
 func TestLiveStatusReportsAllThreeTotals(t *testing.T) {
+	t.Parallel()
 	c, src := collectorForFixture(t, "official-race-weekend.lpd")
 	defer src.Close()
 

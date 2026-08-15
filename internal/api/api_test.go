@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/csv"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -686,6 +687,13 @@ func TestCaptureReindexReportsNoSavedCaptures(t *testing.T) {
 
 func TestCaptureReindexRunsInBackgroundAndReportsResult(t *testing.T) {
 	_, st, cfg := newTestServer(t)
+	if _, err := st.UpsertSession(&store.Session{
+		SessionKey: "database-only/0", SessionNum: 0,
+		SessionType: "Practice", EventContext: "OfficialPractice",
+		StartedAt: "2026-08-01T00:00:00Z", ClassifySourceJSON: "{}",
+	}); err != nil {
+		t.Fatal(err)
+	}
 	capturesDir := config.CapturesDir(filepath.Dir(st.Path()))
 	if err := os.MkdirAll(capturesDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -722,24 +730,32 @@ func TestCaptureReindexRunsInBackgroundAndReportsResult(t *testing.T) {
 		t.Fatalf("first SetPaused call after POST = %v, want true", calls)
 	}
 
-	var status captureReindexStatus
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		get(t, h, "/api/captures/reindex", &status)
-		if status.State != "running" {
-			break
+	waitForReindex := func() captureReindexStatus {
+		t.Helper()
+		var status captureReindexStatus
+		deadline := time.Now().Add(3 * time.Second)
+		for time.Now().Before(deadline) {
+			get(t, h, "/api/captures/reindex", &status)
+			if status.State != "running" {
+				return status
+			}
+			time.Sleep(10 * time.Millisecond)
 		}
-		time.Sleep(10 * time.Millisecond)
+		return status
 	}
+	status := waitForReindex()
 	if status.State != "complete" || status.Total != 1 || status.Replayed != 1 || status.Segments != 1 || status.Failed != 0 {
 		t.Fatalf("status = %+v", status)
 	}
 	if calls := provider.pauseCalls(); len(calls) != 2 || !calls[0] || calls[1] {
 		t.Errorf("SetPaused calls = %v, want [true false]", calls)
 	}
-	rows, _, err := st.ListSessions(store.Filter{Limit: 100})
+	rows, total, err := st.ListSessions(store.Filter{Limit: 100})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if total != 1 {
+		t.Fatalf("sessions after destructive rebuild = %d, want only 1 capture-derived row", total)
 	}
 	found := false
 	for _, row := range rows {
@@ -749,6 +765,27 @@ func TestCaptureReindexRunsInBackgroundAndReportsResult(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no indexed session retained capture filename %q", name)
+	}
+	if _, err := st.SessionByKey("database-only/0"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("database-only session survived destructive rebuild: %v", err)
+	}
+	firstDriving := rows[0].DrivingSeconds
+
+	second := httptest.NewRecorder()
+	h.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	if second.Code != http.StatusAccepted {
+		t.Fatalf("second rebuild status = %d, want 202; body=%s", second.Code, second.Body.String())
+	}
+	status = waitForReindex()
+	if status.State != "complete" {
+		t.Fatalf("second rebuild status = %+v", status)
+	}
+	rows, total, err = st.ListSessions(store.Filter{Limit: 100})
+	if err != nil || total != 1 || len(rows) != 1 {
+		t.Fatalf("sessions after second rebuild = %d/%d, %v; want one", len(rows), total, err)
+	}
+	if rows[0].DrivingSeconds != firstDriving {
+		t.Errorf("driving after second rebuild = %.3f, want unchanged %.3f", rows[0].DrivingSeconds, firstDriving)
 	}
 }
 

@@ -1,12 +1,12 @@
-/* Exercise the Settings capture re-index workflow in real Chrome. */
+/* Exercise the dedicated Races view in real Chrome. */
 import { spawn } from 'node:child_process'
 import { rmSync, writeFileSync } from 'node:fs'
 
 const BASE = process.argv[2] ?? 'http://127.0.0.1:47047'
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
-const PROFILE = '/tmp/chrome-lapdog-reindex'
-const PORT = 9336
-const SHOT = '/private/tmp/lapdog-reindex-settings.png'
+const PROFILE = '/tmp/chrome-lapdog-races'
+const PORT = 9337
+const SHOT = '/private/tmp/lapdog-races.png'
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function main() {
@@ -16,7 +16,6 @@ async function main() {
     `--remote-debugging-port=${PORT}`, `--user-data-dir=${PROFILE}`,
     '--window-size=1500,1100', 'about:blank',
   ], { stdio: 'ignore' })
-
   try {
     for (let i = 0; i < 60; i++) {
       try { if ((await fetch(`http://127.0.0.1:${PORT}/json/version`)).ok) break } catch { /* wait */ }
@@ -41,14 +40,7 @@ async function main() {
     })
     const send = (method, params = {}) => new Promise((resolve, reject) => {
       const messageID = ++id
-      const timer = setTimeout(() => {
-        pending.delete(messageID)
-        reject(new Error(`${method} timed out`))
-      }, 10000)
-      pending.set(messageID, {
-        resolve: (value) => { clearTimeout(timer); resolve(value) },
-        reject: (error) => { clearTimeout(timer); reject(error) },
-      })
+      pending.set(messageID, { resolve, reject })
       ws.send(JSON.stringify({ id: messageID, method, params }))
     })
     const evaluate = async (expression) => {
@@ -60,44 +52,40 @@ async function main() {
 
     await send('Page.enable')
     await send('Runtime.enable')
-    await send('Page.navigate', { url: `${BASE}/settings` })
+    await send('Page.navigate', { url: `${BASE}/races?range=all&car=999999` })
     await sleep(1800)
 
-    const initial = await evaluate(`(() => {
-      const button = [...document.querySelectorAll('button')]
-        .find((item) => item.textContent.trim() === 'Re-index captures');
-      return { found: !!button, disabled: button?.disabled, text: document.body.innerText };
-    })()`)
-    assert(initial.found && !initial.disabled, 're-index control is missing or disabled while disconnected')
-    assert(initial.text.includes('Deletes all recorded sessions, laps, and position events'), 'destructive scope is not explained')
-    assert(initial.text.includes('History without a retained capture will be permanently lost'), 'data-loss warning is missing')
+    const filtered = await evaluate(`(() => ({
+      heading: document.querySelector('h1')?.textContent,
+      active: document.querySelector('.nav-item.active')?.textContent.trim(),
+      text: document.body.innerText,
+      typeFilterVisible: [...document.querySelectorAll('button')]
+        .some((button) => button.textContent.includes('Session types')),
+    }))()`)
+    assert(filtered.heading === 'Races' && filtered.active === 'Races', 'Races route or sidebar state is wrong')
+    assert(!filtered.typeFilterVisible, 'race-only view exposes a contradictory session-type filter')
+    assert(filtered.text.includes('No races match this filter.'), 'empty filtered state is not explicit')
 
-    await evaluate(`(() => {
-      window.confirm = () => true;
-      [...document.querySelectorAll('button')]
-        .find((item) => item.textContent.trim() === 'Re-index captures').click();
-    })()`)
-
-    let status
-    for (let i = 0; i < 300; i++) {
-      status = await evaluate(`fetch('/api/captures/reindex').then((response) => response.json())`)
-      if (status.state !== 'running' && status.state !== 'idle') break
-      await sleep(100)
+    await send('Page.navigate', { url: `${BASE}/races?range=all` })
+    await sleep(1800)
+    const full = await evaluate(`(() => ({
+      text: document.body.innerText,
+      headers: [...document.querySelectorAll('th')].map((cell) => cell.textContent.trim()),
+      rows: document.querySelectorAll('tbody tr').length,
+    }))()`)
+    const fullText = full.text.toLocaleLowerCase()
+    assert(
+      fullText.includes('race time') && fullText.includes('average positions gained'),
+      `race summaries are missing: ${full.text.slice(0, 1200)}`,
+    )
+    for (const heading of ['Date', 'Track', 'Car', 'Driving', 'Grid', 'Finish', 'Grid to finish']) {
+      assert(full.headers.some((value) => value.startsWith(heading)), `missing race column: ${heading}`)
     }
-    assert(status.state === 'complete', `re-index did not complete: ${JSON.stringify(status)}`)
-    assert(status.replayed === status.total && status.failed === 0, `captures were not all replayed: ${JSON.stringify(status)}`)
-
-    for (let i = 0; i < 30; i++) {
-      if (await evaluate(`document.body.innerText.includes('Last run replayed')`)) break
-      await sleep(100)
-    }
-    const text = await evaluate('document.body.innerText')
-    assert(text.includes(`Last run replayed ${status.replayed} of ${status.total} capture(s)`), 'completion is not visible in Settings')
-    assert(text.includes(`processed ${status.segments} session segment(s)`), 'segment count is not visible in Settings')
+    assert(full.rows > 0, 'real capture dataset produced no race rows')
 
     const shot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
     writeFileSync(SHOT, Buffer.from(shot.data, 'base64'))
-    console.log(`PASS: Settings replayed ${status.replayed} captures and processed ${status.segments} segments -> ${SHOT}`)
+    console.log(`PASS: Races rendered ${full.rows} result rows -> ${SHOT}`)
     ws.close()
   } finally {
     chrome.kill('SIGKILL')

@@ -333,6 +333,35 @@ func TestDeleteSessionCascades(t *testing.T) {
 	}
 }
 
+func TestClearHistoryRemovesAllRecordedDataButKeepsSchema(t *testing.T) {
+	s := openTemp(t)
+	id := seedSession(t, s)
+	if _, err := s.InsertLap(&Lap{SessionID: id, LapNumber: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.InsertPositionEvent(&PositionEvent{
+		SessionID: id, LapNumber: 1, FromPosition: 5, ToPosition: 4, Cause: CauseOnTrack,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := s.ClearHistory(); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{"sessions", "laps", "position_events"} {
+		var n int
+		if err := s.Reader().QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n != 0 {
+			t.Errorf("%s count after ClearHistory = %d, want 0", table, n)
+		}
+	}
+	if version, err := s.SchemaVersion(); err != nil || version != CurrentSchemaVersion {
+		t.Errorf("schema after ClearHistory = %d, %v; want version %d", version, err, CurrentSchemaVersion)
+	}
+}
+
 // The two column lists must stay in the same order, since scanSession reads
 // positionally and a mismatch would be a silent wrong-field bug.
 func TestColumnListsAgree(t *testing.T) {

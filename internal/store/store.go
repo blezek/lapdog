@@ -124,6 +124,26 @@ func (s *Store) Close() error {
 	return firstErr
 }
 
+// ClearHistory removes every recorded session and its dependent laps and
+// position events while preserving the migrated schema. It exists for the
+// destructive capture-rebuild diagnostic: the running server and collector
+// retain these database handles, so replacing the SQLite file underneath them
+// would leave those handles attached to an unlinked database.
+func (s *Store) ClearHistory() error {
+	tx, err := s.writer.Begin()
+	if err != nil {
+		return fmt.Errorf("store: begin history clear: %w", err)
+	}
+	if _, err := tx.Exec(`DELETE FROM sessions`); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("store: clear history: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit history clear: %w", err)
+	}
+	return nil
+}
+
 // SchemaVersion returns the schema version recorded in the database, or 0 if the
 // schema_version table does not exist yet.
 func (s *Store) SchemaVersion() (int, error) {

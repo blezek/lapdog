@@ -252,8 +252,9 @@ export function Settings() {
           <div className="setting-label">
             Re-index saved captures
             <span className="setting-hint">
-              Replays every saved capture through this build's collector. Existing
-              sessions are updated rather than duplicated. Intended for debugging
+              Deletes all recorded sessions, laps, and position events, then replays
+              every saved capture through this build's collector. History without a
+              retained capture will be permanently lost. Intended only for debugging
               ingestion changes; disconnect from iRacing before starting.
             </span>
             {captureReindex.data && captureReindexMessage(captureReindex.data) && (
@@ -278,7 +279,7 @@ export function Settings() {
               }
               onClick={() => {
                 if (window.confirm(
-                  'Replay every saved capture into the current database? Existing sessions will be updated.',
+                  'Delete all recorded history and rebuild it from saved captures? History without a retained capture will be permanently lost.',
                 )) startReindex.mutate()
               }}
             >

@@ -25,7 +25,7 @@ export function Filters({
   hide,
 }: {
   matched?: string
-  hide?: ('car' | 'track')[]
+  hide?: ('car' | 'track' | 'type')[]
 }) {
   const { state, update, toggleIn, clear, active } = useFilter()
   const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
@@ -62,18 +62,20 @@ export function Filters({
       <div className="filters">
         <DateFilter open={openMenu === 'date'} onToggle={() => toggleMenu('date')} />
 
-        <MultiFilter
-          id="type"
-          label="Session types"
-          allLabel="All session types"
-          param="type"
-          selected={(state.sessionType ?? []).map(String)}
-          options={(facets?.sessionTypes ?? []).map((value) => ({ value, label: value }))}
-          toggle={toggleIn}
-          clear={() => update({ type: undefined })}
-          open={openMenu === 'type'}
-          onToggle={() => toggleMenu('type')}
-        />
+        {!hide?.includes('type') && (
+          <MultiFilter
+            id="type"
+            label="Session types"
+            allLabel="All session types"
+            param="type"
+            selected={(state.sessionType ?? []).map(String)}
+            options={(facets?.sessionTypes ?? []).map((value) => ({ value, label: value }))}
+            toggle={toggleIn}
+            clear={() => update({ type: undefined })}
+            open={openMenu === 'type'}
+            onToggle={() => toggleMenu('type')}
+          />
+        )}
 
         <MultiFilter
           id="context"
