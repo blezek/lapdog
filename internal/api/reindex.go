@@ -100,14 +100,18 @@ func (s *Server) startCaptureReindex(paths []string) (captureReindexStatus, bool
 }
 
 func (s *Server) runCaptureReindex(paths []string, pauser pauseSetter, wasPaused bool) {
-	result, err := reindex.Run(context.Background(), paths, s.st, reindex.Options{
-		Logger: s.log,
-		OnProgress: func(progress reindex.Progress) {
-			s.reindexMu.Lock()
-			s.reindexStatus.Progress = progress
-			s.reindexMu.Unlock()
-		},
-	})
+	var result reindex.Result
+	err := s.st.ClearHistory()
+	if err == nil {
+		result, err = reindex.Run(context.Background(), paths, s.st, reindex.Options{
+			Logger: s.log,
+			OnProgress: func(progress reindex.Progress) {
+				s.reindexMu.Lock()
+				s.reindexStatus.Progress = progress
+				s.reindexMu.Unlock()
+			},
+		})
+	}
 	if pauser != nil {
 		pauser.SetPaused(wasPaused)
 	}

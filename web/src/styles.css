@@ -718,6 +718,15 @@ h1 {
   margin-bottom: 14px;
 }
 
+.race-kpis {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+@media (max-width: 1100px) {
+  .race-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
 .two-col {
   grid-template-columns: repeat(auto-fit, minmax(380px, 1fr));
 }

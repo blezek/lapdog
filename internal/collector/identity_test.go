@@ -16,6 +16,7 @@ import (
 // list holds every car in the field, so a rule that took the first driver would
 // record an opponent's rating as the user's own — plausible-looking and wrong.
 func TestIngestRecordsDriverIdentityAndRatings(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "official-race-weekend.lpd"), nil)
 
 	rows, total, err := st.ListSessions(store.Filter{})
@@ -60,6 +61,7 @@ func TestIngestRecordsDriverIdentityAndRatings(t *testing.T) {
 // rather than substituting a zero. The generator sets SubSessionID to zero for AI and
 // offline-test weekends, which is what a real offline capture reports.
 func TestIngestDropsRatingsFromOfflineCaptures(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	for _, name := range []string{"ai-race-field-present.lpd", "offline-test-drive.lpd"} {
 		t.Run(name, func(t *testing.T) {
@@ -95,6 +97,7 @@ func TestIngestDropsRatingsFromOfflineCaptures(t *testing.T) {
 
 // And the progression simply omits them, rather than plotting a zero.
 func TestOfflineSessionsProduceNoRatingPoints(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "offline-test-drive.lpd"), nil)
 	got, err := st.Ratings(store.Filter{})
 	if err != nil {

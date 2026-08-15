@@ -138,7 +138,9 @@ make build-windows  # dist/lapdogctl.exe, alongside the tray app
 
 `reclassify` is the remedy for a classification rule that turns out to be wrong. Every session stores the inputs its label was derived from, so labels can be recomputed later without the original captures. On correct data it changes nothing, which is how the round trip is checked.
 
-For broader ingestion debugging, **Settings → Re-index saved captures** replays every retained `.lpd` file through the collector in the running build. It updates matching sessions rather than duplicating them, leaves database-only sessions alone, reports per-file failures, and is available only while iRacing is disconnected. The same replay implementation backs `lapdogctl ingest`; the Settings action runs it in the background and refreshes historical views when it finishes.
+For broader ingestion debugging, **Settings → Re-index saved captures** deletes all recorded sessions, laps and position events, then replays every retained `.lpd` file through the collector in the running build. History whose capture is no longer retained is permanently lost. The destructive action reports per-file failures and is available only while iRacing is disconnected. The same replay implementation backs `lapdogctl ingest`; the Settings action runs it in the background and refreshes historical views when it finishes.
+
+The **Races** view keeps race results separate from the broader session explorer. Its shared date, context, track and car filters carry to the other historical views; headline cards summarize race time and recorded results, while the sortable table shows duration, laps, incidents, grid, finish and the explicit direction of every recorded position change.
 
 ## How it fits together
 

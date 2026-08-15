@@ -16,17 +16,36 @@ import (
 	"github.com/blezek/lapdog/internal/synth"
 )
 
-// fixtureDir generates the committed fixture set into a temp directory.
+var sharedFixtureDir string
+
+// TestMain generates one fresh, read-only fixture set for this test process.
 //
-// Tests generate a fresh copy rather than reading testdata/fixtures so a stale
-// commit cannot mask a break in the generator.
+// Every collector test has its own database and replay source, so the captures
+// can be read concurrently. Generating the same deterministic files separately
+// for every test was most of this package's wall time and provided no additional
+// isolation: no test modifies its source capture.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "lapdog-collector-fixtures-")
+	if err != nil {
+		panic(err)
+	}
+	if _, err := synth.WriteFixtures(dir); err != nil {
+		os.RemoveAll(dir)
+		panic(err)
+	}
+	sharedFixtureDir = dir
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// fixtureDir returns the fresh fixture set created by TestMain.
 func fixtureDir(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
-	if _, err := synth.WriteFixtures(dir); err != nil {
-		t.Fatal(err)
+	if sharedFixtureDir == "" {
+		t.Fatal("collector fixture set was not initialized")
 	}
-	return dir
+	return sharedFixtureDir
 }
 
 // ingest replays one capture through a real collector into a real database.
@@ -87,6 +106,7 @@ func ingestInto(t *testing.T, st *store.Store, capturePath string, startedAt tim
 }
 
 func TestReconnectAccumulatesTimeWithoutDuplicatingLaps(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(fixtureDir(t), "public-practice.lpd")
 	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
 	if err != nil {
@@ -129,6 +149,7 @@ func TestReconnectAccumulatesTimeWithoutDuplicatingLaps(t *testing.T) {
 // A race weekend capture must land as three separate session rows, with the
 // practice one classified as race practice because a race shares the weekend.
 func TestIngestRaceWeekendProducesThreeSegments(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "official-race-weekend.lpd"), nil)
 
 	rows, total, err := st.ListSessions(store.Filter{})
@@ -167,6 +188,7 @@ func TestIngestRaceWeekendProducesThreeSegments(t *testing.T) {
 // The three counters must be distinct and correctly ordered. If driving equals
 // connected, the garage and pit-box states are not being separated.
 func TestIngestSeparatesTheThreeTimeCounters(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "official-race-weekend.lpd"), nil)
 	rows, _, _ := st.ListSessions(store.Filter{})
 
@@ -190,6 +212,7 @@ func TestIngestSeparatesTheThreeTimeCounters(t *testing.T) {
 }
 
 func TestIngestRecordsLaps(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "official-race-weekend.lpd"), nil)
 	rows, _, _ := st.ListSessions(store.Filter{})
 
@@ -236,6 +259,7 @@ func TestIngestRecordsLaps(t *testing.T) {
 // Lap numbers must be sequential from 1 with no gaps or repeats: a gap means a
 // crossing was missed, a repeat means one was double-counted.
 func TestIngestLapNumbersAreSequential(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "public-practice.lpd"), nil)
 	rows, _, _ := st.ListSessions(store.Filter{})
 	if len(rows) != 1 {
@@ -255,6 +279,7 @@ func TestIngestLapNumbersAreSequential(t *testing.T) {
 // Position events must appear in the race and nowhere else, and must carry a
 // cause and an opponent name.
 func TestIngestRecordsPositionEventsInRacesOnly(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "official-race-weekend.lpd"), nil)
 	rows, _, _ := st.ListSessions(store.Filter{})
 
@@ -292,6 +317,7 @@ func TestIngestRecordsPositionEventsInRacesOnly(t *testing.T) {
 // Qualifying and finish results only appear in the YAML once their session has
 // run, so ingesting the whole weekend must pick them up.
 func TestIngestCapturesQualifyingAndFinishResults(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "official-race-weekend.lpd"), nil)
 	rows, _, _ := st.ListSessions(store.Filter{})
 
@@ -323,6 +349,7 @@ func TestIngestCapturesQualifyingAndFinishResults(t *testing.T) {
 // Every fixture must ingest to the classification the validator predicted, which
 // pins that the collector agrees with the classifier end to end.
 func TestIngestClassificationMatchesFixtures(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	cases := []struct {
 		file       string
@@ -369,6 +396,7 @@ func TestIngestClassificationMatchesFixtures(t *testing.T) {
 // Replay frames must contribute to no counter, so a fixture containing them must
 // still show driving time strictly less than its frame count would imply.
 func TestIngestExcludesReplayTime(t *testing.T) {
+	t.Parallel()
 	// offline-test-drive is long enough that its replay segment is material.
 	st := ingest(t, filepath.Join(fixtureDir(t), "offline-test-drive.lpd"), nil)
 	rows, _, _ := st.ListSessions(store.Filter{})
@@ -386,6 +414,7 @@ func TestIngestExcludesReplayTime(t *testing.T) {
 // A session below the minimum length must be discarded entirely, including any
 // row an earlier flush already wrote.
 func TestIngestDropsTooShortSession(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "short-session.lpd"), func(o *Options) {
 		o.MinSession = 30 * time.Minute
 	})
@@ -401,6 +430,7 @@ func TestIngestDropsTooShortSession(t *testing.T) {
 // The collector writes its own capture while ingesting, and that capture must
 // itself be replayable.
 func TestIngestWritesReplayableCapture(t *testing.T) {
+	t.Parallel()
 	capDir := filepath.Join(t.TempDir(), "captures")
 	ingest(t, filepath.Join(fixtureDir(t), "public-practice.lpd"), func(o *Options) {
 		o.CaptureEnabled = true
@@ -423,6 +453,7 @@ func TestIngestWritesReplayableCapture(t *testing.T) {
 }
 
 func TestSetCaptureDisablesActiveCaptureOnNextFrame(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	src, err := source.NewReplay(filepath.Join(dir, "public-practice.lpd"))
 	if err != nil {
@@ -474,6 +505,7 @@ func TestSetCaptureDisablesActiveCaptureOnNextFrame(t *testing.T) {
 }
 
 func TestSetCaptureEnablesActiveCaptureOnNextFrame(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	src, err := source.NewReplay(filepath.Join(dir, "public-practice.lpd"))
 	if err != nil {
@@ -533,6 +565,7 @@ func TestSetCaptureEnablesActiveCaptureOnNextFrame(t *testing.T) {
 }
 
 func TestSetCaptureMaxBytesPrunesWithoutRestart(t *testing.T) {
+	t.Parallel()
 	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -597,6 +630,7 @@ func TestSetMinSessionUpdatesCloseThreshold(t *testing.T) {
 }
 
 func TestSetPausedSerializesWithActiveSegmentState(t *testing.T) {
+	t.Parallel()
 	src, err := source.NewReplay(filepath.Join(fixtureDir(t), "public-practice.lpd"))
 	if err != nil {
 		t.Fatal(err)
@@ -691,6 +725,7 @@ func TestRunCancelsContextAwareSourcePromptly(t *testing.T) {
 }
 
 func TestStatusReportsProgress(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
 	if err != nil {
@@ -755,6 +790,7 @@ func TestStatusReportsProgress(t *testing.T) {
 }
 
 func TestPausedRecordsNothing(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	st, err := store.Open(filepath.Join(t.TempDir(), "lapdog.db"))
 	if err != nil {
@@ -793,6 +829,7 @@ func TestNewRejectsMissingDependencies(t *testing.T) {
 // Ingesting the same capture twice must not duplicate anything: session identity
 // is keyed on subsession and session number, and laps are idempotent.
 func TestIngestIsIdempotent(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	path := filepath.Join(dir, "public-practice.lpd")
 

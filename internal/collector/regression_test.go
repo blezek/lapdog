@@ -44,6 +44,7 @@ func TestNoteIncidentsIsMonotonic(t *testing.T) {
 // Ingested sessions must actually carry incidents. Zero everywhere is the exact
 // symptom the monotonic guard fixes, and it is invisible unless asserted.
 func TestIngestRecordsIncidents(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "league-race-weekend.lpd"), nil)
 
 	totals, err := st.Totals(store.Filter{})
@@ -63,6 +64,7 @@ func TestIngestRecordsIncidents(t *testing.T) {
 // was recorded with cause Unknown and no opponent, so the pass/passed ratio was
 // always zero and the attribution logic was never exercised.
 func TestIngestAttributesPositionChanges(t *testing.T) {
+	t.Parallel()
 	st := ingest(t, filepath.Join(fixtureDir(t), "official-race-weekend.lpd"), nil)
 
 	rows, _, err := st.ListSessions(store.Filter{SessionType: []string{"Race"}})
@@ -102,6 +104,7 @@ func TestIngestAttributesPositionChanges(t *testing.T) {
 // version produced exactly that, which would have made the pass/passed ratio
 // quietly wrong in the opposite direction from the original bug.
 func TestNoLossIsAttributedToAStoppedCar(t *testing.T) {
+	t.Parallel()
 	dir := fixtureDir(t)
 	for _, name := range []string{
 		"official-race-weekend.lpd", "league-race-weekend.lpd", "hosted-race.lpd",

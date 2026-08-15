@@ -12,12 +12,13 @@ import { Live } from './pages/Live'
 import { Dashboard } from './pages/Dashboard'
 import { EntityPage } from './pages/Entity'
 import { Sessions } from './pages/Sessions'
+import { Races } from './pages/Races'
 import { Laps } from './pages/Laps'
 import { Export } from './pages/Export'
 import { Settings } from './pages/Settings'
 
 /**
- * nav is the seven pages, with settings pinned to the bottom separately.
+ * nav is the historical and live pages, with settings pinned to the bottom separately.
  *
  * Live is first because it is the only page about the present moment; the rest
  * are about the past, and the answer to "is it working" is the one worth reaching
@@ -29,6 +30,7 @@ const nav = [
   { to: '/cars', label: 'Cars', icon: 'car-sports' },
   { to: '/tracks', label: 'Tracks', icon: 'road-variant' },
   { to: '/sessions', label: 'Sessions', icon: 'flag-checkered' },
+  { to: '/races', label: 'Races', icon: 'trophy' },
   { to: '/laps', label: 'Laps', icon: 'timer-outline' },
   { to: '/export', label: 'Export', icon: 'download' },
 ]
@@ -82,6 +84,7 @@ export function App() {
           <Route path="/cars" element={<EntityPage dimension="car" />} />
           <Route path="/tracks" element={<EntityPage dimension="track" />} />
           <Route path="/sessions" element={<Sessions />} />
+          <Route path="/races" element={<Races />} />
           <Route path="/laps" element={<Laps />} />
           <Route path="/export" element={<Export />} />
           <Route path="/settings" element={<Settings />} />

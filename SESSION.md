@@ -35,11 +35,18 @@ Deliberately excluded, and recorded as such in the specs: `.ibt` file import, se
 
 ## 2026-08-12 — re-index saved captures from Settings
 
+Correction after real use: re-indexing into existing rows was unsafe. The collector's
+intentional reconnect behavior resumes stored counters before processing later frames,
+so replaying a complete retained capture into its live row added the same elapsed time
+again. A 13.6-minute race became 27.2 minutes after one diagnostic run. Re-index now
+transactionally deletes every session (cascading to laps and position events) before
+replay. The schema stays open because the running collector and HTTP server retain its
+SQLite handles; the resulting data is nevertheless a rebuild containing only facts
+recoverable from retained captures. Settings warns explicitly that database-only history
+is permanently lost.
+
 Settings now exposes a debugging action that replays every retained `.lpd` capture
-through the collector in the running build. Matching session keys are upserted, not
-duplicated, and sessions for which no capture survives are left alone. The action is
-therefore an in-place repair of derivable data, not a destructive replacement for the
-separate-database recovery procedure in `ToDo.md`.
+through the collector in the running build.
 
 The HTTP operation runs in the background and reports captures discovered, processed,
 replayed and failed, plus the number of session segments processed. It refuses to start
@@ -65,6 +72,20 @@ corresponding test fail.
 `make ci` passes, including the production interface build, all Go and web tests,
 Windows cross-builds and embed checks. The collector, API and reindex packages also
 pass together under the race detector.
+
+### Race results view
+
+The sidebar now has a race-only destination. It reuses the shared historical filters
+but fixes the queried session type to Race, so an incoming session-type filter cannot
+silently turn it into a non-race page. Six result-oriented summaries cover race count,
+driving time, wins, podiums, average finish and average grid-to-finish movement. Missing
+finish or grid readings stay absent from their denominators rather than becoming zeroes.
+The sortable table shows the underlying date, track, car, driving time, laps, incidents,
+grid, finish and movement in explicit words ("Gained", "Lost" or "No change").
+
+Pure tests cover denominators and position wording. A real-Chrome run checked the route,
+active sidebar item, race-only filter controls, empty state, headings and four real replayed
+race rows, then the resulting full-page screenshot was inspected for layout and clipping.
 
 ---
 
