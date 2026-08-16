@@ -241,7 +241,7 @@ make goreleaser-check
 make release-snapshot
 ```
 
-Signing is optional: with no certificate configured the build emits unsigned artefacts and says so. Unsigned executables show a one-time SmartScreen warning, which `SHA256SUMS` is the answer to. `make installer` needs `brew install makensis`.
+Signing is optional: with no certificate configured the build emits unsigned artefacts and says so. Unsigned executables may trigger SmartScreen. `SHA256SUMS` checks artifact integrity but does not establish publisher identity or suppress that warning. `make installer` needs `brew install makensis`.
 
 Note that public certificate authorities stopped issuing downloadable PKCS#12 files in June 2023 — keys must now live in hardware or a cloud service — so the `SIGN_PKCS12` path only works for a pre-2023 certificate or a private CA. Signing is not currently being pursued.
 
@@ -254,11 +254,17 @@ git push origin v0.0.1
 
 The tag-triggered workflow publishes `lapdog-windows-amd64.zip` for self-update, `lapdog-<version>-portable.zip` for manual portable installs, the NSIS setup executable, and `SHA256SUMS`.
 
-Self-update is not implemented yet. The release pipeline now creates the updater
-asset that future code will consume, but the app still has no updater package,
-tray/settings update action, download path, checksum validation or executable
-replacement flow. That work is tracked in
-`docs/superpowers/plans/2026-08-10-lapdog-github-self-update.md`.
+Windows release builds check the stable `blezek/lapdog` GitHub Releases channel
+shortly after startup and every 24 hours. An available release appears in the
+sidebar and tray without opening a browser. Installation always requires consent;
+LapDog downloads and SHA-256-checks `lapdog-windows-amd64.zip` immediately, then
+waits for recording and capture re-indexing to become idle before restarting.
+
+The updater changes `lapdog.exe` only. It retains the old executable while the new
+one starts, rolls back a failed replacement, and keeps consent/staging state in the
+data directory so an interrupted update resumes. `dev`, non-Windows and non-amd64
+builds report updates disabled. HTTPS plus the release `SHA256SUMS` provides
+integrity checking, not publisher authentication; signatures remain future work.
 
 ## Where the rest of the writing lives
 

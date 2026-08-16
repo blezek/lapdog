@@ -50,8 +50,11 @@ type Options struct {
 // Status is a snapshot of what the collector is doing, for the tray and the
 // settings screen.
 type Status struct {
-	Connected       bool    `json:"connected"`
-	Paused          bool    `json:"paused"`
+	Connected bool `json:"connected"`
+	Paused    bool `json:"paused"`
+	// Recording means an active session segment is being written. It does not
+	// describe capture-file retention, which is an independent preference.
+	Recording       bool    `json:"recording"`
 	IntervalSeconds float64 `json:"intervalSeconds"`
 	SessionKey      string  `json:"sessionKey"`
 	SessionLabel    string  `json:"sessionLabel"`
@@ -147,12 +150,15 @@ type Collector struct {
 
 	// Active segment state. A nil segment means nothing is being recorded. Fields
 	// in this block are protected by activeMu.
-	seg        *Segment
-	lapDet     *LapDetector
-	posDet     *PositionDetector
-	info       *sessionyaml.Info
-	capWriter  *capture.Writer
-	refused    bool
+	seg       *Segment
+	lapDet    *LapDetector
+	posDet    *PositionDetector
+	info      *sessionyaml.Info
+	capWriter *capture.Writer
+	refused   bool
+	// quiesced prevents handle from opening a new segment while an accepted
+	// update is waiting to replace the executable.
+	quiesced   bool
 	lastFlushT float64
 }
 
@@ -255,6 +261,25 @@ func (c *Collector) SetPaused(p bool) {
 	}
 }
 
+// TryQuiesce atomically prevents a new segment from starting, but only when no
+// segment is active. A false result leaves collection unchanged.
+func (c *Collector) TryQuiesce() bool {
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+	if c.seg != nil {
+		return false
+	}
+	c.quiesced = true
+	return true
+}
+
+// ResumeRecording releases an updater quiesce after an apply or launch failure.
+func (c *Collector) ResumeRecording() {
+	c.activeMu.Lock()
+	c.quiesced = false
+	c.activeMu.Unlock()
+}
+
 // Status returns a snapshot of the collector's state.
 func (c *Collector) Status() Status {
 	c.mu.Lock()
@@ -263,6 +288,9 @@ func (c *Collector) Status() Status {
 	s.MissingVars = append([]string(nil), c.status.MissingVars...)
 	return s
 }
+
+// Recording reports whether a session segment is active.
+func (c *Collector) Recording() bool { return c.Status().Recording }
 
 // Run polls the source until it is exhausted or ctx is cancelled.
 //
@@ -352,6 +380,9 @@ func (c *Collector) handle(f source.Frame) error {
 		c.closeSegmentLocked()
 	}
 
+	if c.seg == nil && c.quiesced {
+		return nil
+	}
 	if c.seg == nil {
 		if err := c.openSegment(f, sessionNum); err != nil {
 			return err
@@ -479,6 +510,9 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	// continuously rather than only when the YAML does.
 	seg.SetIncidentSource(f.Row.Has(OptionalIncidentVar))
 	c.seg = seg
+	c.mu.Lock()
+	c.status.Recording = true
+	c.mu.Unlock()
 
 	c.log.Info("recording session", "key", seg.Key, "label", seg.Label())
 	return nil
@@ -642,6 +676,7 @@ func (c *Collector) clearActiveStatus() {
 	c.status.DrivingSeconds = 0
 	c.status.Laps = 0
 	c.status.IncidentSource = ""
+	c.status.Recording = false
 	// A finished session must not leave instantaneous values behind for the
 	// live interface to present as though they were still current.
 	c.lastFrame = nil

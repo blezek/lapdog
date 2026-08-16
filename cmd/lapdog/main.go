@@ -23,6 +23,7 @@ import (
 	"github.com/blezek/lapdog/internal/source"
 	"github.com/blezek/lapdog/internal/store"
 	"github.com/blezek/lapdog/internal/tray"
+	"github.com/blezek/lapdog/internal/updater"
 	"github.com/blezek/lapdog/internal/version"
 )
 
@@ -61,6 +62,16 @@ func main() {
 }
 
 func run() error {
+	if handoff, ok, err := updater.ParseHandoff(os.Args[1:]); ok {
+		if err != nil {
+			return err
+		}
+		if err := updater.RunHandoff(handoff); err != nil {
+			updater.RecordHandoffFailure(handoff.StatePath, err)
+			return err
+		}
+		return nil
+	}
 	dataDir, err := config.DataDir()
 	if err != nil {
 		return err
@@ -97,10 +108,15 @@ func run() error {
 		"port", cfg.Port,
 		"configPath", config.ConfigPath(dataDir))
 
-	exePath := ""
-	if exe, err := os.Executable(); err == nil {
-		exePath = exe
-		applyAutostart(log, cfg.StartWithWindows, exePath, config.SetAutostart)
+	exePath, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate running executable: %w", err)
+	}
+	applyAutostart(log, cfg.StartWithWindows, exePath, config.SetAutostart)
+	if version.Version != "dev" {
+		if err := config.ReconcileInstalledVersion(exePath, version.Version); err != nil {
+			log.Warn("could not reconcile installed version", "err", err)
+		}
 	}
 
 	st, err := store.Open(config.DBPath(dataDir))
@@ -162,6 +178,15 @@ func run() error {
 	// passed directly to the HTTP server, so there is no gap where another process
 	// can claim the port between discovery and use.
 	srv := api.New(st, coll, cfgStore, log)
+	updates, err := updater.New(updater.Options{
+		Version: version.Version, Revision: version.Revision, DataDir: dataDir, Executable: exePath,
+		Gate: coll, Reindexing: srv.Reindexing, Shutdown: stop, Log: log,
+	})
+	if err != nil {
+		return err
+	}
+	srv.SetUpdater(updates)
+	updates.Start(ctx)
 	iface := startInterface(srv, cfg.Port, log)
 
 	tray.Run(tray.Options{
@@ -178,8 +203,9 @@ func run() error {
 		// installing its own, which used to race: an interrupt during start-up
 		// went only to the context and the tray then waited forever for a signal
 		// that had already been delivered.
-		Done: ctx.Done(),
-		Log:  log,
+		Done:         ctx.Done(),
+		Log:          log,
+		UpdateStatus: updates.Snapshot,
 	})
 
 	// The tray returned, so the user chose Quit. Give the collector a moment to

@@ -46,6 +46,9 @@ func CapturesDir(dir string) string { return filepath.Join(dir, "captures") }
 // LogPath returns the log file path within dir.
 func LogPath(dir string) string { return filepath.Join(dir, "lapdog.log") }
 
+// UpdateDir holds updater state, verified staging and the rollback executable.
+func UpdateDir(dir string) string { return filepath.Join(dir, "update") }
+
 // CheckLocalFilesystem reports whether dir is safe to hold a WAL-mode SQLite
 // database.
 //

@@ -39,6 +39,8 @@ func onReady(opts Options) {
 
 	systray.AddSeparator()
 	open := systray.AddMenuItem(openTitle(opts), openHint(opts))
+	update := systray.AddMenuItem("Update available", "Open update details")
+	update.Hide()
 	pause := systray.AddMenuItemCheckbox("Pause recording", "Stop recording without exiting", false)
 
 	systray.AddSeparator()
@@ -54,13 +56,17 @@ func onReady(opts Options) {
 		detail.SetTitle(opts.InterfaceNotice)
 	}
 
-	go refresh(opts, header, detail)
+	go refresh(opts, header, detail, update)
 
 	for {
 		select {
 		case <-open.ClickedCh:
 			if err := openURL(opts.URL); err != nil {
 				opts.Log.Error("could not open the browser", "url", opts.URL, "err", err)
+			}
+		case <-update.ClickedCh:
+			if err := openURL(opts.URL + "/?update=1"); err != nil {
+				opts.Log.Error("could not open update details", "url", opts.URL, "err", err)
 			}
 		case <-pause.ClickedCh:
 			// The checkbox is the source of truth for the desired state, so it is
@@ -87,12 +93,20 @@ func onReady(opts Options) {
 }
 
 // refresh keeps the icon, tooltip and menu header in step with the collector.
-func refresh(opts Options, header, detail *systray.MenuItem) {
+func refresh(opts Options, header, detail, update *systray.MenuItem) {
 	tick := time.NewTicker(refreshInterval)
 	defer tick.Stop()
 
 	for range tick.C {
 		s := opts.Status()
+		if opts.UpdateStatus != nil {
+			if title := updateTitle(opts.UpdateStatus()); title != "" {
+				update.SetTitle(title)
+				update.Show()
+			} else {
+				update.Hide()
+			}
+		}
 		systray.SetIcon(icon(stateFor(s)))
 		header.SetTitle("LapDog · " + stateText(s))
 

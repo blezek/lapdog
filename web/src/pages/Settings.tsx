@@ -62,6 +62,7 @@ export function Settings() {
   const qc = useQueryClient()
   const config = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const status = useQuery({ queryKey: ['status'], queryFn: api.status })
+	const update = useQuery({ queryKey: ['update'], queryFn: api.update, retry: false })
   const captureReindex = useQuery({
     queryKey: ['capture-reindex'],
     queryFn: api.captureReindexStatus,
@@ -102,6 +103,12 @@ export function Settings() {
     },
     onError: (e: unknown) => setFailed(e instanceof Error ? e.message : String(e)),
   })
+
+	const checkUpdate = useMutation({
+		mutationFn: api.checkForUpdates,
+		onSuccess: (result) => { setFailed(null); qc.setQueryData(['update'], result) },
+		onError: (e: unknown) => setFailed(e instanceof Error ? e.message : String(e)),
+	})
 
   useEffect(() => {
     const finished = captureReindex.data?.finishedAt
@@ -289,6 +296,23 @@ export function Settings() {
         </div>
 
         <div className="section-title">Application</div>
+
+		<div className="setting">
+			<div className="setting-label">
+				Current build
+				<span className="setting-hint mono">
+					{update.data ? `${update.data.currentVersion} · ${update.data.currentRevision?.slice(0, 8) ?? 'unknown commit'}` : 'unknown'}
+				</span>
+				<span className="setting-hint">
+					{update.data?.lastCheck ? `Last checked ${new Date(update.data.lastCheck).toLocaleString()}.` : 'No completed update check is recorded.'}
+				</span>
+			</div>
+			<div className="setting-control">
+				<button type="button" className="control" disabled={update.data?.state === 'disabled' || checkUpdate.isPending} onClick={() => checkUpdate.mutate()}>
+					{checkUpdate.isPending ? 'Checking…' : 'Check for updates'}
+				</button>
+			</div>
+		</div>
 
         <div className="setting">
           <div className="setting-label">

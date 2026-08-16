@@ -1,19 +1,23 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
 	"github.com/blezek/lapdog/internal/store"
+	"github.com/blezek/lapdog/internal/updater"
 	"github.com/blezek/lapdog/internal/web"
 )
 
@@ -51,12 +55,23 @@ type Server struct {
 
 	reindexMu     sync.Mutex
 	reindexStatus captureReindexStatus
+	updates       UpdateCoordinator
+}
+
+// UpdateCoordinator is the updater surface exposed to the local API.
+type UpdateCoordinator interface {
+	Snapshot() updater.Snapshot
+	Check(context.Context) error
+	Action(context.Context, string) error
 }
 
 // New returns a Server.
 func New(st *store.Store, sp StatusProvider, cfg ConfigStore, log *slog.Logger) *Server {
 	return &Server{st: st, sp: sp, cfg: cfg, log: log}
 }
+
+// SetUpdater attaches the process-owned update coordinator.
+func (s *Server) SetUpdater(u UpdateCoordinator) { s.updates = u }
 
 // listenAddr returns the address the server binds for a given port.
 func listenAddr(port int) string {
@@ -89,8 +104,11 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/laps", s.handleLaps)
 	mux.HandleFunc("GET /api/facets", s.handleFacets)
 	mux.HandleFunc("GET /api/export", s.handleExport)
-	mux.HandleFunc("/api/settings", s.handleSettings)
-	mux.HandleFunc("/api/captures/reindex", s.handleCaptureReindex)
+	mux.HandleFunc("/api/settings", s.protectMutations(s.handleSettings))
+	mux.HandleFunc("/api/captures/reindex", s.protectMutations(s.handleCaptureReindex))
+	mux.HandleFunc("GET /api/update", s.handleUpdate)
+	mux.HandleFunc("POST /api/update/check", s.protectMutations(s.handleUpdateCheck))
+	mux.HandleFunc("POST /api/update/action", s.protectMutations(s.handleUpdateAction))
 
 	// Any other /api path is a 404 rather than falling through to the interface,
 	// so a typo in an endpoint reads as a missing endpoint and not as a page of
@@ -106,6 +124,34 @@ func (s *Server) Handler() (http.Handler, error) {
 	}
 	mux.Handle("/", ui)
 	return mux, nil
+}
+
+// protectMutations prevents a browser on another site from driving LapDog's
+// loopback API, and requires an explicit JSON request for every state change.
+func (s *Server) protectMutations(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut && r.Method != http.MethodPost && r.Method != http.MethodPatch {
+			next(w, r)
+			return
+		}
+		media := strings.ToLower(strings.TrimSpace(strings.Split(r.Header.Get("Content-Type"), ";")[0]))
+		if media != "application/json" {
+			s.fail(w, http.StatusUnsupportedMediaType, errors.New("state-changing requests require application/json"))
+			return
+		}
+		if site := strings.ToLower(r.Header.Get("Sec-Fetch-Site")); site != "" && site != "same-origin" {
+			s.fail(w, http.StatusForbidden, errors.New("cross-site requests are not allowed"))
+			return
+		}
+		if origin := r.Header.Get("Origin"); origin != "" {
+			u, err := url.Parse(origin)
+			if err != nil || u.Scheme != "http" || !strings.EqualFold(u.Host, r.Host) {
+				s.fail(w, http.StatusForbidden, errors.New("request origin does not match LapDog"))
+				return
+			}
+		}
+		next(w, r)
+	}
 }
 
 // InterfaceHandler returns the routed handler after confirming that the embedded

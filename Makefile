@@ -1,6 +1,7 @@
 VERSION ?= 0.1.0
+REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 MODULE  := github.com/blezek/lapdog
-LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -s -w
+LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -X $(MODULE)/internal/version.Revision=$(REVISION) -s -w
 
 # CGO_ENABLED=0 is load-bearing, not a preference. It is why modernc.org/sqlite
 # was chosen over the C bindings, and it is what allows the Windows binary to be

@@ -1,5 +1,14 @@
 # ToDo: install the telemetry repair and rebuild the database
 
+## Automatic update Windows verification
+
+Before calling automatic update production-verified, run a local fake release endpoint
+on Windows through active-session waiting, graceful restart, version/revision change,
+installer-registry reconciliation, permission failure, checksum failure and rollback.
+Then separately repeat the NSIS running-app upgrade; it is a different replacement path.
+Repair or replace the local `makensis` 3.12 installation first: even a minimal zlib
+installer currently aborts with `std::bad_alloc`, which blocks `make release-snapshot`.
+
 The 2026-08-12 UTC captures did exercise real driving, laps, position events and online sessions. They also exposed lost time in the old ingestion path. After installing a build containing the repair, stop LapDog and rebuild into a separate file before replacing anything:
 
 ```cmd
