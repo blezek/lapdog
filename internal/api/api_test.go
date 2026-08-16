@@ -256,18 +256,47 @@ func TestParseFilterCommaSeparatedList(t *testing.T) {
 	}
 }
 
-// A bare date as the upper bound must cover the whole day. Treating it as midnight
-// would silently exclude everything that happened on the day the user selected.
-func TestParseFilterBareDateCoversWholeDay(t *testing.T) {
-	f, err := parseFilter(mustValues(t, "from=2026-07-01&to=2026-08-04"))
+// A bare date is the viewer's local calendar day. At 20:00 in Chicago the stored
+// UTC timestamp is already on the following day, so UTC-midnight bounds would
+// make the dashboard's Today filter report no time for an evening race.
+func TestParseFilterBareDateUsesLocalCalendar(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := time.Local
+	time.Local = chicago
+	t.Cleanup(func() { time.Local = previous })
+
+	f, err := parseFilter(mustValues(t, "from=2026-08-15&to=2026-08-15"))
 	if err != nil {
 		t.Fatalf("parseFilter: %v", err)
 	}
-	if f.From != "2026-07-01T00:00:00Z" {
-		t.Errorf("From = %q, want the start of the day", f.From)
+	if f.From != "2026-08-15T05:00:00Z" {
+		t.Errorf("From = %q, want Chicago midnight in UTC", f.From)
 	}
-	if !strings.HasPrefix(f.To, "2026-08-04T23:59:") {
-		t.Errorf("To = %q, want the end of the day so that day's sessions are included", f.To)
+	if f.To != "2026-08-16T04:59:59Z" {
+		t.Errorf("To = %q, want the end of the Chicago day in UTC", f.To)
+	}
+}
+
+// Calendar-day arithmetic, rather than adding 24 hours, keeps the bound correct
+// when daylight saving makes a local day 23 hours long.
+func TestParseFilterBareDateHandlesDST(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := time.Local
+	time.Local = chicago
+	t.Cleanup(func() { time.Local = previous })
+
+	f, err := parseFilter(mustValues(t, "from=2026-03-08&to=2026-03-08"))
+	if err != nil {
+		t.Fatalf("parseFilter: %v", err)
+	}
+	if f.From != "2026-03-08T06:00:00Z" || f.To != "2026-03-09T04:59:59Z" {
+		t.Errorf("DST day = %q / %q, want Chicago's 23-hour day", f.From, f.To)
 	}
 }
 
