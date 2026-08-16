@@ -124,17 +124,18 @@ func parseLapFilter(q url.Values) (store.LapFilter, error) {
 // normaliseTimeBound accepts either a full RFC3339 timestamp or a bare
 // YYYY-MM-DD date.
 //
-// A bare date is expanded to cover the whole day: "from" to its start and "to" to
-// its final instant. Without that, a range picker sending to=2026-08-04 would
-// silently exclude everything that happened that day, since started_at carries a
-// time of day.
+// A bare date is expanded to cover the whole day in the server's local zone:
+// "from" to its start and "to" to its final instant. The browser and server are
+// the same desktop application, so this is the calendar day the driver selected.
+// Advancing by a calendar day rather than 24 hours also preserves the boundary
+// across daylight-saving transitions.
 func normaliseTimeBound(key, raw string) (string, error) {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t.UTC().Format(time.RFC3339), nil
 	}
-	if d, err := time.Parse("2006-01-02", raw); err == nil {
+	if d, err := time.ParseInLocation("2006-01-02", raw, time.Local); err == nil {
 		if key == "to" {
-			return d.UTC().Add(24*time.Hour - time.Second).Format(time.RFC3339), nil
+			d = d.AddDate(0, 0, 1).Add(-time.Second)
 		}
 		return d.UTC().Format(time.RFC3339), nil
 	}
