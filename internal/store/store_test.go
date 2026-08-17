@@ -25,6 +25,21 @@ func intp(v int) *int         { return &v }
 func f64p(v float64) *float64 { return &v }
 func strp(v string) *string   { return &v }
 
+// useTestLocation makes both Go and SQLite's localtime modifier use a known,
+// non-UTC zone. Store tests do not run in parallel because time.Local and TZ are
+// process-wide state.
+func useTestLocation(t *testing.T, name string) {
+	t.Helper()
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := time.Local
+	time.Local = loc
+	t.Cleanup(func() { time.Local = previous })
+	t.Setenv("TZ", name)
+}
+
 func TestOpenAppliesMigrationsAndCreatesTables(t *testing.T) {
 	s := openTemp(t)
 	v, err := s.SchemaVersion()
@@ -671,6 +686,47 @@ func TestDaily(t *testing.T) {
 	// Daily groups by calendar day, so the three sessions on 07-08 collapse.
 	if len(byDay) != 4 {
 		t.Errorf("distinct days = %d, want 4", len(byDay))
+	}
+}
+
+// The dashboard's calendar heatmap must label an evening session with the local
+// day the driver experienced, even when UTC has already advanced to tomorrow.
+func TestDailyUsesLocalCalendarDay(t *testing.T) {
+	useTestLocation(t, "America/Chicago")
+	s := openTemp(t)
+	seedAt(t, s, "evening", "2026-08-16T02:00:00Z")
+
+	rows, err := s.Daily(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Day != "2026-08-15" {
+		t.Fatalf("daily rows = %+v, want the session under local day 2026-08-15", rows)
+	}
+}
+
+// Week and month charts use the same local calendar contract as the daily
+// heatmap. Each timestamp is just after a UTC boundary but still in the prior
+// local period.
+func TestCalendarSummariesUseLocalPeriods(t *testing.T) {
+	useTestLocation(t, "America/Chicago")
+	for _, tc := range []struct {
+		name, group, started, want string
+	}{
+		{"week", "week", "2026-08-03T02:00:00Z", "2026-W30"},
+		{"month", "month", "2026-09-01T02:00:00Z", "2026-08"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := openTemp(t)
+			seedAt(t, s, tc.name, tc.started)
+			rows, err := s.Summary(Filter{}, tc.group)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(rows) != 1 || rows[0].Key != tc.want {
+				t.Fatalf("%s summary = %+v, want local period %q", tc.group, rows, tc.want)
+			}
+		})
 	}
 }
 

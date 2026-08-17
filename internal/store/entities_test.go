@@ -732,6 +732,20 @@ func TestEntityProgressionByMonth(t *testing.T) {
 	}
 }
 
+func TestEntityProgressionUsesLocalMonth(t *testing.T) {
+	useTestLocation(t, "America/Chicago")
+	s := openTemp(t)
+	decoyProgressionSession(t, s, "evening/0", 173, 18, "2026-09-01T02:00:00Z", 101.5)
+
+	rows, err := s.EntityProgression(Filter{}, "car", 173, 18)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Month != "2026-08" {
+		t.Fatalf("progression = %+v, want the evening lap under local month 2026-08", rows)
+	}
+}
+
 // Pit laps are not attempts at a fast lap, so they cannot set a monthly best.
 func TestEntityProgressionExcludesPitLaps(t *testing.T) {
 	s := openTemp(t)
