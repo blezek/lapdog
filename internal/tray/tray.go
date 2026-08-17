@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/updater"
 )
 
 // refreshInterval is how often the menu and icon are brought up to date.
@@ -58,6 +59,31 @@ type Options struct {
 	Done <-chan struct{}
 	// Log receives errors from menu actions.
 	Log *slog.Logger
+	// UpdateStatus drives the dynamic cue without making the tray own updater work.
+	UpdateStatus func() updater.Snapshot
+}
+
+func updateTitle(s updater.Snapshot) string {
+	if s.Available == nil {
+		return ""
+	}
+	switch s.State {
+	case updater.Downloading:
+		return "Downloading update " + s.Available.Version
+	case updater.Waiting:
+		return "Update ready; waiting for session to finish"
+	case updater.Applying:
+		return "Applying update " + s.Available.Version
+	case updater.RestartRequired:
+		return "Update ready; restart required"
+	case updater.Failed:
+		if s.AcceptedVersion != nil {
+			return "Update failed; open LapDog for details"
+		}
+	case updater.Available, updater.Deferred, updater.Skipped:
+		return "Update available: " + s.Available.Version
+	}
+	return ""
 }
 
 // stateFor maps collector status onto an icon state.

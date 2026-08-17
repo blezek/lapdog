@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type CaptureReindexStatus, type Config } from '../api'
 import { bytes, licenceLabel, num } from '../format'
 import { applyTheme } from '../theme'
+import { buildIdentity } from '../update'
 import { Banner, Card, ErrorNote, Loading } from '../components/ui'
 
 /*
@@ -62,6 +63,7 @@ export function Settings() {
   const qc = useQueryClient()
   const config = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const status = useQuery({ queryKey: ['status'], queryFn: api.status })
+  const update = useQuery({ queryKey: ['update'], queryFn: api.update, retry: false })
   const captureReindex = useQuery({
     queryKey: ['capture-reindex'],
     queryFn: api.captureReindexStatus,
@@ -103,6 +105,12 @@ export function Settings() {
     onError: (e: unknown) => setFailed(e instanceof Error ? e.message : String(e)),
   })
 
+  const checkUpdate = useMutation({
+    mutationFn: api.checkForUpdates,
+    onSuccess: (result) => { setFailed(null); qc.setQueryData(['update'], result) },
+    onError: (e: unknown) => setFailed(e instanceof Error ? e.message : String(e)),
+  })
+
   useEffect(() => {
     const finished = captureReindex.data?.finishedAt
     if (!finished || finished === lastReindexRefresh.current) return
@@ -116,6 +124,10 @@ export function Settings() {
 
   if (config.isLoading) return <Loading />
   if (config.isError) return <ErrorNote error={config.error} />
+
+  const build = update.data
+    ? buildIdentity(update.data.currentVersion, update.data.currentRevision)
+    : null
   if (!config.data) return null
 
   const c = config.data
@@ -289,6 +301,24 @@ export function Settings() {
         </div>
 
         <div className="section-title">Application</div>
+
+        <div className="setting">
+          <div className="setting-label">
+            Version
+            <span className="setting-hint mono">
+              {build?.version ?? (update.isError ? 'Version unavailable' : 'Loading build information…')}
+            </span>
+            <span className="setting-hint mono">{build?.revision ?? 'Revision unknown'}</span>
+            <span className="setting-hint">
+              {update.data?.lastCheck ? `Last checked ${new Date(update.data.lastCheck).toLocaleString()}.` : 'No completed update check is recorded.'}
+            </span>
+          </div>
+          <div className="setting-control">
+            <button type="button" className="control" disabled={update.data?.state === 'disabled' || checkUpdate.isPending} onClick={() => checkUpdate.mutate()}>
+              {checkUpdate.isPending ? 'Checking…' : 'Check for updates'}
+            </button>
+          </div>
+        </div>
 
         <div className="setting">
           <div className="setting-label">

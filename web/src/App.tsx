@@ -1,12 +1,14 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
 import { api } from './api'
 import { applyTheme } from './theme'
 import { Icon } from './components/ui'
+import { UpdatePopdown } from './components/UpdatePopdown'
 import { hm } from './format'
 import { filterParams } from './useFilter'
+import { shouldOpenUpdate } from './update'
 
 import { Live } from './pages/Live'
 import { Dashboard } from './pages/Dashboard'
@@ -41,9 +43,23 @@ export function App() {
   const routeTo = (pathname: string) => ({ pathname, search: sharedSearch ? `?${sharedSearch}` : '' })
   // The theme preference lives in settings, so it is applied as soon as it loads.
   const { data: config } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const update = useQuery({
+    queryKey: ['update'],
+    queryFn: api.update,
+    refetchInterval: 2000,
+    retry: false,
+  })
+  const [updateOpen, setUpdateOpen] = useState(false)
   useEffect(() => {
     if (config?.theme) applyTheme(config.theme)
   }, [config?.theme])
+  useEffect(() => {
+    if (!update.data || !shouldOpenUpdate(update.data, location.search)) return
+    setUpdateOpen(true)
+    if (update.data.promptEligible) {
+      void api.updateAction('shown').then(() => update.refetch())
+    }
+  }, [location.search, update.data?.promptEligible, update.data?.availableRelease?.version])
 
   return (
     <div className="shell">
@@ -65,6 +81,12 @@ export function App() {
         ))}
 
         <div className="nav-spacer" />
+        {update.data?.availableRelease && (
+          <button type="button" className="nav-item update-nav" onClick={() => setUpdateOpen(true)}>
+            <Icon name="download" /> Update{' '}
+            <span className="version-badge">{update.data.availableRelease.version}</span>
+          </button>
+        )}
         <NavLink
           to={routeTo('/settings')}
           className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
@@ -91,6 +113,13 @@ export function App() {
           <Route path="*" element={<Navigate to={routeTo('/dashboard')} replace />} />
         </Routes>
       </main>
+      {update.data && (
+        <UpdatePopdown
+          status={update.data}
+          open={updateOpen}
+          onClose={() => setUpdateOpen(false)}
+        />
+      )}
     </div>
   )
 }

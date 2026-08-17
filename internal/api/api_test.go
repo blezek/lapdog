@@ -203,6 +203,13 @@ func get(t *testing.T, h http.Handler, path string, v any) *httptest.ResponseRec
 	return rec
 }
 
+func jsonRequest(method, path string, body io.Reader) *http.Request {
+	r := httptest.NewRequest(method, path, body)
+	r.Header.Set("Content-Type", "application/json")
+	r.Header.Set("Sec-Fetch-Site", "same-origin")
+	return r
+}
+
 // ------------------------------------------------------------------ filter
 
 func mustValues(t *testing.T, raw string) url.Values {
@@ -614,7 +621,7 @@ func TestGetAndPutSettings(t *testing.T) {
 
 	body := `{"pollIntervalSeconds":2.5,"captureEnabled":false,"theme":"dark"}`
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body)))
+	h.ServeHTTP(rec, jsonRequest(http.MethodPut, "/api/settings", strings.NewReader(body)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d\n%s", rec.Code, rec.Body.String())
 	}
@@ -638,7 +645,7 @@ func TestGetAndPutSettings(t *testing.T) {
 func TestPutSettingsReportsRestartRequired(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/settings",
+	h.ServeHTTP(rec, jsonRequest(http.MethodPut, "/api/settings",
 		strings.NewReader(`{"port":48000}`)))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
@@ -668,7 +675,7 @@ func TestPutSettingsRejectsInvalid(t *testing.T) {
 		`{not json`,
 	} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, "/api/settings", strings.NewReader(body)))
+		h.ServeHTTP(rec, jsonRequest(http.MethodPut, "/api/settings", strings.NewReader(body)))
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("PUT %s: status = %d, want 400", body, rec.Code)
 		}
@@ -693,7 +700,7 @@ func TestSettingsRejectsWrongMethod(t *testing.T) {
 func TestCaptureReindexRefusesConnectedSimulator(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	h.ServeHTTP(rec, jsonRequest(http.MethodPost, "/api/captures/reindex", nil))
 	if rec.Code != http.StatusConflict {
 		t.Errorf("status = %d, want 409 while connected; body=%s", rec.Code, rec.Body.String())
 	}
@@ -708,7 +715,7 @@ func TestCaptureReindexReportsNoSavedCaptures(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	h.ServeHTTP(rec, jsonRequest(http.MethodPost, "/api/captures/reindex", nil))
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("status = %d, want 400 with no captures; body=%s", rec.Code, rec.Body.String())
 	}
@@ -748,7 +755,7 @@ func TestCaptureReindexRunsInBackgroundAndReportsResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	h.ServeHTTP(rec, jsonRequest(http.MethodPost, "/api/captures/reindex", nil))
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202; body=%s", rec.Code, rec.Body.String())
 	}
@@ -801,7 +808,7 @@ func TestCaptureReindexRunsInBackgroundAndReportsResult(t *testing.T) {
 	firstDriving := rows[0].DrivingSeconds
 
 	second := httptest.NewRecorder()
-	h.ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/captures/reindex", nil))
+	h.ServeHTTP(second, jsonRequest(http.MethodPost, "/api/captures/reindex", nil))
 	if second.Code != http.StatusAccepted {
 		t.Fatalf("second rebuild status = %d, want 202; body=%s", second.Code, second.Body.String())
 	}

@@ -20,7 +20,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -H windowsgui -X github.com/blezek/lapdog/internal/version.Version={{ .Version }}
+      - -s -w -H windowsgui -X github.com/blezek/lapdog/internal/version.Version={{ .Version }} -X github.com/blezek/lapdog/internal/version.Revision={{ .Commit }}
 
   - id: lapdogctl
     main: ./cmd/lapdogctl
@@ -32,7 +32,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w -X github.com/blezek/lapdog/internal/version.Version={{ .Version }}
+      - -s -w -X github.com/blezek/lapdog/internal/version.Version={{ .Version }} -X github.com/blezek/lapdog/internal/version.Revision={{ .Commit }}
 
 archives:
   - id: self-update

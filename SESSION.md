@@ -9,11 +9,11 @@ Companion to `ToDo.md`, which holds the single next action and how to carry it o
 ## Current state
 
 ```
-263 Go test functions across 19 packages   pass, including under -race
-33 frontend tests                         pass
+335 Go test functions                      pass; collector passes under -race
+73 frontend tests                          pass
 make ci                                   green
 schema version                            2
-dist/lapdog.exe                           14.2 MB, windows/amd64, GUI subsystem
+dist/lapdog.exe                           15 MB, windows/amd64, GUI subsystem
 dist/lapdogctl.exe                        13.0 MB, windows/amd64, console subsystem
 dist/lapdog-0.1.0-portable.zip            11.2 MB, both executables
 dist/lapdog-0.1.0-setup.exe                4.7 MB, payload confirmed present
@@ -30,6 +30,48 @@ dist/lapdog-0.1.0-setup.exe                4.7 MB, payload confirmed present
 5. **Consider one calendar row per year** for the "All time" heatmap, the only way that range gets larger cells.
 
 Deliberately excluded, and recorded as such in the specs: `.ibt` file import, sector times, true overtake detection from `CarIdxLapDistPct`, and setup tracking. Central hub upload is no longer excluded but not designed — see `docs/server-design-brainstorming.md`.
+
+---
+
+## 2026-08-16 — automatic, consent-gated GitHub updates
+
+Windows release builds now check stable `blezek/lapdog` releases after startup and once
+per day. Availability is visible in the sidebar and tray without launching a browser.
+Consent, deferral, exact-version skipping, staging and pending restart survive process
+restarts in an updater-owned atomic JSON file under the data directory.
+
+The accepted archive is bounded, checked against `SHA256SUMS` and required to contain
+exactly one root `lapdog.exe`. The collector now distinguishes an active database segment
+from optional capture retention and provides an atomic quiesce gate. Replacement waits
+for both that gate and capture re-indexing, launches a staged helper, performs normal
+shutdown, preserves the old executable, and uses `go-selfupdate`'s rollback-aware apply.
+If apply rolls back, the old executable is relaunched so recording can resume.
+
+The local API exposes current/target metadata and explicit updater states. Every mutation
+route now requires JSON and rejects cross-origin browser requests. The interface safely
+renders release Markdown, uses recording-dependent update labels, and shows version plus
+nullable source revision. Make and GoReleaser stamp both values; installer registry
+version reconciliation occurs only when the executable directory matches the existing
+HKCU uninstall entry.
+
+Local unit/typecheck verification covers the coordinator, artifact validation, mutation
+guard, quiesce gate and release-note safety. Windows fake-release and NSIS running-app
+upgrade exercises remain separate required reality checks; neither is claimed here.
+
+`make ci` passed after the implementation, including the production interface, all Go
+and web suites, typecheck, Windows cross-builds and embedded-asset checks. `file` reported
+the tray binary as PE32+ GUI x86-64 and the CLI as PE32+ console x86-64; `go version -m`
+showed `CGO_ENABLED=0`, `GOOS=windows`, `GOARCH=amd64`, semantic-version and full-revision
+linker values. The final collector race suite passed in 95.543 seconds. Headless Chrome
+then measured and screenshots were inspected for the popdown at 1280×900 and 520×820 in
+light and dark themes; all four were open, contained and non-overflowing.
+
+`make release-snapshot` did not complete because the installed `makensis` 3.12 aborted
+with `std::bad_alloc` in the installer hook. A separate minimal NSIS script containing
+only `README.md` and using zlib failed identically, including outside the sandbox, so the
+failure is not attributed to the updater binary or release configuration. Repairing or
+replacing that local NSIS installation remains required before snapshot verification can
+be called green.
 
 ---
 

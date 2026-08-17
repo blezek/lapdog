@@ -244,6 +244,7 @@ export interface Facets {
 export interface Status {
   connected: boolean
   paused: boolean
+  recording: boolean
   intervalSeconds: number
   sessionKey: string
   sessionLabel: string
@@ -354,6 +355,34 @@ export interface CaptureReindexStatus {
   error?: string
 }
 
+export type UpdateState =
+  | 'disabled' | 'checking' | 'current' | 'available' | 'deferred' | 'skipped'
+  | 'downloading' | 'waiting' | 'applying' | 'restart-required' | 'failed'
+
+export interface UpdateRelease {
+  version: string
+  url: string
+  notes: string
+  publishedAt: string | null
+}
+
+export interface UpdateStatus {
+  state: UpdateState
+  currentVersion: string
+  currentRevision: string | null
+  availableRelease: UpdateRelease | null
+  lastCheck: string | null
+  deferredUntil: string | null
+  skippedVersion: string | null
+  acceptedVersion: string | null
+  promptEligible: boolean
+  recording: boolean
+  reindexing: boolean
+  restartSafe: boolean
+  pendingRestart: boolean
+  error: string | null
+}
+
 export interface ListResponse<T> {
   items: T[]
   total: number
@@ -430,6 +459,23 @@ async function get<T>(path: string): Promise<T> {
   return (await res.json()) as T
 }
 
+async function mutate<T>(path: string, body: unknown): Promise<T> {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+  if (!res.ok) {
+    let msg = `${res.status} ${res.statusText}`
+    try {
+      const parsed = (await res.json()) as { error?: string }
+      if (parsed.error) msg = parsed.error
+    } catch { /* keep status text */ }
+    throw new ApiError(res.status, msg)
+  }
+  return (await res.json()) as T
+}
+
 export const api = {
   status: () => get<Status>('/api/status'),
   live: () => get<LiveResponse>('/api/live'),
@@ -483,7 +529,8 @@ export const api = {
   startCaptureReindex: async (): Promise<CaptureReindexStatus> => {
     const res = await fetch('/api/captures/reindex', {
       method: 'POST',
-      headers: { Accept: 'application/json' },
+	  headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+	  body: '{}',
     })
     if (!res.ok) {
       let msg = `${res.status} ${res.statusText}`
@@ -497,6 +544,11 @@ export const api = {
     }
     return (await res.json()) as CaptureReindexStatus
   },
+
+  update: () => get<UpdateStatus>('/api/update'),
+  checkForUpdates: () => mutate<UpdateStatus>('/api/update/check', {}),
+  updateAction: (action: 'install' | 'later' | 'skip' | 'shown') =>
+    mutate<UpdateStatus>('/api/update/action', { action }),
   saveSettings: async (patch: Partial<Config>): Promise<SettingsResponse> => {
     const res = await fetch('/api/settings', {
       method: 'PUT',

@@ -18,7 +18,10 @@ macOS is the development platform. There is no simulator here, but everything el
 
 **Never exercised against reality:** driving itself. That first real test was conducted sitting in the pit box, so lap detection, the driving counter and position events have never run on real telemetry. Ratings from an online session have never been seen either — offline sessions report placeholders. `ToDo.md` holds the procedure for both.
 
-**Not built:** self-update. The release pipeline produces the asset a future updater will consume; nothing consumes it.
+**Built but awaiting Windows reality checks:** automatic stable-release update.
+Release builds discover, verify, stage and restart into `lapdog.exe`; the full
+active-session wait, registry reconciliation, permission failure and rollback path
+still need the Windows fake-release exercise documented in `ToDo.md`.
 
 ## Constraints that are load-bearing
 

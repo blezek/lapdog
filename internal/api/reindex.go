@@ -29,6 +29,10 @@ func (s *Server) handleCaptureReindex(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.writeJSON(w, s.captureReindexSnapshot())
 	case http.MethodPost:
+		if s.updates != nil && s.updates.Snapshot().AcceptedVersion != nil {
+			s.fail(w, http.StatusConflict, errors.New("an accepted update is waiting to restart LapDog"))
+			return
+		}
 		if s.sp != nil && s.sp.Status().Connected {
 			s.fail(w, http.StatusConflict, errors.New("disconnect from iRacing before re-indexing saved captures"))
 			return
@@ -65,6 +69,9 @@ func (s *Server) captureReindexSnapshot() captureReindexStatus {
 	status.Failures = append([]reindex.Failure(nil), status.Failures...)
 	return status
 }
+
+// Reindexing reports whether capture replay currently owns the database.
+func (s *Server) Reindexing() bool { return s.captureReindexSnapshot().State == "running" }
 
 func (s *Server) startCaptureReindex(paths []string) (captureReindexStatus, bool) {
 	s.reindexMu.Lock()

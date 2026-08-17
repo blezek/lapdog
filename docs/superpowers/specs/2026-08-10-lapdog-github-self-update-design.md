@@ -1,132 +1,98 @@
 # LapDog GitHub Self-Update Specification
 
-**Date:** 2026-08-10
-**Status:** Draft design; release asset preparation implemented
+**Date:** 2026-08-10, revised 2026-08-16
+
+**Status:** Implemented; Windows end-to-end verification pending
+
 **Companion to:** `2026-08-04-lapdog-packaging.md`
 
-## 1. Purpose
+## Purpose and release contract
 
-LapDog should be able to update itself from GitHub Releases without changing the
-application's deployment model. The installed application remains one
-self-contained `lapdog.exe`; GitHub is only the distribution point for release
-archives, checksums and the human installer.
+LapDog updates its single installed `lapdog.exe` from stable semantic GitHub Releases
+in `blezek/lapdog`. Drafts, prereleases and non-semantic tags are ignored. Development
+builds and targets other than `windows/amd64` report updating disabled.
 
-This document defines the release asset contract and the updater behaviour that
-future implementation must follow.
+Each release supplies:
 
-## 2. Release Channel
+| Asset | Contract |
+|---|---|
+| `lapdog-windows-amd64.zip` | Self-update archive containing only `lapdog.exe` |
+| `lapdog-<version>-portable.zip` | Manual portable archive with both executables |
+| `lapdog-<version>-setup.exe` | NSIS installer |
+| `SHA256SUMS` | SHA-256 integrity values for release assets |
 
-Releases are GitHub Releases created from semantic version tags named
-`vMAJOR.MINOR.PATCH`, for example `v0.0.1`.
+GoReleaser builds the two Windows executables with `CGO_ENABLED=0`, gives only the tray
+application the GUI subsystem, and stamps both semantic version and source commit.
 
-The updater uses the stable release channel by default:
+## Discovery, consent and suppression
 
-- Draft releases are ignored.
-- Prereleases are ignored unless a future setting explicitly enables them.
-- Development builds whose stamped version is `dev` do not offer self-update.
-- Versions are compared as semantic versions, not as strings.
+Release builds check shortly after startup when the persisted last check is at least 24
+hours old, then every 24 hours. A check never opens a browser. A release is prompted once;
+manual checks still display a skipped release. “Ask again tomorrow” persists a 24-hour
+deferral. “Skip” persists that exact version, and a newer version clears the skip.
 
-The repository currently has no configured remote. The release workflow assumes
-the eventual GitHub remote is the same repository named by the Go module:
-`github.com/blezek/lapdog`.
+Installation always requires consent. “Update after session” and “Update and restart”
+mean the same durable authorization: download and verify now, then replace and restart
+automatically once recording and capture re-indexing are idle. Consent, last check,
+deferral, skip, selected release, staging and pending restart live in an atomically
+replaced updater JSON file under the data directory, not in user preferences.
 
-## 3. Targets
+## Artifact validation
 
-The only release target is `windows/amd64`.
+`go-selfupdate` supplies stable semantic discovery and rollback-capable replacement.
+LapDog owns staging because it additionally requires bounded archive/checksum responses,
+an exact `SHA256SUMS` entry, no duplicate checksum, safe ZIP paths, no unexpected entries,
+exactly one root `lapdog.exe`, no links, and bounded extracted size. The verified binary
+is staged in the updater directory.
 
-That matches the packaging spec: iRacing is a Windows application, the shipping
-LapDog binary is a Windows tray app, and Windows on ARM is not useful until
-iRacing supports that environment. Cross-platform or `windows/arm64` update
-assets are explicitly deferred.
+HTTPS plus the published SHA-256 file is integrity checking only. It does not authenticate
+a publisher if a compromised release replaces both files. Detached signatures or
+Authenticode verification remain future hardening.
 
-## 4. Assets
+## Recording and restart safety
 
-Every GitHub release publishes these assets:
+`collector.Status.Recording` means a session segment is actively being written,
+independent of optional capture-file retention. `TryQuiesce` atomically succeeds only
+when no segment is active and prevents subsequent telemetry frames from opening one.
+Re-index cannot begin after update consent, and apply waits while re-index is running.
 
-| Asset | Contents | Audience |
-|---|---|---|
-| `lapdog-windows-amd64.zip` | `lapdog.exe` only | Self-update client |
-| `lapdog-<version>-portable.zip` | `lapdog.exe`, `lapdogctl.exe` | Human portable install |
-| `lapdog-<version>-setup.exe` | NSIS installer for `lapdog.exe` | Human installer |
-| `SHA256SUMS` | SHA-256 checksums for release artifacts | Humans and updater |
+The staged executable launches with internal handoff arguments and waits for the old PID
+to exit normally, releasing SQLite, log, loopback port and tray resources. It preserves
+the prior executable in the updater directory and uses rollback-aware replacement before
+launching the installed path. A rollback-success path relaunches the old executable so
+recording resumes; a rollback failure is reported distinctly. Failure to launch the
+helper leaves the current process running and reports restart required.
 
-The self-update archive deliberately has no version in its filename. GitHub
-already scopes assets by release tag, and a stable OS/architecture filename makes
-asset discovery unambiguous for the updater. The archive contains only the GUI
-tray executable because replacing `lapdog.exe` is the update operation.
+Successful normal startup clears accepted/staged state and removes staging/backup files.
+It updates the existing HKCU uninstall `DisplayVersion` only when that entry's
+`InstallLocation` matches the running executable directory. Portable copies never create
+installer registry entries. `lapdogctl.exe` remains a portable/installer update only.
 
-The portable archive keeps `lapdogctl.exe`; it remains the diagnostic path for a
-Windows machine with no Go toolchain.
+## Interface and API
 
-## 5. GoReleaser
+`GET /api/update` exposes current version, nullable revision, coordinator state, nullable
+release and timestamps, prompt eligibility, recording/re-index/restart safety, and a
+nullable actionable error. `POST /api/update/check` refreshes metadata. `POST
+/api/update/action` accepts `install`, `later`, `skip` or `shown`.
 
-GoReleaser OSS is used to build and publish GitHub release assets. It is
-configured to:
+States are `disabled`, `checking`, `current`, `available`, `deferred`, `skipped`,
+`downloading`, `waiting`, `applying`, `restart-required` and `failed`. Local mutation
+routes require JSON and reject cross-origin browser fetch metadata or Origin, including
+the pre-existing settings and capture re-index routes.
 
-- Build `cmd/lapdog` as `windows/amd64` with `-H windowsgui`.
-- Build `cmd/lapdogctl` as `windows/amd64` without the GUI subsystem flag.
-- Stamp `internal/version.Version` from the semantic release tag.
-- Run the existing frontend build before compiling so the embedded interface is
-  present.
-- Use the existing NSIS script to create the setup executable and attach it as a
-  release extra file.
-- Emit one `SHA256SUMS` file so the updater can validate the downloaded archive.
+The sidebar shows a version badge and opens the update popdown once per discovered
+version. Tray selection opens that popdown directly. Release notes support safe Markdown
+without raw HTML. Settings shows version, nullable short revision, last check, and a
+manual check action. Background discovery failures do not prompt; accepted download or
+apply failures remain visible in the popdown and tray.
 
-GoReleaser's native NSIS pipe is not used because it is a GoReleaser Pro feature.
-The existing `makensis` path remains the installer authority.
+## Verification boundary
 
-## 6. Updater Behaviour
+Local automated verification covers semantic selection, scheduling/suppression,
+persistence, network and limits, checksum/ZIP rejection, quiescing, mutation protection,
+rollback relaunch and safe note rendering. Cross-build, PE/stamp inspection, full CI,
+snapshot release, race and real-Chrome checks are recorded in `SESSION.md` when run.
 
-The updater should be implemented around `github.com/creativeprojects/go-selfupdate`.
-It already provides GitHub release discovery, OS/architecture asset selection,
-checksum validation and executable replacement/rollback helpers while preserving
-LapDog's single-binary runtime model.
-
-Expected user flow:
-
-1. The user chooses "Check for updates" from the tray menu or settings page.
-2. LapDog checks the latest stable GitHub Release.
-3. If no newer version exists, it reports that the app is current.
-4. If a newer version exists, it shows the version and asks before downloading.
-5. The update archive is downloaded to a temporary file.
-6. The archive checksum is verified against `SHA256SUMS`.
-7. `lapdog.exe` is replaced in place.
-8. The user is told to restart LapDog to run the new version.
-
-Automatic background checks may be added later, but the first implementation is
-manual. That avoids surprising replacement of a tray process while the release
-pipeline and Windows installer path are still young.
-
-## 7. Failure Handling
-
-Update failures must leave the currently running executable intact.
-
-The updater reports clear, user-actionable failures for:
-
-- No network connection.
-- GitHub API or rate-limit errors.
-- No matching `windows/amd64` asset.
-- Missing or mismatched checksum.
-- Filesystem permission errors when replacing the executable.
-- Running from a protected location that the current user cannot write.
-
-Portable installs may live in arbitrary directories. A failed portable update is
-therefore normal and must not corrupt the existing executable.
-
-## 8. Security
-
-The first implementation validates SHA-256 checksums from the release
-`SHA256SUMS` asset over HTTPS. That protects against transfer errors and
-accidental asset mismatches.
-
-It does not protect against a compromised GitHub release that replaces both the
-archive and checksum. A stronger future version should add detached signatures
-with an embedded public key, or verify Authenticode signatures after download.
-
-## 9. Out of Scope
-
-- Silent automatic update installation.
-- Multiple release channels.
-- Downgrade support.
-- Updating `lapdogctl.exe` from inside the running tray app.
-- Enterprise package feeds such as winget, Chocolatey or MSI deployment.
+Production verification still requires the Windows fake-release procedure in `ToDo.md`
+and a separate NSIS running-application upgrade test. Neither follows merely from local
+cross-compilation.

@@ -6,7 +6,7 @@ import type { LiveResponse } from './api'
 const base: LiveResponse = {
   frame: null,
   status: {
-    connected: false, paused: false, intervalSeconds: 1,
+    connected: false, paused: false, recording: false, intervalSeconds: 1,
     sessionKey: '', sessionLabel: '', trackName: '', carName: '',
     connectedSeconds: 0, inCarSeconds: 0, drivingSeconds: 0,
     laps: 0, missingVars: [], incidentSource: '',
