@@ -3,6 +3,7 @@ package store
 import (
 	"errors"
 	"math"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -10,6 +11,23 @@ import (
 	"testing"
 	"time"
 )
+
+const testLocation = "America/Chicago"
+
+// SQLite fixes the process timezone when its localtime support is first used.
+// Establish a non-UTC test zone before any Store is opened so the calendar
+// tests do not depend on the host running the suite.
+func TestMain(m *testing.M) {
+	loc, err := time.LoadLocation(testLocation)
+	if err != nil {
+		panic(err)
+	}
+	if err := os.Setenv("TZ", testLocation); err != nil {
+		panic(err)
+	}
+	time.Local = loc
+	os.Exit(m.Run())
+}
 
 func openTemp(t *testing.T) *Store {
 	t.Helper()
@@ -24,21 +42,6 @@ func openTemp(t *testing.T) *Store {
 func intp(v int) *int         { return &v }
 func f64p(v float64) *float64 { return &v }
 func strp(v string) *string   { return &v }
-
-// useTestLocation makes both Go and SQLite's localtime modifier use a known,
-// non-UTC zone. Store tests do not run in parallel because time.Local and TZ are
-// process-wide state.
-func useTestLocation(t *testing.T, name string) {
-	t.Helper()
-	loc, err := time.LoadLocation(name)
-	if err != nil {
-		t.Fatal(err)
-	}
-	previous := time.Local
-	time.Local = loc
-	t.Cleanup(func() { time.Local = previous })
-	t.Setenv("TZ", name)
-}
 
 func TestOpenAppliesMigrationsAndCreatesTables(t *testing.T) {
 	s := openTemp(t)
@@ -692,7 +695,6 @@ func TestDaily(t *testing.T) {
 // The dashboard's calendar heatmap must label an evening session with the local
 // day the driver experienced, even when UTC has already advanced to tomorrow.
 func TestDailyUsesLocalCalendarDay(t *testing.T) {
-	useTestLocation(t, "America/Chicago")
 	s := openTemp(t)
 	seedAt(t, s, "evening", "2026-08-16T02:00:00Z")
 
@@ -709,7 +711,6 @@ func TestDailyUsesLocalCalendarDay(t *testing.T) {
 // heatmap. Each timestamp is just after a UTC boundary but still in the prior
 // local period.
 func TestCalendarSummariesUseLocalPeriods(t *testing.T) {
-	useTestLocation(t, "America/Chicago")
 	for _, tc := range []struct {
 		name, group, started, want string
 	}{
