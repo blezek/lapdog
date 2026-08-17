@@ -358,18 +358,19 @@ export function Settings() {
         */}
         <div className="setting">
           <div className="setting-label">
-            Debug logging
+            Debugging
             <span className="setting-hint">
               Records every step of reading telemetry: the mapping, the header fields,
-              and the full list of variables the simulator publishes. Takes effect
-              immediately. Verbose — leave it on only while diagnosing.
+              and the full list of variables the simulator publishes. It also shows
+              the resolved beginning and end of date filters in their popover. Takes
+              effect immediately. Verbose — leave it on only while diagnosing.
             </span>
           </div>
           <div className="setting-control">
             <Toggle
               checked={c.debug}
               onChange={(v) => set({ debug: v })}
-              label="Debug logging"
+              label="Debugging"
             />
           </div>
         </div>

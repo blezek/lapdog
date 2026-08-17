@@ -10,14 +10,6 @@
 import { useCallback, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import type { Filter } from './api'
-import {
-  daysAgo,
-  isoDay,
-  startOfMonth,
-  startOfWeek,
-  startOfYear,
-} from './format'
-import { todayLocal } from './locale'
 
 /**
  * rangePresets are the date ranges the interface offers.
@@ -169,42 +161,12 @@ export function removeSavedFilterSet(sets: SavedFilterSet[], id: string): SavedF
   return sets.filter((s) => s.id !== id)
 }
 
-/**
- * rangeBounds turns a preset into the from/to dates to send the server.
- *
- * Each is a bare YYYY-MM-DD in the viewer's own zone; the server expands "from" to
- * the start of its day and "to" to the end. A missing bound is deliberate: the
- * rolling presets leave "to" open because there is nothing later than now, and
- * "all" leaves both open so the query stays index-friendly rather than carrying an
- * ancient lower bound.
- */
-function rangeBounds(range: RangeId, params: URLSearchParams): { from?: string; to?: string } {
-  switch (range) {
-    case 'today': {
-      const t = isoDay(todayLocal())
-      return { from: t, to: t }
-    }
-    case 'yesterday': {
-      const y = daysAgo(1)
-      return { from: y, to: y }
-    }
-    case 'week':
-      return { from: startOfWeek() }
-    case 'month':
-      return { from: startOfMonth() }
-    case 'year':
-      return { from: startOfYear() }
-    case 'all':
-      return {}
-    case 'custom':
-      return {
-        from: params.get('from') || undefined,
-        to: params.get('to') || undefined,
-      }
-    default: {
-      const n = Number(range)
-      return Number.isFinite(n) && n > 0 ? { from: daysAgo(n) } : {}
-    }
+/** customBounds reads only the explicit dates that Custom owns in the URL. */
+function customBounds(range: RangeId, params: URLSearchParams): { from?: string; to?: string } {
+  if (range !== 'custom') return {}
+  return {
+    from: params.get('from') || undefined,
+    to: params.get('to') || undefined,
   }
 }
 
@@ -215,7 +177,7 @@ export function useFilter() {
   const state = useMemo<FilterState>(() => {
     const rawRange = (params.get('range') ?? DEFAULT_RANGE) as RangeId
     const range = rangePresets.some((p) => p.id === rawRange) ? rawRange : DEFAULT_RANGE
-    const bounds = rangeBounds(range, params)
+    const bounds = customBounds(range, params)
 
     const list = (k: string) => {
       const raw = params.get(k)
@@ -310,10 +272,9 @@ export function useFilter() {
     setSavedSets(next)
   }, [savedSets])
 
-  /** filter is the plain Filter to send to the API. */
+  /** filter carries the named range so the server resolves its own calendar. */
   const filter: Filter = useMemo(() => {
-    const { range: _range, ...rest } = state
-    return rest
+    return state
   }, [state])
 
   const active = useMemo(() => {

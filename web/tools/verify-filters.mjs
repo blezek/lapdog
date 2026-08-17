@@ -7,6 +7,7 @@ const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const PROFILE = '/tmp/chrome-lapdog-filters'
 const PORT = 9335
 const SHOT = '/private/tmp/lapdog-filter-overhaul.png'
+const DEBUG_SHOT = '/private/tmp/lapdog-date-filter-debug.png'
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function main() {
@@ -114,6 +115,30 @@ async function main() {
       escaped.expanded === 'false' && escaped.focused,
       `Escape did not close the popover and restore focus: ${JSON.stringify(escaped)}`,
     )
+
+    await send('Page.navigate', { url: `${BASE}/dashboard?range=today` })
+    await sleep(700)
+    const debugBounds = await evaluate(`(async () => {
+      document.querySelector('[data-filter-trigger="date"]').click();
+      for (let i = 0; i < 20 && !document.querySelector('[aria-label="Resolved date filter bounds"]'); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return {
+        text: document.querySelector('[aria-label="Resolved date filter bounds"]')?.textContent ?? '',
+      };
+    })()`)
+    assert(debugBounds.text.includes('Beginning') && debugBounds.text.includes('End'),
+      `debug date bounds are missing: ${JSON.stringify(debugBounds)}`)
+    const shownDays = debugBounds.text.match(/\d{4}-\d{2}-\d{2}/g) ?? []
+    assert(shownDays.length === 2 && shownDays[0] === shownDays[1],
+      `Today does not begin and end on one server-local date: ${JSON.stringify(debugBounds)}`)
+    assert(debugBounds.text.includes('00:00:00') && debugBounds.text.includes('23:59:59'),
+      `Today does not cover the full server-local day: ${JSON.stringify(debugBounds)}`)
+    assert(!debugBounds.text.includes('No lower bound') && !debugBounds.text.includes('No upper bound'),
+      `Today unexpectedly has an open bound: ${JSON.stringify(debugBounds)}`)
+    const debugShot = await send('Page.captureScreenshot', { format: 'png', captureBeyondViewport: true })
+    writeFileSync(DEBUG_SHOT, Buffer.from(debugShot.data, 'base64'))
+    await evaluate(`document.querySelector('[data-filter-trigger="date"]').click()`)
 
     for (const name of ['Cars', 'Tracks']) {
       for (let index = 0; index < 2; index++) {
@@ -243,7 +268,7 @@ async function main() {
     await sleep(300)
     assert(await evaluate(`JSON.parse(localStorage.getItem('lapdog.savedFilters.v1')).length`) === 0, 'filter set not deleted')
 
-    console.log(`PASS: multi-select, cross-view propagation, save, reload, and delete -> ${SHOT}`)
+    console.log(`PASS: filters and debug bounds -> ${SHOT}, ${DEBUG_SHOT}`)
     ws.close()
   } finally {
     chrome.kill('SIGKILL')

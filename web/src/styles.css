@@ -731,6 +731,25 @@ h1 {
   color: var(--text-muted);
 }
 
+.datepanel-debug {
+  gap: 5px;
+}
+
+.datepanel-debug-row {
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.datepanel-debug-row code {
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
 .datepanel-heatmap {
   width: 100%;
 }

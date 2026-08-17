@@ -54,8 +54,9 @@ export function DateFilter({ open, onToggle }: { open: boolean; onToggle: () => 
 
 /** DatePanel is the popover body, split out so its many hooks stay off the button. */
 function DatePanel() {
-  const { state, update, toggleIn } = useFilter()
+  const { state, filter, update, toggleIn } = useFilter()
   const theme = useTheme()
+  const { data: config } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
 
   // A range is chosen a day at a time: the first click sets both ends to that day,
   // the second stretches the window to span the two. Held in a ref so the chart's
@@ -123,6 +124,8 @@ function DatePanel() {
           </button>
         ))}
       </div>
+
+      {config?.debug && <DebugDateBounds filter={filter} />}
 
       <div className="datepanel-section">
         <div className="datepanel-heading">Custom range</div>
@@ -216,6 +219,28 @@ function DatePanel() {
   )
 }
 
+/** DebugDateBounds reports the server's own interpretation of the filter. */
+function DebugDateBounds({ filter }: { filter: Filter }) {
+  const { data } = useQuery({
+    queryKey: ['filter-bounds', filter],
+    queryFn: () => api.filterBounds(filter),
+  })
+
+  return (
+    <div className="datepanel-section datepanel-debug" aria-label="Resolved date filter bounds">
+      <div className="datepanel-heading">Debug: resolved date filter</div>
+      <div className="datepanel-debug-row">
+        <span>Beginning</span>
+        <code>{data ? (data.beginning || 'No lower bound') : 'Resolving…'}</code>
+      </div>
+      <div className="datepanel-debug-row">
+        <span>End</span>
+        <code>{data ? (data.end || 'No upper bound') : 'Resolving…'}</code>
+      </div>
+    </div>
+  )
+}
+
 /**
  * HeatmapPicker is a calendar of driving hours the user clicks to choose dates.
  *
@@ -239,7 +264,7 @@ function HeatmapPicker({
   onPick: (day: string) => void
 }) {
   const pickerFilter: Filter = useMemo(() => {
-    const { from, to, hourFrom, hourTo, weekdays, ...rest } = filter
+    const { range: _range, from, to, hourFrom, hourTo, weekdays, ...rest } = filter
     return rest
   }, [filter])
 

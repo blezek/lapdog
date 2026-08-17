@@ -103,6 +103,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/sessions/{id}/positions", s.handleSessionPositions)
 	mux.HandleFunc("GET /api/laps", s.handleLaps)
 	mux.HandleFunc("GET /api/facets", s.handleFacets)
+	mux.HandleFunc("GET /api/filter-bounds", s.handleFilterBounds)
 	mux.HandleFunc("GET /api/export", s.handleExport)
 	mux.HandleFunc("/api/settings", s.protectMutations(s.handleSettings))
 	mux.HandleFunc("/api/captures/reindex", s.protectMutations(s.handleCaptureReindex))

@@ -390,6 +390,8 @@ export interface ListResponse<T> {
 
 /** Filter mirrors store.Filter. Undefined fields are omitted from the query. */
 export interface Filter {
+  /** Relative calendar range resolved by the local LapDog server. */
+  range?: string
   from?: string
   to?: string
   sessionType?: string[]
@@ -411,9 +413,15 @@ export interface LapFilter extends Filter {
   cleanLaps?: boolean
 }
 
+export interface FilterBounds {
+  beginning: string
+  end: string
+}
+
 /** toQuery renders a Filter as URL search parameters. */
 export function toQuery(f: Filter, extra: Record<string, string> = {}): string {
   const q = new URLSearchParams()
+  if (f.range) q.set('range', f.range)
   if (f.from) q.set('from', f.from)
   if (f.to) q.set('to', f.to)
   if (f.sessionType?.length) q.set('session_type', f.sessionType.join(','))
@@ -480,6 +488,7 @@ export const api = {
   status: () => get<Status>('/api/status'),
   live: () => get<LiveResponse>('/api/live'),
   facets: () => get<Facets>('/api/facets'),
+  filterBounds: (f: Filter) => get<FilterBounds>(`/api/filter-bounds?${toQuery(f)}`),
 
   totals: (f: Filter) => get<Totals>(`/api/totals?${toQuery(f)}`),
   summary: (f: Filter, groupBy: string) =>
