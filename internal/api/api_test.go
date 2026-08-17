@@ -307,10 +307,57 @@ func TestParseFilterBareDateHandlesDST(t *testing.T) {
 	}
 }
 
+// Presets are resolved from the server clock, not the browser clock. At this
+// instant UTC is already August 17 while Chicago is still August 16.
+func TestParseFilterPresetUsesServerCalendar(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 8, 17, 1, 30, 0, 0, time.UTC).In(chicago)
+
+	today, err := parseFilterAt(mustValues(t, "range=today"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if today.From != "2026-08-16T05:00:00Z" || today.To != "2026-08-17T04:59:59Z" {
+		t.Errorf("Today = %q / %q, want the August 16 Chicago day", today.From, today.To)
+	}
+
+	yesterday, err := parseFilterAt(mustValues(t, "range=yesterday"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if yesterday.From != "2026-08-15T05:00:00Z" || yesterday.To != "2026-08-16T04:59:59Z" {
+		t.Errorf("Yesterday = %q / %q, want the August 15 Chicago day", yesterday.From, yesterday.To)
+	}
+}
+
+func TestFilterBoundsEndpointReportsServerLocalInstants(t *testing.T) {
+	chicago, err := time.LoadLocation("America/Chicago")
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous := time.Local
+	time.Local = chicago
+	t.Cleanup(func() { time.Local = previous })
+
+	h, _, _ := newTestServer(t)
+	var got filterBoundsResponse
+	rec := get(t, h, "/api/filter-bounds?from=2026-08-16&to=2026-08-16", &got)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got.Beginning != "2026-08-16 00:00:00 -05:00 CDT" ||
+		got.End != "2026-08-16 23:59:59 -05:00 CDT" {
+		t.Errorf("bounds = %q / %q", got.Beginning, got.End)
+	}
+}
+
 func TestParseFilterRejectsBadValues(t *testing.T) {
 	for _, raw := range []string{
 		"track_id=notanumber", "track_id=1,x", "car_id=-1", "limit=abc", "offset=-5", "limit=-1",
-		"from=yesterday", "to=2026-13-45", "exclude_ai=maybe",
+		"from=yesterday", "to=2026-13-45", "range=tomorrow", "exclude_ai=maybe",
 		"hour_from=24", "hour_to=-1", "hour_from=noon", "weekday=7", "weekday=1,x",
 	} {
 		if _, err := parseFilter(mustValues(t, raw)); err == nil {

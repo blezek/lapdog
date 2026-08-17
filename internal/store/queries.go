@@ -231,8 +231,8 @@ var groupByExpr = map[string]string{
 	"typecontext": "s.session_type || '/' || s.event_context",
 	"track":       "COALESCE(s.track_name, 'Unknown')",
 	"car":         "COALESCE(s.car_name, 'Unknown')",
-	"week":        "strftime('%Y-W%W', s.started_at)",
-	"month":       "strftime('%Y-%m', s.started_at)",
+	"week":        "strftime('%Y-W%W', s.started_at, 'localtime')",
+	"month":       "strftime('%Y-%m', s.started_at, 'localtime')",
 }
 
 // GroupByNames returns the allowlisted grouping names, for error messages and
@@ -365,11 +365,11 @@ type DailyRow struct {
 	DrivingHours float64 `json:"drivingHours"`
 }
 
-// Daily returns driving hours per calendar day.
+// Daily returns driving hours per local calendar day.
 func (s *Store) Daily(f Filter) ([]DailyRow, error) {
 	pred, args := f.where()
 	q := `
-SELECT date(s.started_at) AS day, SUM(s.driving_seconds) / 3600.0
+SELECT date(s.started_at, 'localtime') AS day, SUM(s.driving_seconds) / 3600.0
 FROM sessions s
 WHERE ` + pred + `
 GROUP BY day

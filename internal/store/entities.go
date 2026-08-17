@@ -406,8 +406,8 @@ type ProgressionRow struct {
 	Laps     int     `json:"laps"`
 }
 
-// EntityProgression returns the best lap per calendar month for one entity at one
-// value of the opposite dimension.
+// EntityProgression returns the best lap per local calendar month for one entity
+// at one value of the opposite dimension.
 //
 // Both ids are required because a line mixing tracks would be meaningless: it would
 // rise and fall with which circuit was driven rather than with the driver's pace.
@@ -421,7 +421,7 @@ func (s *Store) EntityProgression(f Filter, by string, id, otherID int) ([]Progr
 	pred, args := f.where()
 
 	q := `
-SELECT substr(s.started_at, 1, 7) AS month,
+SELECT strftime('%Y-%m', s.started_at, 'localtime') AS month,
        MIN(l.lap_time_s),
        COUNT(*)
 FROM laps l JOIN sessions s ON s.id = l.session_id

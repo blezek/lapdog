@@ -4,6 +4,7 @@ package api
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -24,14 +25,23 @@ const MaxLimit = 5000
 // Every list, aggregate and export endpoint uses this one function, which is what
 // lets an export return exactly the rows the interface is displaying.
 func parseFilter(q url.Values) (store.Filter, error) {
+	return parseFilterAt(q, time.Now())
+}
+
+// parseFilterAt exists so the boundary between a browser day and the server's
+// calendar can be tested at the exact instants where they disagree.
+func parseFilterAt(q url.Values, now time.Time) (store.Filter, error) {
 	var f store.Filter
+	if err := applyRangePreset(&f, strings.TrimSpace(q.Get("range")), now); err != nil {
+		return f, err
+	}
 
 	for _, key := range []string{"from", "to"} {
 		raw := strings.TrimSpace(q.Get(key))
 		if raw == "" {
 			continue
 		}
-		norm, err := normaliseTimeBound(key, raw)
+		norm, err := normaliseTimeBoundIn(key, raw, now.Location())
 		if err != nil {
 			return f, err
 		}
@@ -92,6 +102,45 @@ func parseFilter(q url.Values) (store.Filter, error) {
 	return f, nil
 }
 
+// applyRangePreset resolves relative dates where the data lives. The browser can
+// be in UTC even while the desktop server is not; letting it choose the day made
+// Today become tomorrow after UTC midnight.
+func applyRangePreset(f *store.Filter, preset string, now time.Time) error {
+	if preset == "" || preset == "custom" || preset == "all" {
+		return nil
+	}
+	loc := now.Location()
+	local := now.In(loc)
+	today := time.Date(local.Year(), local.Month(), local.Day(), 0, 0, 0, 0, loc)
+	from, to := today, time.Time{}
+
+	switch preset {
+	case "today":
+		to = today
+	case "yesterday":
+		from = today.AddDate(0, 0, -1)
+		to = from
+	case "week":
+		from = today.AddDate(0, 0, -int(today.Weekday()))
+	case "month":
+		from = time.Date(today.Year(), today.Month(), 1, 0, 0, 0, 0, loc)
+	case "year":
+		from = time.Date(today.Year(), time.January, 1, 0, 0, 0, 0, loc)
+	default:
+		days, err := strconv.Atoi(preset)
+		if err != nil || days <= 0 {
+			return fmt.Errorf("%w: unknown range %q", ErrBadRequest, preset)
+		}
+		from = today.AddDate(0, 0, -days)
+	}
+
+	f.From = from.UTC().Format(time.RFC3339)
+	if !to.IsZero() {
+		f.To = to.AddDate(0, 0, 1).Add(-time.Second).UTC().Format(time.RFC3339)
+	}
+	return nil
+}
+
 func intListParam(q url.Values, key string) ([]int, error) {
 	parts := listParam(q, key)
 	out := make([]int, 0, len(parts))
@@ -129,11 +178,11 @@ func parseLapFilter(q url.Values) (store.LapFilter, error) {
 // the same desktop application, so this is the calendar day the driver selected.
 // Advancing by a calendar day rather than 24 hours also preserves the boundary
 // across daylight-saving transitions.
-func normaliseTimeBound(key, raw string) (string, error) {
+func normaliseTimeBoundIn(key, raw string, loc *time.Location) (string, error) {
 	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		return t.UTC().Format(time.RFC3339), nil
 	}
-	if d, err := time.ParseInLocation("2006-01-02", raw, time.Local); err == nil {
+	if d, err := time.ParseInLocation("2006-01-02", raw, loc); err == nil {
 		if key == "to" {
 			d = d.AddDate(0, 0, 1).Add(-time.Second)
 		}
@@ -214,4 +263,37 @@ func boolParam(q url.Values, key string) (bool, error) {
 	default:
 		return false, fmt.Errorf("%w: %s must be true or false", ErrBadRequest, key)
 	}
+}
+
+type filterBoundsResponse struct {
+	Beginning string `json:"beginning"`
+	End       string `json:"end"`
+}
+
+// handleFilterBounds exposes the exact instants the shared filter parser will
+// send to SQLite. It is deliberately diagnostic rather than another calculation
+// in the browser, because a second calculation was how the two dates diverged.
+func (s *Server) handleFilterBounds(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r.URL.Query())
+	if err != nil {
+		s.fail(w, http.StatusBadRequest, err)
+		return
+	}
+	s.writeJSON(w, filterBoundsResponse{
+		Beginning: describeLocalBound(f.From),
+		End:       describeLocalBound(f.To),
+	})
+}
+
+func describeLocalBound(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	instant, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return raw
+	}
+	local := instant.In(time.Local)
+	zone, _ := local.Zone()
+	return local.Format("2006-01-02 15:04:05 -07:00") + " " + zone
 }
