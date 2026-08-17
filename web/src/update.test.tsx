@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest'
 
 import { ReleaseNotes } from './components/UpdatePopdown'
 import type { UpdateStatus } from './api'
-import { installActionLabel, shouldOpenUpdate, updateStatusMessage } from './update'
+import { buildIdentity, installActionLabel, shouldOpenUpdate, updateStatusMessage } from './update'
 
 const status = (patch: Partial<UpdateStatus> = {}): UpdateStatus => ({
   state: 'available', currentVersion: 'v1.0.0', currentRevision: null,
@@ -29,6 +29,20 @@ describe('ReleaseNotes', () => {
 })
 
 describe('update presentation state', () => {
+  it('shows stamped release identity in Settings', () => {
+    expect(buildIdentity('0.2.0', 'd81bb49abcdef')).toEqual({
+      version: 'LapDog 0.2.0',
+      revision: 'Revision d81bb49a',
+    })
+  })
+
+  it('labels an unstamped build without inventing a revision', () => {
+    expect(buildIdentity('dev', null)).toEqual({
+      version: 'Development build',
+      revision: 'Revision unknown',
+    })
+  })
+
   it('opens for one-time eligibility or a tray deep-link', () => {
     expect(shouldOpenUpdate(status({ promptEligible: true }), '')).toBe(true)
     expect(shouldOpenUpdate(status(), '?update=1')).toBe(true)

@@ -5,8 +5,21 @@ export function shouldOpenUpdate(status: UpdateStatus, search: string): boolean 
   return new URLSearchParams(search).get('update') === '1' || status.promptEligible
 }
 
+export interface BuildIdentity {
+  version: string
+  revision: string
+}
+
+/** buildIdentity turns stamped build facts into the copy shown in Settings. */
+export function buildIdentity(version: string, revision: string | null): BuildIdentity {
+  return {
+    version: version === 'dev' ? 'Development build' : `LapDog ${version}`,
+    revision: revision ? `Revision ${revision.slice(0, 8)}` : 'Revision unknown',
+  }
+}
+
 export function installActionLabel(recording: boolean): string {
-	return recording ? 'Update after session' : 'Update and restart'
+  return recording ? 'Update after session' : 'Update and restart'
 }
 
 export function updateStatusMessage(status: UpdateStatus): string | null {
