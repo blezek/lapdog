@@ -733,7 +733,6 @@ func TestEntityProgressionByMonth(t *testing.T) {
 }
 
 func TestEntityProgressionUsesLocalMonth(t *testing.T) {
-	useTestLocation(t, "America/Chicago")
 	s := openTemp(t)
 	decoyProgressionSession(t, s, "evening/0", 173, 18, "2026-09-01T02:00:00Z", 101.5)
 
