@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
 
 import { idleReasonFor, viewFor, staleAfterMs } from './live'
+import { LiveBands } from './pages/Live'
 import type { LiveResponse } from './api'
 
 const base: LiveResponse = {
@@ -16,6 +19,34 @@ const base: LiveResponse = {
   supported: true,
   platform: 'windows',
 }
+
+describe('Live speed display', () => {
+  const now = new Date('2026-08-10T12:00:00Z').getTime()
+  const res: LiveResponse = {
+    ...base,
+    frame: {
+      at: new Date(now).toISOString(),
+      inCar: true, driving: true, replay: false, reason: '',
+      lap: 3, lapDistPct: 0.42, lapCurrentTimeS: 98.4,
+      lapLastTimeS: 101.9, lapBestTimeS: 98.1,
+      speed: 35.6, gear: 4, fuelLevel: 38.2, incidents: 0,
+    },
+  }
+
+  it('uses kph for metric settings and mph for imperial settings', () => {
+    const metric = renderToStaticMarkup(createElement(LiveBands, {
+      res, now, live: true, units: 'metric',
+    }))
+    const imperial = renderToStaticMarkup(createElement(LiveBands, {
+      res, now, live: true, units: 'imperial',
+    }))
+
+    expect(metric).toContain('128 kph')
+    expect(imperial).toContain('80 mph')
+    expect(metric).not.toContain('m/s')
+    expect(imperial).not.toContain('m/s')
+  })
+})
 
 describe('staleAfterMs', () => {
   it('is exactly three poll intervals', () => {
