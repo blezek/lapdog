@@ -39,11 +39,18 @@ jobs:
       - name: CI checks
         run: make ci
 
+      - name: Extract annotated release notes
+        run: |
+          git for-each-ref \
+            --format='%(contents)' \
+            "refs/tags/${GITHUB_REF_NAME}" > release-notes.md
+          test -s release-notes.md
+
       - name: Release
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean
+          args: release --clean --release-notes=release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
