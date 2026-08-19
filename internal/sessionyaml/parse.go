@@ -1,6 +1,7 @@
 package sessionyaml
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strconv"
@@ -13,32 +14,27 @@ import (
 
 // Parse decodes a session-info YAML document. Unknown keys are ignored.
 func Parse(b []byte) (*Info, error) {
-	// iRacing's session-info buffer is not consistently UTF-8. Real driver names
-	// with accented characters have arrived as Windows-1252 bytes (for example,
-	// e9 for é), which yaml.v3 correctly rejects as invalid UTF-8. ASCII and valid
-	// UTF-8 pass through byte-for-byte; only an invalid document is decoded from
-	// the Windows character set used by the simulator on Windows.
-	if !utf8.Valid(b) {
-		decoded, err := charmap.Windows1252.NewDecoder().Bytes(b)
-		if err != nil {
-			return nil, fmt.Errorf("sessionyaml: decode Windows-1252: %w", err)
-		}
-		b = decoded
+	var err error
+	b, err = normalizeEncoding(b)
+	if err != nil {
+		return nil, err
 	}
 	if len(strings.TrimSpace(string(b))) == 0 {
 		return nil, errors.New("sessionyaml: empty document")
 	}
 	var i Info
 	if err := yaml.Unmarshal(b, &i); err != nil {
-		// iRacing can replace an unavailable driver's name with the unquoted
-		// placeholder "? ?". At the start of a plain YAML scalar, "? " is
-		// mapping syntax rather than text, so one opponent's placeholder makes
-		// the simulator's whole document invalid. Quote only that observed shape
-		// on simulator-owned identity fields, then retry. Other parse failures
-		// remain failures instead of being hidden by a general-purpose repair.
-		if repaired, changed := quoteIdentityPlaceholders(b); changed {
+		// Driver and team names are simulator-provided free text, but iRacing
+		// writes them as unquoted YAML scalars. Values observed in real captures
+		// include "? ?" and truncated Unicode; either can invalidate the whole
+		// document. Quote only identity text and retry so a damaged opponent name
+		// cannot discard otherwise sound session and race structure.
+		if repaired, changed := quoteIdentityScalars(b); changed {
+			i = Info{}
 			if retryErr := yaml.Unmarshal(repaired, &i); retryErr == nil {
 				return &i, nil
+			} else {
+				return nil, fmt.Errorf("sessionyaml: unmarshal after identity recovery: %w", retryErr)
 			}
 		}
 		return nil, fmt.Errorf("sessionyaml: unmarshal: %w", err)
@@ -46,22 +42,71 @@ func Parse(b []byte) (*Info, error) {
 	return &i, nil
 }
 
-func quoteIdentityPlaceholders(b []byte) ([]byte, bool) {
+// normalizeEncoding makes the document valid UTF-8 without throwing away valid
+// Unicode to repair one damaged name.
+//
+// Older captures contain Windows-1252 names, such as a lone e9 byte for é. Newer
+// captures can mix those lines with valid UTF-8 Chinese characters and can even
+// truncate a multibyte character within one field. Treat each line independently:
+// preserve valid UTF-8, preserve valid multibyte sequences while marking damaged
+// runs, and use Windows-1252 only when a line has no valid non-ASCII UTF-8 at all.
+func normalizeEncoding(b []byte) ([]byte, error) {
+	if utf8.Valid(b) {
+		return b, nil
+	}
+	out := make([]byte, 0, len(b))
+	for _, line := range bytes.SplitAfter(b, []byte("\n")) {
+		switch {
+		case utf8.Valid(line):
+			out = append(out, line...)
+		case hasValidMultibyteUTF8(line):
+			out = append(out, bytes.ToValidUTF8(line, []byte("�"))...)
+		default:
+			decoded, err := charmap.Windows1252.NewDecoder().Bytes(line)
+			if err != nil {
+				return nil, fmt.Errorf("sessionyaml: decode Windows-1252: %w", err)
+			}
+			out = append(out, decoded...)
+		}
+	}
+	return out, nil
+}
+
+func hasValidMultibyteUTF8(b []byte) bool {
+	for len(b) > 0 {
+		_, size := utf8.DecodeRune(b)
+		if size > 1 {
+			return true
+		}
+		b = b[1:]
+	}
+	return false
+}
+
+func quoteIdentityScalars(b []byte) ([]byte, bool) {
 	lines := strings.Split(string(b), "\n")
 	changed := false
 	for n, line := range lines {
 		trimmed := strings.TrimLeft(line, " \t")
 		for _, key := range []string{"UserName", "AbbrevName", "Initials", "TeamName"} {
-			prefix := key + ": "
+			prefix := key + ":"
 			if !strings.HasPrefix(trimmed, prefix) {
 				continue
 			}
-			value := strings.TrimPrefix(trimmed, prefix)
-			if value != "?" && !strings.HasPrefix(value, "? ") {
-				break
+			rest := strings.TrimPrefix(trimmed, prefix)
+			if rest != "" && rest[0] != ' ' && rest[0] != '\t' && rest[0] != '\r' {
+				continue
+			}
+			value := strings.TrimLeft(rest, " \t")
+			value = strings.TrimSuffix(value, "\r")
+			if len(value) >= 2 && (value[0] == '\'' || value[0] == '"') {
+				var unquoted string
+				if yaml.Unmarshal([]byte(value), &unquoted) == nil {
+					value = unquoted
+				}
 			}
 			indent := line[:len(line)-len(trimmed)]
-			lines[n] = indent + prefix + strconv.Quote(value)
+			lines[n] = indent + prefix + " " + strconv.Quote(value)
 			changed = true
 			break
 		}
