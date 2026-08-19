@@ -43,14 +43,14 @@ jobs:
         run: |
           git for-each-ref \
             --format='%(contents)' \
-            "refs/tags/${GITHUB_REF_NAME}" > release-notes.md
-          test -s release-notes.md
+            "refs/tags/${GITHUB_REF_NAME}" > "${RUNNER_TEMP}/release-notes.md"
+          test -s "${RUNNER_TEMP}/release-notes.md"
 
       - name: Release
         uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           version: "~> v2"
-          args: release --clean --release-notes=release-notes.md
+          args: release --clean --release-notes=${{ runner.temp }}/release-notes.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
