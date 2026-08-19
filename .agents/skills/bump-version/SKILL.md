@@ -55,6 +55,10 @@ git diff <prev>..HEAD
 Stop with `No commits since <prev>. Nothing to tag.` when the oneline log is
 empty.
 
+Check whether `<prev>` produced a published release and its expected artifacts.
+If that release failed before publication, its changes are still unreleased:
+read its annotated notes and include those changes in the new release notes.
+
 ## Draft and approve release notes
 
 Write a 3–6 sentence narrative covering the release theme, rationale, and
@@ -80,10 +84,11 @@ Wait for explicit approval. Re-present revised notes before tagging.
 
 ## Tag, publish, and confirm
 
-Create an annotated tag with a heredoc:
+Create an annotated tag with a heredoc. `--cleanup=verbatim` is required because
+Git otherwise removes Markdown headings beginning with `#` from the annotation:
 
 ```bash
-git tag -a <version> -m "$(cat <<'NOTES'
+git tag -a <version> --cleanup=verbatim -m "$(cat <<'NOTES'
 <release notes>
 NOTES
 )"
@@ -106,4 +111,8 @@ git tag --list 'v*' | sort -V | tail -3
 git remote -v
 ```
 
-Report the new and previous tags and every remote reached.
+The release workflow extracts the annotated tag contents and passes them to
+GoReleaser with `--release-notes`. Follow the tag-triggered workflow through
+completion, then verify that the public release body matches the annotation and
+that all expected artifacts exist. Report the new and previous tags, every
+remote reached, workflow result, release-note result, and published assets.

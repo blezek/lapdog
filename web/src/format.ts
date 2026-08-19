@@ -76,6 +76,13 @@ export function num(n: number): string {
   return numberGrouped(n)
 }
 
+/** speed converts the simulator's metres per second into the selected display unit. */
+export function speed(metresPerSecond: number, units: 'metric' | 'imperial'): string {
+  if (!Number.isFinite(metresPerSecond)) return '—'
+  const converted = metresPerSecond * (units === 'imperial' ? 2.2369362921 : 3.6)
+  return `${num(Math.round(converted))} ${units === 'imperial' ? 'mph' : 'kph'}`
+}
+
 /**
  * day renders a date as a short readable date, with its year.
  *

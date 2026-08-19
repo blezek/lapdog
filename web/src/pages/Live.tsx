@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { api, type LiveFrame, type LiveResponse } from '../api'
-import { hms, lapTime, num, pct } from '../format'
+import { api, type Config, type LiveFrame, type LiveResponse } from '../api'
+import { hms, lapTime, num, pct, speed } from '../format'
 import { keepPrevious } from '../query'
 import { idleReasonFor, pollMs, viewFor } from '../live'
 import { Card, Loading, Stat } from '../components/ui'
@@ -26,6 +26,7 @@ export function Live() {
     refetchInterval: (q) => pollMs(q.state.data?.intervalSeconds ?? 1),
     ...keepPrevious,
   })
+  const config = useQuery({ queryKey: ['settings'], queryFn: api.settings })
 
   const now = useNow(pollMs(query.data?.intervalSeconds ?? 1))
 
@@ -39,7 +40,11 @@ export function Live() {
         instant.
       </p>
 
-      {!query.data ? <Loading /> : <LiveBody res={query.data} now={now} />}
+      {!query.data || !config.data ? (
+        <Loading />
+      ) : (
+        <LiveBody res={query.data} now={now} units={config.data.units} />
+      )}
     </>
   )
 }
@@ -67,12 +72,12 @@ function useNow(periodMs: number): number {
   return now
 }
 
-function LiveBody({ res, now }: { res: LiveResponse; now: number }) {
+function LiveBody({ res, now, units }: { res: LiveResponse; now: number; units: Config['units'] }) {
   const view = viewFor(res, now)
 
   if (view === 'unsupported') return <Unsupported platform={res.platform} />
   if (view === 'idle') return <Idle res={res} />
-  return <Bands res={res} now={now} live={view === 'live'} />
+  return <LiveBands res={res} now={now} live={view === 'live'} units={units} />
 }
 
 /**
@@ -160,7 +165,17 @@ function Idle({ res }: { res: LiveResponse }) {
  * ones: the totals band ignores it entirely, which is the asymmetry the whole
  * design rests on.
  */
-function Bands({ res, now, live }: { res: LiveResponse; now: number; live: boolean }) {
+export function LiveBands({
+  res,
+  now,
+  live,
+  units,
+}: {
+  res: LiveResponse
+  now: number
+  live: boolean
+  units: Config['units']
+}) {
   const frame = res.frame as LiveFrame
   const ageSeconds = Math.max(0, Math.round((now - new Date(frame.at).getTime()) / 1000))
 
@@ -219,7 +234,7 @@ function Bands({ res, now, live }: { res: LiveResponse; now: number; live: boole
       </div>
 
       <div className="grid kpis">
-        <Stat label="Speed" value={f(frame.speed) == null ? '—' : `${num(frame.speed as number)} m/s`} />
+        <Stat label="Speed" value={f(frame.speed) == null ? '—' : speed(frame.speed as number, units)} />
         <Stat label="Gear" value={gearLabel(f(frame.gear))} />
         <Stat label="Fuel" value={f(frame.fuelLevel) == null ? '—' : `${num(frame.fuelLevel as number)} L`} />
         <Stat label="Incidents" value={intOrDash(f(frame.incidents))} />

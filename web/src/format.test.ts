@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest'
 
-import { hm, hms, licenceLabel, startOfMonth, startOfWeek, startOfYear } from './format'
+import { hm, hms, licenceLabel, speed, startOfMonth, startOfWeek, startOfYear } from './format'
+
+describe('speed', () => {
+  it('converts simulator metres per second to the selected display unit', () => {
+    expect(speed(10, 'metric')).toBe('36 kph')
+    expect(speed(10, 'imperial')).toBe('22 mph')
+  })
+
+  it('rounds to the nearest whole display unit', () => {
+    expect(speed(10.1, 'metric')).toBe('36 kph')
+    expect(speed(10.2, 'metric')).toBe('37 kph')
+    expect(speed(10.2, 'imperial')).toBe('23 mph')
+  })
+
+  it('keeps a stationary car as a real zero reading', () => {
+    expect(speed(0, 'metric')).toBe('0 kph')
+    expect(speed(0, 'imperial')).toBe('0 mph')
+  })
+})
 
 describe('hms', () => {
   it('keeps the seconds a live total is read at', () => {
