@@ -30,9 +30,43 @@ func Parse(b []byte) (*Info, error) {
 	}
 	var i Info
 	if err := yaml.Unmarshal(b, &i); err != nil {
+		// iRacing can replace an unavailable driver's name with the unquoted
+		// placeholder "? ?". At the start of a plain YAML scalar, "? " is
+		// mapping syntax rather than text, so one opponent's placeholder makes
+		// the simulator's whole document invalid. Quote only that observed shape
+		// on simulator-owned identity fields, then retry. Other parse failures
+		// remain failures instead of being hidden by a general-purpose repair.
+		if repaired, changed := quoteIdentityPlaceholders(b); changed {
+			if retryErr := yaml.Unmarshal(repaired, &i); retryErr == nil {
+				return &i, nil
+			}
+		}
 		return nil, fmt.Errorf("sessionyaml: unmarshal: %w", err)
 	}
 	return &i, nil
+}
+
+func quoteIdentityPlaceholders(b []byte) ([]byte, bool) {
+	lines := strings.Split(string(b), "\n")
+	changed := false
+	for n, line := range lines {
+		trimmed := strings.TrimLeft(line, " \t")
+		for _, key := range []string{"UserName", "AbbrevName", "Initials", "TeamName"} {
+			prefix := key + ": "
+			if !strings.HasPrefix(trimmed, prefix) {
+				continue
+			}
+			value := strings.TrimPrefix(trimmed, prefix)
+			if value != "?" && !strings.HasPrefix(value, "? ") {
+				break
+			}
+			indent := line[:len(line)-len(trimmed)]
+			lines[n] = indent + prefix + strconv.Quote(value)
+			changed = true
+			break
+		}
+	}
+	return []byte(strings.Join(lines, "\n")), changed
 }
 
 // Me returns the local driver's entry, matched on DriverCarIdx.
