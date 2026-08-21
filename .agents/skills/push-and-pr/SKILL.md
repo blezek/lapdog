@@ -37,6 +37,15 @@ still equals the recorded branch immediately before pushing and before creating
 or opening the pull request. Stop on a mismatch; never substitute the new branch
 silently.
 
+## Run NSIS checks outside the sandbox
+
+If validating installer-related changes before the push, run any command that
+invokes `/usr/local/bin/makensis` outside the sandbox, including indirect calls
+through Make or GoReleaser. In this environment `makensis` can exit artificially
+when sandboxed, so a sandboxed failure is not evidence that the installer is
+broken. Inspect the result of the outside-sandbox run before reporting whether
+the packaging check passed.
+
 ## Push
 
 Run:
