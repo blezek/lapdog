@@ -11,6 +11,11 @@ export CGO_ENABLED=0
 DIST    := dist
 BUNDLE  := internal/web/dist/index.html
 
+# Keep both kinds of Go test concurrency explicit: -p controls package test
+# binaries, while -parallel controls tests that call t.Parallel within one binary.
+# Otherwise either can silently fall back to a serial caller environment.
+GO_TEST_PARALLEL := 4
+
 # Everything the bundle is built from. Listed explicitly rather than as `web/*` so
 # editing a source file rebuilds it while a stray file in web/ does not, and so
 # node_modules is never scanned.
@@ -82,7 +87,7 @@ help:
 # remember. The bundle is a file dependency, so requiring it costs nothing when it
 # is already current, and LAPDOG_REQUIRE_BUNDLE turns a skip into a failure.
 test: $(BUNDLE)
-	LAPDOG_REQUIRE_BUNDLE=1 go test ./...
+	LAPDOG_REQUIRE_BUNDLE=1 go test -p=$(GO_TEST_PARALLEL) -parallel=$(GO_TEST_PARALLEL) ./...
 	cd web && npm run test
 
 # gofmt -l lists unformatted files and exits 0 regardless, so the failure has to
