@@ -1,10 +1,17 @@
 package tray
 
 import (
+	"bytes"
+	_ "embed"
+	"fmt"
+	"image"
 	"image/color"
+	"image/draw"
+	"image/png"
 	"runtime"
 
 	"github.com/blezek/lapdog/internal/ui/icons"
+	xdraw "golang.org/x/image/draw"
 )
 
 // iconState is the connection state the tray icon reflects.
@@ -42,27 +49,83 @@ func tintFor(s iconState) color.Color {
 	}
 }
 
+//go:embed lapdog-tray.png
+var trayMarkPNG []byte
+
+var trayMark, trayMarkErr = png.Decode(bytes.NewReader(trayMarkPNG))
+
 // icon renders the tray icon for a state.
 //
-// It rasterises the vendored racing-helmet icon rather than drawing a shape here,
-// so the tray carries the same mark as the rest of the product and there is one
-// icon set to license and maintain. The plan called for a generated circle; the
-// icon set landed afterwards and is a better answer, since a coloured dot in the
-// notification area says nothing about which application it belongs to.
+// It scales the simplified helmeted-dog mark rather than the full car illustration:
+// the notification area can be only 16 pixels high, where the wheels, number and
+// cockpit collapse into noise. A small status badge preserves the existing state
+// colours without recolouring the multicolour identity mark.
 //
 // Windows wants an .ico; the other platforms accept a PNG. Both are produced by
 // pure-Go rasterisation, so this needs no build tag and is testable anywhere.
 func icon(s iconState) []byte {
-	tint := tintFor(s)
 	if runtime.GOOS == "windows" {
-		// 16 for the tray at standard DPI, 32 for scaled displays.
-		if b, err := icons.ICO(icons.RacingHelmet, tint, 16, 32); err == nil {
-			return b
-		}
+		return windowsIcon(s)
+	}
+	img, err := renderIcon(s, 32)
+	if err != nil {
 		return nil
 	}
-	if b, err := icons.PNG(icons.RacingHelmet, 32, tint); err == nil {
-		return b
+	var b bytes.Buffer
+	if err := png.Encode(&b, img); err == nil {
+		return b.Bytes()
 	}
 	return nil
+}
+
+func windowsIcon(s iconState) []byte {
+	// 16 for the tray at standard DPI, 32 for scaled displays.
+	images := make([]image.Image, 0, 2)
+	for _, size := range []int{16, 32} {
+		img, err := renderIcon(s, size)
+		if err != nil {
+			return nil
+		}
+		images = append(images, img)
+	}
+	b, err := icons.EncodeICO(images...)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
+func renderIcon(s iconState, size int) (*image.RGBA, error) {
+	if trayMarkErr != nil {
+		return nil, fmt.Errorf("tray: decode identity mark: %w", trayMarkErr)
+	}
+	if size <= 0 {
+		return nil, fmt.Errorf("tray: icon size %d must be positive", size)
+	}
+
+	out := image.NewRGBA(image.Rect(0, 0, size, size))
+	xdraw.CatmullRom.Scale(out, out.Bounds(), trayMark, trayMark.Bounds(), draw.Over, nil)
+	drawBadge(out, tintFor(s))
+	return out, nil
+}
+
+func drawBadge(img *image.RGBA, tint color.Color) {
+	size := img.Bounds().Dx()
+	radius := size / 6
+	if radius < 2 {
+		radius = 2
+	}
+	cx, cy := size-radius-1, size-radius-1
+	fillCircle(img, cx, cy, radius, color.White)
+	fillCircle(img, cx, cy, radius-1, tint)
+}
+
+func fillCircle(img *image.RGBA, cx, cy, radius int, fill color.Color) {
+	for y := cy - radius; y <= cy+radius; y++ {
+		for x := cx - radius; x <= cx+radius; x++ {
+			if (x-cx)*(x-cx)+(y-cy)*(y-cy) <= radius*radius {
+				img.Set(x, y, fill)
+			}
+		}
+	}
 }

@@ -2,6 +2,8 @@ package tray
 
 import (
 	"bytes"
+	"encoding/binary"
+	"image/color"
 	"runtime"
 	"testing"
 	"time"
@@ -32,6 +34,60 @@ func TestIconsRenderAndDiffer(t *testing.T) {
 				t.Errorf("the %s and %s icons are byte-identical", a, b)
 			}
 		}
+	}
+}
+
+func TestRenderedIconKeepsBrandColoursAndStateBadge(t *testing.T) {
+	states := map[string]iconState{
+		"disconnected": stateDisconnected,
+		"connected":    stateConnected,
+		"paused":       statePaused,
+	}
+	for name, state := range states {
+		t.Run(name, func(t *testing.T) {
+			img, err := renderIcon(state, 16)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if img.Bounds().Dx() != 16 || img.Bounds().Dy() != 16 {
+				t.Fatalf("bounds = %v, want 16x16", img.Bounds())
+			}
+
+			// A multicolour palette distinguishes the branded dog from the old
+			// single-tint helmet even after the source is reduced to tray size.
+			palette := make(map[color.RGBA]struct{})
+			for y := 0; y < 16; y++ {
+				for x := 0; x < 8; x++ { // stay clear of the state badge
+					pixel := img.RGBAAt(x, y)
+					if pixel.A > 0 {
+						palette[pixel] = struct{}{}
+					}
+				}
+			}
+			if len(palette) < 8 {
+				t.Errorf("left half has only %d opaque colours, want a multicolour brand mark", len(palette))
+			}
+
+			radius := 16 / 6
+			center := 16 - radius - 1
+			want := color.RGBAModel.Convert(tintFor(state)).(color.RGBA)
+			if got := img.RGBAAt(center, center); got != want {
+				t.Errorf("badge centre = %v, want state tint %v", got, want)
+			}
+		})
+	}
+}
+
+func TestWindowsIconCarriesStandardAndScaledImages(t *testing.T) {
+	b := windowsIcon(stateConnected)
+	if len(b) < 6+16*2 {
+		t.Fatalf("Windows icon is only %d bytes, too small for two entries", len(b))
+	}
+	if count := binary.LittleEndian.Uint16(b[4:]); count != 2 {
+		t.Fatalf("Windows icon entry count = %d, want 2", count)
+	}
+	if got := []byte{b[6], b[22]}; !bytes.Equal(got, []byte{16, 32}) {
+		t.Errorf("Windows icon sizes = %v, want [16 32]", got)
 	}
 }
 

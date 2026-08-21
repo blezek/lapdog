@@ -24,8 +24,8 @@ var mdiFS embed.FS
 // means a rename or a removed file is a compile error rather than a blank space
 // in the interface.
 const (
-	// RacingHelmet is the application's identity mark, used for the tray icon
-	// and the window title.
+	// RacingHelmet is the compact browser favicon from the interface icon set.
+	// The Windows tray uses its own multicolour mark in internal/tray.
 	RacingHelmet = "racing-helmet"
 
 	FlagCheckered = "flag-checkered"
