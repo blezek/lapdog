@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from './api'
 import { applyTheme } from './theme'
 import { Icon } from './components/ui'
+import { SplashScreen } from './components/SplashScreen'
 import { UpdatePopdown } from './components/UpdatePopdown'
 import { hm } from './format'
 import { filterParams } from './useFilter'
@@ -42,7 +43,7 @@ export function App() {
   const sharedSearch = filterParams(new URLSearchParams(location.search)).toString()
   const routeTo = (pathname: string) => ({ pathname, search: sharedSearch ? `?${sharedSearch}` : '' })
   // The theme preference lives in settings, so it is applied as soon as it loads.
-  const { data: config } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const config = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const update = useQuery({
     queryKey: ['update'],
     queryFn: api.update,
@@ -50,9 +51,15 @@ export function App() {
     retry: false,
   })
   const [updateOpen, setUpdateOpen] = useState(false)
+  const [minimumSplashElapsed, setMinimumSplashElapsed] = useState(false)
   useEffect(() => {
-    if (config?.theme) applyTheme(config.theme)
-  }, [config?.theme])
+    if (config.data?.theme) applyTheme(config.data.theme)
+  }, [config.data?.theme])
+  useEffect(() => {
+    // Keep a successful loopback response from reducing the splash to a flicker.
+    const timer = window.setTimeout(() => setMinimumSplashElapsed(true), 1200)
+    return () => window.clearTimeout(timer)
+  }, [])
   useEffect(() => {
     if (!update.data || !shouldOpenUpdate(update.data, location.search)) return
     setUpdateOpen(true)
@@ -61,66 +68,71 @@ export function App() {
     }
   }, [location.search, update.data?.promptEligible, update.data?.availableRelease?.version])
 
-  return (
-    <div className="shell">
-      <nav className="sidebar">
-        <div className="brand">
-          <Icon name="racing-helmet" />
-          LapDog
-        </div>
+  const showSplash = config.isPending || !minimumSplashElapsed
 
-        {nav.map((item) => (
+  return (
+    <>
+      <SplashScreen visible={showSplash} />
+      <div className="shell" aria-hidden={showSplash || undefined} inert={showSplash}>
+        <nav className="sidebar">
+          <div className="brand">
+            <Icon name="racing-helmet" />
+            LapDog
+          </div>
+
+          {nav.map((item) => (
+            <NavLink
+              key={item.to}
+              to={routeTo(item.to)}
+              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+            >
+              <Icon name={item.icon} />
+              {item.label}
+            </NavLink>
+          ))}
+
+          <div className="nav-spacer" />
+          {update.data?.availableRelease && (
+            <button type="button" className="nav-item update-nav" onClick={() => setUpdateOpen(true)}>
+              <Icon name="download" /> Update{' '}
+              <span className="version-badge">{update.data.availableRelease.version}</span>
+            </button>
+          )}
           <NavLink
-            key={item.to}
-            to={routeTo(item.to)}
+            to={routeTo('/settings')}
             className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
           >
-            <Icon name={item.icon} />
-            {item.label}
+            <Icon name="cog" />
+            Settings
           </NavLink>
-        ))}
 
-        <div className="nav-spacer" />
-        {update.data?.availableRelease && (
-          <button type="button" className="nav-item update-nav" onClick={() => setUpdateOpen(true)}>
-            <Icon name="download" /> Update{' '}
-            <span className="version-badge">{update.data.availableRelease.version}</span>
-          </button>
+          <ConnectionStatus />
+        </nav>
+
+        <main className="main">
+          <Routes>
+            <Route path="/" element={<Navigate to={routeTo('/dashboard')} replace />} />
+            <Route path="/live" element={<Live />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/cars" element={<EntityPage dimension="car" />} />
+            <Route path="/tracks" element={<EntityPage dimension="track" />} />
+            <Route path="/sessions" element={<Sessions />} />
+            <Route path="/races" element={<Races />} />
+            <Route path="/laps" element={<Laps />} />
+            <Route path="/export" element={<Export />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="*" element={<Navigate to={routeTo('/dashboard')} replace />} />
+          </Routes>
+        </main>
+        {update.data && (
+          <UpdatePopdown
+            status={update.data}
+            open={updateOpen}
+            onClose={() => setUpdateOpen(false)}
+          />
         )}
-        <NavLink
-          to={routeTo('/settings')}
-          className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-        >
-          <Icon name="cog" />
-          Settings
-        </NavLink>
-
-        <ConnectionStatus />
-      </nav>
-
-      <main className="main">
-        <Routes>
-          <Route path="/" element={<Navigate to={routeTo('/dashboard')} replace />} />
-          <Route path="/live" element={<Live />} />
-          <Route path="/dashboard" element={<Dashboard />} />
-          <Route path="/cars" element={<EntityPage dimension="car" />} />
-          <Route path="/tracks" element={<EntityPage dimension="track" />} />
-          <Route path="/sessions" element={<Sessions />} />
-          <Route path="/races" element={<Races />} />
-          <Route path="/laps" element={<Laps />} />
-          <Route path="/export" element={<Export />} />
-          <Route path="/settings" element={<Settings />} />
-          <Route path="*" element={<Navigate to={routeTo('/dashboard')} replace />} />
-        </Routes>
-      </main>
-      {update.data && (
-        <UpdatePopdown
-          status={update.data}
-          open={updateOpen}
-          onClose={() => setUpdateOpen(false)}
-        />
-      )}
-    </div>
+      </div>
+    </>
   )
 }
 
