@@ -69,20 +69,42 @@ func ICO(name string, tint color.Color, sizes ...int) ([]byte, error) {
 		sizes = []int{16, 32}
 	}
 
+	images := make([]image.Image, 0, len(sizes))
+	for _, s := range sizes {
+		img, err := Rasterize(name, s, tint)
+		if err != nil {
+			return nil, err
+		}
+		images = append(images, img)
+	}
+	return EncodeICO(images...)
+}
+
+// EncodeICO writes square images as PNG-compressed entries in a Windows icon.
+func EncodeICO(images ...image.Image) ([]byte, error) {
+	if len(images) == 0 {
+		return nil, fmt.Errorf("icons: ICO needs at least one image")
+	}
+
 	type entry struct {
 		size int
 		png  []byte
 	}
-	entries := make([]entry, 0, len(sizes))
-	for _, s := range sizes {
-		b, err := PNG(name, s, tint)
-		if err != nil {
-			return nil, err
+	entries := make([]entry, 0, len(images))
+	for _, img := range images {
+		bounds := img.Bounds()
+		size := bounds.Dx()
+		if size <= 0 || bounds.Dy() != size {
+			return nil, fmt.Errorf("icons: ICO entries must be non-empty squares, got %dx%d", size, bounds.Dy())
 		}
-		if s > 256 {
-			return nil, fmt.Errorf("icons: ICO entries cannot exceed 256 pixels, got %d", s)
+		if size > 256 {
+			return nil, fmt.Errorf("icons: ICO entries cannot exceed 256 pixels, got %d", size)
 		}
-		entries = append(entries, entry{size: s, png: b})
+		var encoded bytes.Buffer
+		if err := png.Encode(&encoded, img); err != nil {
+			return nil, fmt.Errorf("icons: encode %d-pixel ICO entry: %w", size, err)
+		}
+		entries = append(entries, entry{size: size, png: encoded.Bytes()})
 	}
 
 	var buf bytes.Buffer

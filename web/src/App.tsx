@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query'
 import { api } from './api'
 import { applyTheme } from './theme'
 import { Icon } from './components/ui'
+import { Brand } from './components/Brand'
 import { SplashScreen } from './components/SplashScreen'
 import { UpdatePopdown } from './components/UpdatePopdown'
 import { hm } from './format'
@@ -75,10 +76,7 @@ export function App() {
       <SplashScreen visible={showSplash} />
       <div className="shell" aria-hidden={showSplash || undefined} inert={showSplash}>
         <nav className="sidebar">
-          <div className="brand">
-            <Icon name="racing-helmet" />
-            LapDog
-          </div>
+          <Brand />
 
           {nav.map((item) => (
             <NavLink
