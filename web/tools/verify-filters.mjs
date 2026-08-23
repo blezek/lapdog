@@ -140,6 +140,40 @@ async function main() {
     writeFileSync(DEBUG_SHOT, Buffer.from(debugShot.data, 'base64'))
     await evaluate(`document.querySelector('[data-filter-trigger="date"]').click()`)
 
+    const presetDismissal = await evaluate(`(async () => {
+      const trigger = () => document.querySelector('[data-filter-trigger="date"]');
+      const choose = (label) => [...document.querySelectorAll('#filter-panel-date .chip')]
+        .find((button) => button.textContent.trim() === label);
+      trigger().click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      choose('Yesterday').click();
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const preset = {
+        expanded: trigger().getAttribute('aria-expanded'),
+        panel: document.getElementById('filter-panel-date') != null,
+      };
+      trigger().click();
+      for (let i = 0; i < 20 && !document.getElementById('filter-panel-date'); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      choose('Custom range').click();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const custom = {
+        expanded: trigger().getAttribute('aria-expanded'),
+        panel: document.getElementById('filter-panel-date') != null,
+      };
+      trigger().click();
+      return { preset, custom };
+    })()`)
+    assert(
+      presetDismissal.preset.expanded === 'false' && !presetDismissal.preset.panel,
+      `one-click date preset stayed open: ${JSON.stringify(presetDismissal)}`,
+    )
+    assert(
+      presetDismissal.custom.expanded === 'true' && presetDismissal.custom.panel,
+      `custom date selection closed before editing: ${JSON.stringify(presetDismissal)}`,
+    )
+
     for (const name of ['Cars', 'Tracks']) {
       for (let index = 0; index < 2; index++) {
         await evaluate(`(async () => {
