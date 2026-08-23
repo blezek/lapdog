@@ -60,7 +60,11 @@ export function Filters({
   return (
     <div className="filters-wrap" ref={wrap}>
       <div className="filters">
-        <DateFilter open={openMenu === 'date'} onToggle={() => toggleMenu('date')} />
+        <DateFilter
+          open={openMenu === 'date'}
+          onToggle={() => toggleMenu('date')}
+          onClose={() => setOpenMenu(null)}
+        />
 
         {!hide?.includes('type') && (
           <MultiFilter

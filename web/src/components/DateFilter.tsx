@@ -17,14 +17,22 @@ import { useQuery } from '@tanstack/react-query'
 import { api, type DailyRow, type Filter } from '../api'
 import { day, dayShort } from '../format'
 import { monthNames, weekdayNames } from '../locale'
-import { rangePresets, useFilter } from '../useFilter'
+import { rangePresets, useFilter, type RangeId } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { Chart, tooltipStyle, useElementWidth } from './Chart'
 
 /** hourOptions is Any plus every hour of the day, for the two hour selects. */
 const hourOptions = Array.from({ length: 24 }, (_, h) => h)
 
-export function DateFilter({ open, onToggle }: { open: boolean; onToggle: () => void }) {
+export function DateFilter({
+  open,
+  onToggle,
+  onClose,
+}: {
+  open: boolean
+  onToggle: () => void
+  onClose: () => void
+}) {
   const { state } = useFilter()
 
   const timeActive =
@@ -47,13 +55,13 @@ export function DateFilter({ open, onToggle }: { open: boolean; onToggle: () => 
         {summary}
       </button>
 
-      {open && <DatePanel />}
+      {open && <DatePanel onClose={onClose} />}
     </div>
   )
 }
 
 /** DatePanel is the popover body, split out so its many hooks stay off the button. */
-function DatePanel() {
+function DatePanel({ onClose }: { onClose: () => void }) {
   const { state, filter, update, toggleIn } = useFilter()
   const theme = useTheme()
   const { data: config } = useQuery({ queryKey: ['settings'], queryFn: api.settings })
@@ -78,12 +86,10 @@ function DatePanel() {
     update({ range: 'custom', from, to })
   }
 
-  const setPreset = (id: string) => {
+  const setPreset = (id: RangeId) => {
     anchor.current = null
     setPicking(false)
-    // A preset owns its own bounds, so any custom from/to must go or it would linger
-    // in the URL and reappear the next time "Custom range" was selected.
-    update({ range: id, from: undefined, to: undefined })
+    applyDatePreset(id, update, onClose)
   }
 
   const setCustomDate = (which: 'from' | 'to', value: string) => {
@@ -92,14 +98,7 @@ function DatePanel() {
     update({ range: 'custom', [which]: value || undefined })
   }
 
-  const resetDateTime = () => update({
-    range: '90',
-    from: undefined,
-    to: undefined,
-    hf: undefined,
-    ht: undefined,
-    dow: undefined,
-  })
+  const resetDateTime = () => applyDateTimeReset(update, onClose)
 
   const weekdays = weekdayNames()
   const selectedDow = new Set(state.weekdays ?? [])
@@ -217,6 +216,41 @@ function DatePanel() {
       )}
     </div>
   )
+}
+
+/** applyDatePreset closes one-click choices but leaves Custom open for editing. */
+export function applyDatePreset(
+  id: RangeId,
+  update: (patch: { range: RangeId; from: undefined; to: undefined }) => void,
+  dismiss: () => void,
+) {
+  // A preset owns its own bounds, so any custom from/to must go or it would linger
+  // in the URL and reappear the next time "Custom range" was selected.
+  update({ range: id, from: undefined, to: undefined })
+  if (id !== 'custom') dismiss()
+}
+
+/** applyDateTimeReset is another complete one-click choice, so it also dismisses. */
+export function applyDateTimeReset(
+  update: (patch: {
+    range: RangeId
+    from: undefined
+    to: undefined
+    hf: undefined
+    ht: undefined
+    dow: undefined
+  }) => void,
+  dismiss: () => void,
+) {
+  update({
+    range: '90',
+    from: undefined,
+    to: undefined,
+    hf: undefined,
+    ht: undefined,
+    dow: undefined,
+  })
+  dismiss()
 }
 
 /** DebugDateBounds reports the server's own interpretation of the filter. */
