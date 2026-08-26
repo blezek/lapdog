@@ -1,5 +1,17 @@
 # LapDog
 
+<p align="center">
+  <img src="web/src/assets/lapdog-icon.png" alt="LapDog logo" width="160">
+</p>
+
+<p align="center">
+  <a href="https://github.com/blezek/lapdog/actions/workflows/ci.yml"><img src="https://github.com/blezek/lapdog/actions/workflows/ci.yml/badge.svg?branch=main" alt="CI status"></a>
+  <a href="https://github.com/blezek/lapdog/releases/latest"><img src="https://img.shields.io/github/v/release/blezek/lapdog?display_name=tag" alt="Latest release"></a>
+  <a href="https://github.com/blezek/lapdog/releases"><img src="https://img.shields.io/github/downloads/blezek/lapdog/total" alt="Release downloads"></a>
+  <a href="go.mod"><img src="https://img.shields.io/badge/Go-1.26.5-00ADD8?logo=go&amp;logoColor=white" alt="Go 1.26.5"></a>
+  <img src="https://img.shields.io/badge/platform-Windows-0078D4?logo=windows" alt="Windows">
+</p>
+
 LapDog records how much time you actually spend in iRacing and what you spend
 it on. It runs in the Windows system tray, reads iRacing telemetry once a
 second, and keeps the result in a local database. Open the local web interface

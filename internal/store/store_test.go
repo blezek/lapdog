@@ -887,6 +887,19 @@ func TestFacets(t *testing.T) {
 func TestBreakdownByCar(t *testing.T) {
 	s := openTemp(t)
 	seed(t, s)
+	// Give every seeded session a known five-kilometre lap so the distance split
+	// has an independently computable expected value.
+	if _, err := s.Writer().Exec(`UPDATE sessions SET track_length_km = 5`); err != nil {
+		t.Fatal(err)
+	}
+	// Of the twelve inserted lap rows, make one dirty, one a pit lap, and one
+	// untimed. Clean laps use the same exclusions as EntityStats.
+	if _, err := s.Writer().Exec(`
+UPDATE laps SET incidents_on_lap = 1 WHERE id = (SELECT MIN(id) FROM laps);
+UPDATE laps SET is_pit_lap = 1 WHERE id = (SELECT MIN(id) + 1 FROM laps);
+UPDATE laps SET lap_time_s = NULL WHERE id = (SELECT MIN(id) + 2 FROM laps)`); err != nil {
+		t.Fatal(err)
+	}
 
 	rows, err := s.Breakdown(Filter{}, "car")
 	if err != nil {
@@ -899,9 +912,15 @@ func TestBreakdownByCar(t *testing.T) {
 	// The seed has two cars; the Porsche appears in several categories, the MX-5 in
 	// exactly one (the AI race).
 	byCar := map[string]float64{}
+	var laps int
+	var cleanLaps int
+	var distanceKm float64
 	cells := map[string]int{}
 	for _, r := range rows {
 		byCar[r.Group] += r.DrivingHours
+		laps += r.Laps
+		cleanLaps += r.CleanLaps
+		distanceKm += r.DistanceKm
 		cells[r.Group]++
 		if r.Group == "" || r.Stack == "" {
 			t.Errorf("row has an empty dimension: %+v", r)
@@ -918,6 +937,15 @@ func TestBreakdownByCar(t *testing.T) {
 	}
 	if cells["Porsche 911 GT3 R"] < 3 {
 		t.Errorf("Porsche cells = %d, want at least 3 categories", cells["Porsche 911 GT3 R"])
+	}
+	if laps != 103 {
+		t.Errorf("breakdown laps = %d, want 103 completed laps", laps)
+	}
+	if cleanLaps != 9 {
+		t.Errorf("breakdown clean laps = %d, want 9 timed non-pit laps without incidents", cleanLaps)
+	}
+	if distanceKm != 515 {
+		t.Errorf("breakdown distance = %v km, want 515 (103 laps x 5 km)", distanceKm)
 	}
 
 	// The per-car totals must reconcile with the overall driving time, or the stacked

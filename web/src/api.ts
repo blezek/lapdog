@@ -113,6 +113,8 @@ export interface BreakdownRow {
   drivingHours: number
   sessions: number
   laps: number
+  cleanLaps: number
+  distanceKm: number
 }
 
 export interface DailyRow {

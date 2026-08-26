@@ -31,6 +31,7 @@ import {
 import { Card, Empty, ErrorNote, Legend, Loading, Stat } from '../components/ui'
 import { Filters } from '../components/Filters'
 import { StackedByCategory } from '../components/StackedByCategory'
+import { LapAndDistanceLeaderboards } from '../components/Leaderboards'
 import { isEmptyArray, keepPrevious, viewState } from '../query'
 
 export function Dashboard() {
@@ -137,6 +138,8 @@ export function Dashboard() {
       <RatingPanels />
 
       <CarAndTrackBreakdown />
+
+      <LapAndDistanceLeaderboards filter={filter} />
 
       <div className="grid two-col">
         <Card

@@ -284,8 +284,8 @@ ORDER BY k`
 	return out, rows.Err()
 }
 
-// BreakdownRow is one cell of a two-dimensional aggregate: driving time for a
-// group, split by the category stacked within it.
+// BreakdownRow is one cell of a two-dimensional aggregate: session and lap facts
+// for a group, split by the category stacked within it.
 type BreakdownRow struct {
 	// Group is the outer dimension, such as a car or a track.
 	Group string `json:"group"`
@@ -296,6 +296,8 @@ type BreakdownRow struct {
 	DrivingHours float64 `json:"drivingHours"`
 	Sessions     int     `json:"sessions"`
 	Laps         int     `json:"laps"`
+	CleanLaps    int     `json:"cleanLaps"`
+	DistanceKm   float64 `json:"distanceKm"`
 }
 
 // breakdownExpr maps an allowlisted outer dimension to its SQL expression.
@@ -318,7 +320,7 @@ func BreakdownNames() []string {
 	return out
 }
 
-// Breakdown aggregates driving time by an outer dimension, split by category.
+// Breakdown aggregates session and lap facts by an outer dimension and category.
 //
 // This is what a stacked bar needs and Summary cannot express: Summary groups by a
 // single dimension, so asking it for "hours per car, split by what the driver was
@@ -336,7 +338,13 @@ SELECT ` + expr + ` AS grp,
        s.session_type || '/' || s.event_context AS stack,
        SUM(s.driving_seconds) / 3600.0,
        COUNT(*),
-       SUM(s.laps_completed)
+       SUM(s.laps_completed),
+       COALESCE(SUM((SELECT COUNT(*) FROM laps l
+                     WHERE l.session_id = s.id
+                       AND l.lap_time_s > 0
+                       AND l.is_pit_lap = 0
+                       AND l.incidents_on_lap = 0)), 0),
+       SUM(s.laps_completed * COALESCE(s.track_length_km, 0))
 FROM sessions s
 WHERE ` + pred + `
 GROUP BY grp, stack
@@ -351,7 +359,8 @@ ORDER BY grp, stack`
 	out := []BreakdownRow{}
 	for rows.Next() {
 		var r BreakdownRow
-		if err := rows.Scan(&r.Group, &r.Stack, &r.DrivingHours, &r.Sessions, &r.Laps); err != nil {
+		if err := rows.Scan(&r.Group, &r.Stack, &r.DrivingHours, &r.Sessions, &r.Laps,
+			&r.CleanLaps, &r.DistanceKm); err != nil {
 			return nil, fmt.Errorf("store: scan breakdown row: %w", err)
 		}
 		out = append(out, r)
