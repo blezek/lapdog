@@ -1,15 +1,13 @@
 import type { BreakdownRow } from './api'
 import { foldKey } from './categories'
 
-export type LeaderboardMetric = 'laps' | 'cleanLaps' | 'miles'
+export type LeaderboardMetric = 'laps' | 'cleanLaps' | 'distance'
 
 export interface LeaderboardGroup {
   group: string
   total: number
   byCategory: Map<string, number>
 }
-
-const MilesPerKilometre = 0.621371192237
 
 /**
  * rankLeaderboard totals one fact per group and category, largest group first.
@@ -32,7 +30,7 @@ export function rankLeaderboard(
         ? row.laps
         : metric === 'cleanLaps'
           ? row.cleanLaps
-          : row.distanceKm * MilesPerKilometre
+          : row.distanceKm
     let group = groups.get(row.group)
     if (!group) {
       group = { group: row.group, total: 0, byCategory: new Map() }

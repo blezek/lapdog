@@ -1,14 +1,14 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { api, type Filter } from '../api'
+import { api, type Config, type Filter } from '../api'
 import {
   categoryColour,
   categoryOrder,
   categoryOrderAll,
   totalsFromBreakdown,
 } from '../categories'
-import { labelForKey, num } from '../format'
+import { distance, labelForKey, num } from '../format'
 import {
   rankLeaderboard,
   type LeaderboardGroup,
@@ -19,21 +19,64 @@ import { isEmptyArray, keepPrevious, viewState } from '../query'
 import { Chart, axisStyle, baseGrid, tooltipStyle, valueAxisStyle } from './Chart'
 import { Card, Empty, ErrorNote, Legend, Loading } from './ui'
 
-/** Six top-ten rankings requested together: laps, clean laps and miles by entity. */
-export function LapAndDistanceLeaderboards({ filter }: { filter: Filter }) {
+/** Six top-ten rankings requested together: laps, clean laps and distance by entity. */
+export function LapAndDistanceLeaderboards({
+  filter,
+  units,
+}: {
+  filter: Filter
+  units: Config['units']
+}) {
+  const distanceName = units === 'metric' ? 'kilometres' : 'miles'
   return (
     <>
       <div className="grid two-col" style={{ marginBottom: 14 }}>
-        <LeaderboardCard title="Most laps driven by car" by="car" metric="laps" filter={filter} />
-        <LeaderboardCard title="Most laps driven by track" by="track" metric="laps" filter={filter} />
+        <LeaderboardCard
+          title="Most laps driven by car"
+          by="car"
+          metric="laps"
+          filter={filter}
+          units={units}
+        />
+        <LeaderboardCard
+          title="Most laps driven by track"
+          by="track"
+          metric="laps"
+          filter={filter}
+          units={units}
+        />
       </div>
       <div className="grid two-col" style={{ marginBottom: 14 }}>
-        <LeaderboardCard title="Most clean laps by car" by="car" metric="cleanLaps" filter={filter} />
-        <LeaderboardCard title="Most clean laps by track" by="track" metric="cleanLaps" filter={filter} />
+        <LeaderboardCard
+          title="Most clean laps by car"
+          by="car"
+          metric="cleanLaps"
+          filter={filter}
+          units={units}
+        />
+        <LeaderboardCard
+          title="Most clean laps by track"
+          by="track"
+          metric="cleanLaps"
+          filter={filter}
+          units={units}
+        />
       </div>
       <div className="grid two-col" style={{ marginBottom: 14 }}>
-        <LeaderboardCard title="Most miles driven by car" by="car" metric="miles" filter={filter} />
-        <LeaderboardCard title="Most miles driven by track" by="track" metric="miles" filter={filter} />
+        <LeaderboardCard
+          title={`Most ${distanceName} driven by car`}
+          by="car"
+          metric="distance"
+          filter={filter}
+          units={units}
+        />
+        <LeaderboardCard
+          title={`Most ${distanceName} driven by track`}
+          by="track"
+          metric="distance"
+          filter={filter}
+          units={units}
+        />
       </div>
     </>
   )
@@ -44,11 +87,13 @@ function LeaderboardCard({
   by,
   metric,
   filter,
+  units,
 }: {
   title: string
   by: 'car' | 'track'
   metric: LeaderboardMetric
   filter: Filter
+  units: Config['units']
 }) {
   const theme = useTheme()
   const query = useQuery({
@@ -71,7 +116,14 @@ function LeaderboardCard({
   return (
     <Card
       title={title}
-      table={<LeaderboardTable groups={fullGroups} order={fullOrder} metric={metric} />}
+      table={
+        <LeaderboardTable
+          groups={fullGroups}
+          order={fullOrder}
+          metric={metric}
+          units={units}
+        />
+      }
     >
       {viewState(query, isEmptyArray) === 'error' ? (
         <ErrorNote error={query.error} />
@@ -81,7 +133,13 @@ function LeaderboardCard({
         <Empty>{emptyMessage(metric)}</Empty>
       ) : (
         <>
-          <LeaderboardChart groups={groups} order={order} metric={metric} theme={theme} />
+          <LeaderboardChart
+            groups={groups}
+            order={order}
+            metric={metric}
+            theme={theme}
+            units={units}
+          />
           <Legend
             items={order.map((key) => ({
               label: labelForKey(key),
@@ -99,11 +157,13 @@ function LeaderboardChart({
   order,
   metric,
   theme,
+  units,
 }: {
   groups: LeaderboardGroup[]
   order: string[]
   metric: LeaderboardMetric
   theme: Theme
+  units: Config['units']
 }) {
   const option = useMemo(() => {
     const ordered = [...groups].reverse()
@@ -116,14 +176,14 @@ function LeaderboardChart({
         formatter: (points: { dataIndex: number }[]) => {
           const group = ordered[points[0]?.dataIndex ?? 0]
           if (!group) return ''
-          const lines = [`<strong>${group.group}</strong>`, formatMetric(group.total, metric)]
+          const lines = [`<strong>${group.group}</strong>`, formatMetric(group.total, metric, units)]
           for (const key of order) {
             const value = group.byCategory.get(key) ?? 0
             if (value <= 0) continue
             lines.push(
               `<span style="display:inline-block;width:8px;height:8px;border-radius:2px;` +
                 `background:${categoryColour(theme, order, key)};margin-right:5px"></span>` +
-                `${labelForKey(key)} ${formatMetric(value, metric)}`,
+                `${labelForKey(key)} ${formatMetric(value, metric, units)}`,
             )
           }
           return lines.join('<br/>')
@@ -131,7 +191,7 @@ function LeaderboardChart({
       },
       xAxis: {
         type: 'value',
-        minInterval: metric === 'miles' ? undefined : 1,
+        minInterval: metric === 'distance' ? undefined : 1,
         ...valueAxisStyle(theme.textMuted, theme.line),
       },
       yAxis: {
@@ -155,7 +215,7 @@ function LeaderboardChart({
                 show: true,
                 position: 'right',
                 formatter: (point: { dataIndex: number }) =>
-                  formatMetric(ordered[point.dataIndex]?.total ?? 0, metric, false),
+                  formatMetric(ordered[point.dataIndex]?.total ?? 0, metric, units, false),
                 color: theme.textSecondary,
                 fontSize: 11,
               }
@@ -163,7 +223,7 @@ function LeaderboardChart({
         data: ordered.map((group) => Number((group.byCategory.get(key) ?? 0).toFixed(3))),
       })),
     }
-  }, [groups, metric, order, theme])
+  }, [groups, metric, order, theme, units])
 
   return (
     <Chart
@@ -178,10 +238,12 @@ function LeaderboardTable({
   groups,
   order,
   metric,
+  units,
 }: {
   groups: LeaderboardGroup[]
   order: string[]
   metric: LeaderboardMetric
+  units: Config['units']
 }) {
   return (
     <div className="table-wrap">
@@ -203,12 +265,12 @@ function LeaderboardTable({
             <tr key={group.group}>
               <td>{index + 1}</td>
               <td>{group.group}</td>
-              <td className="num">{formatMetric(group.total, metric)}</td>
+              <td className="num">{formatMetric(group.total, metric, units)}</td>
               {order.map((key) => {
                 const value = group.byCategory.get(key) ?? 0
                 return (
                   <td key={key} className="num">
-                    {value > 0 ? formatMetric(value, metric, false) : '—'}
+                    {value > 0 ? formatMetric(value, metric, units, false) : '—'}
                   </td>
                 )
               })}
@@ -220,9 +282,14 @@ function LeaderboardTable({
   )
 }
 
-function formatMetric(value: number, metric: LeaderboardMetric, unit = true): string {
-  if (metric !== 'miles') return `${num(Math.round(value))}${unit ? ' laps' : ''}`
-  return `${value.toFixed(1)}${unit ? ' mi' : ''}`
+function formatMetric(
+  value: number,
+  metric: LeaderboardMetric,
+  units: Config['units'],
+  unit = true,
+): string {
+  if (metric !== 'distance') return `${num(Math.round(value))}${unit ? ' laps' : ''}`
+  return distance(value, units, unit)
 }
 
 function emptyMessage(metric: LeaderboardMetric): string {

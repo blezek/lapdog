@@ -83,6 +83,16 @@ export function speed(metresPerSecond: number, units: 'metric' | 'imperial'): st
   return `${num(Math.round(converted))} ${units === 'imperial' ? 'mph' : 'kph'}`
 }
 
+/** distance converts stored kilometres into the selected display unit. */
+export function distance(
+  kilometres: number,
+  units: 'metric' | 'imperial',
+  unit = true,
+): string {
+  const converted = units === 'imperial' ? kilometres * 0.621371192237 : kilometres
+  return `${converted.toFixed(1)}${unit ? ` ${units === 'imperial' ? 'mi' : 'km'}` : ''}`
+}
+
 /**
  * day renders a date as a short readable date, with its year.
  *
