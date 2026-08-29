@@ -10,7 +10,7 @@ import { SplashScreen } from './components/SplashScreen'
 import { UpdatePopdown } from './components/UpdatePopdown'
 import { hm } from './format'
 import { filterParams } from './useFilter'
-import { shouldOpenUpdate } from './update'
+import { buildIdentity, shouldOpenUpdate } from './update'
 
 import { Live } from './pages/Live'
 import { Dashboard } from './pages/Dashboard'
@@ -18,6 +18,7 @@ import { EntityPage } from './pages/Entity'
 import { Sessions } from './pages/Sessions'
 import { Races } from './pages/Races'
 import { Laps } from './pages/Laps'
+import { Top10 } from './pages/Top10'
 import { Export } from './pages/Export'
 import { Settings } from './pages/Settings'
 
@@ -36,6 +37,7 @@ const nav = [
   { to: '/sessions', label: 'Sessions', icon: 'flag-checkered' },
   { to: '/races', label: 'Races', icon: 'trophy' },
   { to: '/laps', label: 'Laps', icon: 'timer-outline' },
+  { to: '/top-10', label: 'Top 10', icon: 'podium' },
   { to: '/export', label: 'Export', icon: 'download' },
 ]
 
@@ -96,6 +98,11 @@ export function App() {
               <span className="version-badge">{update.data.availableRelease.version}</span>
             </button>
           )}
+          {update.data && (
+            <div className="nav-version mono">
+              {buildIdentity(update.data.currentVersion, null).version}
+            </div>
+          )}
           <NavLink
             to={routeTo('/settings')}
             className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
@@ -117,6 +124,7 @@ export function App() {
             <Route path="/sessions" element={<Sessions />} />
             <Route path="/races" element={<Races />} />
             <Route path="/laps" element={<Laps />} />
+            <Route path="/top-10" element={<Top10 />} />
             <Route path="/export" element={<Export />} />
             <Route path="/settings" element={<Settings />} />
             <Route path="*" element={<Navigate to={routeTo('/dashboard')} replace />} />

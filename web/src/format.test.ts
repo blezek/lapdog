@@ -1,6 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { hm, hms, licenceLabel, speed, startOfMonth, startOfWeek, startOfYear } from './format'
+import {
+  distance,
+  hm,
+  hms,
+  licenceLabel,
+  speed,
+  startOfMonth,
+  startOfWeek,
+  startOfYear,
+} from './format'
 
 describe('speed', () => {
   it('converts simulator metres per second to the selected display unit', () => {
@@ -17,6 +26,13 @@ describe('speed', () => {
   it('keeps a stationary car as a real zero reading', () => {
     expect(speed(0, 'metric')).toBe('0 kph')
     expect(speed(0, 'imperial')).toBe('0 mph')
+  })
+})
+
+describe('distance', () => {
+  it('uses kilometres for metric settings and miles for imperial settings', () => {
+    expect(distance(16.09344, 'metric')).toBe('16.1 km')
+    expect(distance(16.09344, 'imperial')).toBe('10.0 mi')
   })
 })
 

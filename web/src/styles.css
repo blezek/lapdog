@@ -303,6 +303,12 @@ button.nav-item {
   font-size: 10px;
 }
 
+.nav-version {
+  padding: 7px 9px 3px;
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
 .nav-spacer {
   margin-top: auto;
 }

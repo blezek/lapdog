@@ -24,12 +24,12 @@ describe('rankLeaderboard', () => {
     expect(laps[0]?.group).toBe('Car 11')
     expect(laps.at(-1)?.group).toBe('Car 02')
 
-    const miles = rankLeaderboard(rows, 'miles', ['Practice/Offline'])
-    expect(miles[0]?.group).toBe('Car 00')
-    expect(miles.at(-1)?.group).toBe('Car 09')
+    const distance = rankLeaderboard(rows, 'distance', ['Practice/Offline'])
+    expect(distance[0]?.group).toBe('Car 00')
+    expect(distance.at(-1)?.group).toBe('Car 09')
   })
 
-  it('includes every category in the group total and converts kilometres to miles', () => {
+  it('includes every category in the group total and keeps distance in kilometres', () => {
     const rows = [
       row('Porsche', 'Practice/OfficialPractice', 7, 10, 6),
       row('Porsche', 'Race/OfficialRace', 3, 6.09344, 2),
@@ -46,7 +46,7 @@ describe('rankLeaderboard', () => {
     expect(clean?.byCategory.get(order[0] ?? '')).toBe(6)
     expect(clean?.byCategory.get(order[1] ?? '')).toBe(2)
 
-    const [miles] = rankLeaderboard(rows, 'miles', order)
-    expect(miles?.total).toBeCloseTo(10, 4)
+    const [distance] = rankLeaderboard(rows, 'distance', order)
+    expect(distance?.total).toBeCloseTo(16.09344, 4)
   })
 })
