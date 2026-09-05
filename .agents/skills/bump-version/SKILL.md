@@ -32,9 +32,11 @@ Current tag: v1.2.3 → Proposed: v1.3.0
 This repository publishes on tags matching `v*.*.*` through
 `.github/workflows/release.yml`. Before proposing the tag:
 
-1. Run `make goreleaser-check` and `make release-snapshot` when practical;
-   these exercise the publishing pipeline without publishing. If either is not
-   run, say so before asking for tag approval.
+1. Run `make goreleaser-check`. Do not run `make release-snapshot`, an installer
+   target, or any other local command that invokes NSIS/`makensis`; the tag-triggered
+   release workflow owns the installer build. Before asking for tag approval, say
+   explicitly that the local release snapshot and NSIS build were intentionally
+   skipped.
 2. Inspect `git remote -v`.
 3. Inspect the commits and tracked diff being published for credentials,
    tokens, real customer identifiers, private captures, and personal data.

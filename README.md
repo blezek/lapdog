@@ -80,6 +80,14 @@ can be switched to tables where a tabular view is useful.
 
 ![LapDog dashboard using generated replay data](docs/images/dashboard.png)
 
+### Top 10
+
+The Top 10 screen ranks cars and tracks separately by completed laps, clean
+laps, and distance driven. Each ranking is split by session category and can
+be switched from its chart to an exact table. The shared historical filter
+applies to all six rankings, and distance is shown in kilometres or miles
+according to the unit selected in **Settings**.
+
 ### Races
 
 Races are separated from the broader session list. Headline cards summarize
@@ -109,6 +117,7 @@ can narrow the comparison before sorting.
 | **Sessions** | A filterable session explorer. Select a session to inspect its three time counters, classification, result, laps, and recorded position changes. |
 | **Races** | Race-only summaries and a sortable grid-to-finish results table. |
 | **Laps** | A sortable, paged table of completed laps with lap time, delta, fuel, incidents, and position. |
+| **Top 10** | Filtered car and track rankings for completed laps, clean laps, and distance driven, split by session category. |
 | **Export** | CSV or JSON downloads of the currently filtered sessions, laps, or position changes. Empty values remain empty rather than being changed to zero. |
 | **Settings** | Recording frequency, minimum session length, capture retention, units, theme, startup behavior, update checks, diagnostics, data paths, and collector status. |
 
