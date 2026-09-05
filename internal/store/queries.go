@@ -409,6 +409,7 @@ type Totals struct {
 	Utilisation                     float64  `json:"utilisation"`
 	IncidentsPerHour                float64  `json:"incidentsPerHour"`
 	AverageDrivingHoursPerActiveDay *float64 `json:"averageDrivingHoursPerActiveDay"`
+	LongestActiveDayStreak          int      `json:"longestActiveDayStreak"`
 	Sessions                        int      `json:"sessions"`
 	ActiveDays                      int      `json:"activeDays"`
 	Laps                            int      `json:"laps"`
@@ -452,6 +453,25 @@ FROM sessions s WHERE `+pred, args...,
 	if t.ActiveDays > 0 {
 		average := t.DrivingHours / float64(t.ActiveDays)
 		t.AverageDrivingHoursPerActiveDay = &average
+	}
+
+	// Collapse multiple sessions on one local calendar day before identifying
+	// consecutive-day runs. Subtracting each row number from its Julian day gives
+	// every date in one uninterrupted run the same grouping value.
+	err = s.reader.QueryRow(`
+WITH active_days AS (
+  SELECT DISTINCT date(s.started_at, 'localtime') AS day
+  FROM sessions s
+  WHERE `+pred+`
+), runs AS (
+  SELECT day, julianday(day) - ROW_NUMBER() OVER (ORDER BY day) AS run
+  FROM active_days
+), streaks AS (
+  SELECT COUNT(*) AS days FROM runs GROUP BY run
+)
+SELECT COALESCE(MAX(days), 0) FROM streaks`, args...).Scan(&t.LongestActiveDayStreak)
+	if err != nil {
+		return Totals{}, fmt.Errorf("store: active-day streak: %w", err)
 	}
 
 	// A clean lap is the same unit used by the lap browser and entity statistics:

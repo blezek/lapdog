@@ -482,6 +482,9 @@ func TestTotalsEndpoint(t *testing.T) {
 		t.Errorf("active-day totals = %d, %v; want two days and an average",
 			body.ActiveDays, body.AverageDrivingHoursPerActiveDay)
 	}
+	if body.LongestActiveDayStreak != 1 {
+		t.Errorf("LongestActiveDayStreak = %d, want 1", body.LongestActiveDayStreak)
+	}
 	if body.CleanLaps != 4 {
 		t.Errorf("CleanLaps = %d, want 4", body.CleanLaps)
 	}

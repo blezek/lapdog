@@ -756,6 +756,9 @@ func TestTotals(t *testing.T) {
 	if got.ActiveDays != 4 {
 		t.Errorf("ActiveDays = %d, want 4 distinct local dates", got.ActiveDays)
 	}
+	if got.LongestActiveDayStreak != 1 {
+		t.Errorf("LongestActiveDayStreak = %d, want 1", got.LongestActiveDayStreak)
+	}
 	if got.AverageDrivingHoursPerActiveDay == nil ||
 		math.Abs(*got.AverageDrivingHoursPerActiveDay-got.DrivingHours/4) > 1e-9 {
 		t.Errorf("AverageDrivingHoursPerActiveDay = %v, want DrivingHours / 4 active days",
@@ -776,6 +779,35 @@ func TestTotals(t *testing.T) {
 	if got.PassesMade != 3 || got.TimesPassed != 3 {
 		t.Errorf("passes=%d passed=%d, want 3 and 3 — attrition must be excluded",
 			got.PassesMade, got.TimesPassed)
+	}
+}
+
+// Multiple sessions on one day count once, while a gap ends the run. The
+// longest run can be historical; it is not required to include today.
+func TestTotalsLongestActiveDayStreak(t *testing.T) {
+	s := openTemp(t)
+	for i, started := range []string{
+		"2026-08-01T12:00:00Z",
+		"2026-08-02T10:00:00Z",
+		"2026-08-02T18:00:00Z",
+		"2026-08-03T12:00:00Z",
+		"2026-08-05T12:00:00Z",
+		"2026-08-06T12:00:00Z",
+	} {
+		rec := minimalSession(fmt.Sprintf("streak/%d", i))
+		rec.StartedAt = started
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.Totals(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ActiveDays != 5 || got.LongestActiveDayStreak != 3 {
+		t.Errorf("active days/streak = %d/%d, want 5/3",
+			got.ActiveDays, got.LongestActiveDayStreak)
 	}
 }
 
@@ -858,6 +890,9 @@ func TestTotalsEmptySet(t *testing.T) {
 	if got.ActiveDays != 0 || got.AverageDrivingHoursPerActiveDay != nil {
 		t.Errorf("empty active-day totals = %d, %v; want 0 days and no average",
 			got.ActiveDays, got.AverageDrivingHoursPerActiveDay)
+	}
+	if got.LongestActiveDayStreak != 0 {
+		t.Errorf("LongestActiveDayStreak = %d, want 0", got.LongestActiveDayStreak)
 	}
 	if got.CleanLaps != 0 || got.UniqueCars != 0 || got.UniqueTracks != 0 ||
 		got.UniqueCarTrackCombos != 0 {

@@ -219,6 +219,13 @@ function AllTimeStats({ totals }: { totals: Totals }) {
           <dd>{num(totals.activeDays)}</dd>
         </div>
         <div>
+          <dt>Longest streak</dt>
+          <dd>
+            {num(totals.longestActiveDayStreak)}{' '}
+            {totals.longestActiveDayStreak === 1 ? 'day' : 'days'}
+          </dd>
+        </div>
+        <div>
           <dt>Cars raced</dt>
           <dd>{num(totals.uniqueCars)}</dd>
         </div>

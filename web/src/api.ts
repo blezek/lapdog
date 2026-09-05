@@ -91,6 +91,7 @@ export interface Totals {
   utilisation: number
   incidentsPerHour: number
   averageDrivingHoursPerActiveDay: number | null
+  longestActiveDayStreak: number
   sessions: number
   activeDays: number
   laps: number
