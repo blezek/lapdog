@@ -33,6 +33,27 @@ Deliberately excluded, and recorded as such in the specs: `.ibt` file import, se
 
 ---
 
+## 2026-08-28 — dedicated Top 10 view
+
+The six car and track leaderboards moved from Dashboard to a filterable **Top
+10** page in the main navigation. Cars and tracks are ranked separately by
+completed laps, clean laps and distance driven, with every chart retaining its
+exact table view and session-category split. Dashboard now remains focused on
+the broader activity summary rather than carrying the full ranking stack.
+
+Distance totals remain in the API's canonical kilometres until presentation.
+The Top 10 headings, chart values, tooltips and tables then show kilometres or
+miles according to the existing unit setting. The running build version is
+also visible immediately above Settings in the sidebar.
+
+The distance assertions were demonstrated to fail against the old
+miles-only implementation before passing. The full CI pipeline passed with 92
+frontend tests, Go tests, vet, typecheck, Windows cross-builds and embedded
+asset verification. The completed page was inspected in Chrome using the
+generated replay dataset and shipped publicly as `v0.3.0`.
+
+---
+
 ## 2026-08-16 — automatic, consent-gated GitHub updates
 
 Windows release builds now check stable `blezek/lapdog` releases after startup and once
