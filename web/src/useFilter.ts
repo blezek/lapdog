@@ -40,6 +40,7 @@ export interface FilterState extends Filter {
 }
 
 const DEFAULT_RANGE: RangeId = '90'
+const CLEAR_RANGE: RangeId = 'all'
 const SAVED_FILTERS_KEY = 'lapdog.savedFilters.v1'
 
 export const filterParamKeys = new Set([
@@ -51,6 +52,11 @@ export interface SavedFilterSet {
   id: string
   name: string
   query: string
+}
+
+/** clearedFilterParams is the unfiltered history view selected by Clear. */
+export function clearedFilterParams(): URLSearchParams {
+  return new URLSearchParams({ range: CLEAR_RANGE })
 }
 
 const listFilterKeys = new Set(['type', 'context', 'track', 'car', 'dow'])
@@ -236,6 +242,12 @@ export function useFilter() {
   )
 
   const clear = useCallback(() => {
+    setParams(clearedFilterParams(), { replace: false })
+  }, [setParams])
+
+  // Saved views retain the original 90-day default as an explicit destination;
+  // it is distinct from clearing filters to inspect all recorded history.
+  const resetDefault = useCallback(() => {
     setParams(new URLSearchParams(), { replace: false })
   }, [setParams])
 
@@ -288,9 +300,12 @@ export function useFilter() {
       state.hourTo != null ||
       (state.weekdays?.length ?? 0) > 0 ||
       state.excludeAi === true ||
-      state.range !== DEFAULT_RANGE
+      (state.range !== DEFAULT_RANGE && state.range !== CLEAR_RANGE)
     )
   }, [state])
 
-  return { state, filter, update, toggleIn, clear, active, params, savedSets, saveSet, loadSet, deleteSet }
+  return {
+    state, filter, update, toggleIn, clear, resetDefault, active, params,
+    savedSets, saveSet, loadSet, deleteSet,
+  }
 }

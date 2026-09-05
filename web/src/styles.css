@@ -859,6 +859,82 @@ h1 {
   margin-bottom: 14px;
 }
 
+/* A lifetime summary, intentionally thinner than the filter-scoped KPI cards. */
+.all-time-stats {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  margin-bottom: 12px;
+  padding: 7px 12px;
+  background: var(--surface-1);
+  border: 1px solid var(--ring);
+  border-radius: var(--radius);
+}
+
+.all-time-title {
+  display: flex;
+  align-items: center;
+  padding-right: 14px;
+  border-right: 1px solid var(--line);
+  color: var(--text-muted);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.all-time-stats dl {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(125px, auto));
+  gap: 8px 28px;
+  align-items: baseline;
+  margin: 0;
+}
+
+.all-time-stats dl > div {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  white-space: nowrap;
+}
+
+.all-time-stats dt {
+  color: var(--text-muted);
+  font-size: 10.5px;
+}
+
+.all-time-stats dd {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 900px) {
+  .all-time-stats dl {
+    grid-template-columns: repeat(2, minmax(110px, auto));
+  }
+}
+
+@media (max-width: 560px) {
+  .all-time-stats {
+    display: block;
+  }
+
+  .all-time-title {
+    margin-bottom: 6px;
+    padding: 0 0 5px;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .all-time-stats dl {
+    grid-template-columns: 1fr;
+  }
+}
+
 .race-kpis {
   grid-template-columns: repeat(6, minmax(0, 1fr));
   margin-bottom: 14px;

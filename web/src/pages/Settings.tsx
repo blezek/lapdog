@@ -495,6 +495,9 @@ export function Settings() {
             </span>
           </div>
           <div className="setting-control">
+            {identity.data?.points.at(-1)?.discipline
+              ? `${identity.data.points.at(-1)?.discipline} · `
+              : ''}
             {licenceLabel(identity.data?.licString ?? null, identity.data?.safetyRating ?? null)}
             {identity.data?.iRating == null ? '' : ` · ${num(identity.data.iRating)} iR`}
           </div>

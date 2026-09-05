@@ -79,12 +79,13 @@ type Session struct {
 	// every official race: a single current value would say what the iRating is while
 	// discarding how it got there. Pointers because absent and zero differ — an
 	// iRating of zero is a real value for an unrated licence.
-	DriverUserID       *int     `json:"driverUserId"`
-	DriverIRating      *int     `json:"driverIRating"`
-	DriverLicString    *string  `json:"driverLicString"`
-	DriverLicLevel     *int     `json:"driverLicLevel"`
-	DriverLicSubLevel  *int     `json:"driverLicSubLevel"`
-	DriverSafetyRating *float64 `json:"driverSafetyRating"`
+	DriverUserID         *int     `json:"driverUserId"`
+	DriverIRating        *int     `json:"driverIRating"`
+	DriverLicString      *string  `json:"driverLicString"`
+	DriverLicLevel       *int     `json:"driverLicLevel"`
+	DriverLicSubLevel    *int     `json:"driverLicSubLevel"`
+	DriverSafetyRating   *float64 `json:"driverSafetyRating"`
+	DriverRatingCategory *string  `json:"driverRatingCategory"`
 
 	// ClassifySourceJSON is the YAML subset the classification was derived from.
 	// It is what makes a wrong rule fixable retroactively, and is omitted from
@@ -124,7 +125,7 @@ const sessionColumns = `
 	qualify_position, qualify_class_position, qualify_best_time_s, field_size,
 	ai_opponent_count, ai_detection, incident_source,
 	driver_user_id, driver_irating, driver_lic_string,
-	driver_lic_level, driver_lic_sublevel, driver_safety_rating,
+	driver_lic_level, driver_lic_sublevel, driver_safety_rating, driver_rating_category,
 	classify_source_json, capture_file,
 	created_at, updated_at, uploaded_at`
 
@@ -146,7 +147,7 @@ const sessionColumnsAliased = `
 	s.qualify_position, s.qualify_class_position, s.qualify_best_time_s, s.field_size,
 	s.ai_opponent_count, s.ai_detection, s.incident_source,
 	s.driver_user_id, s.driver_irating, s.driver_lic_string,
-	s.driver_lic_level, s.driver_lic_sublevel, s.driver_safety_rating,
+	s.driver_lic_level, s.driver_lic_sublevel, s.driver_safety_rating, s.driver_rating_category,
 	s.classify_source_json, s.capture_file,
 	s.created_at, s.updated_at, s.uploaded_at`
 
@@ -203,13 +204,13 @@ INSERT INTO sessions (
 	qualify_position, qualify_class_position, qualify_best_time_s, field_size,
 	ai_opponent_count, ai_detection, incident_source,
 	driver_user_id, driver_irating, driver_lic_string,
-	driver_lic_level, driver_lic_sublevel, driver_safety_rating,
+	driver_lic_level, driver_lic_sublevel, driver_safety_rating, driver_rating_category,
 	classify_source_json, capture_file,
 	created_at, updated_at
 ) VALUES (
 	?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 	?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-	?, ?, ?, ?, ?, ?
+	?, ?, ?, ?, ?, ?, ?
 )
 ON CONFLICT(session_key) DO UPDATE SET
 	subsession_id = excluded.subsession_id,
@@ -252,6 +253,7 @@ ON CONFLICT(session_key) DO UPDATE SET
 	driver_lic_level = excluded.driver_lic_level,
 	driver_lic_sublevel = excluded.driver_lic_sublevel,
 	driver_safety_rating = excluded.driver_safety_rating,
+	driver_rating_category = excluded.driver_rating_category,
 	classify_source_json = excluded.classify_source_json,
 	capture_file = excluded.capture_file,
 	updated_at = excluded.updated_at
@@ -270,7 +272,7 @@ RETURNING id`
 		rec.QualifyPosition, rec.QualifyClassPosition, rec.QualifyBestTimeS, rec.FieldSize,
 		rec.AIOpponentCount, rec.AIDetection, rec.IncidentSource,
 		rec.DriverUserID, rec.DriverIRating, rec.DriverLicString,
-		rec.DriverLicLevel, rec.DriverLicSubLevel, rec.DriverSafetyRating,
+		rec.DriverLicLevel, rec.DriverLicSubLevel, rec.DriverSafetyRating, rec.DriverRatingCategory,
 		rec.ClassifySourceJSON, rec.CaptureFile,
 		rec.CreatedAt, rec.UpdatedAt,
 	).Scan(&id)
@@ -299,7 +301,7 @@ func scanSession(sc rowScanner) (*Session, error) {
 		&r.QualifyPosition, &r.QualifyClassPosition, &r.QualifyBestTimeS, &r.FieldSize,
 		&r.AIOpponentCount, &r.AIDetection, &r.IncidentSource,
 		&r.DriverUserID, &r.DriverIRating, &r.DriverLicString,
-		&r.DriverLicLevel, &r.DriverLicSubLevel, &r.DriverSafetyRating,
+		&r.DriverLicLevel, &r.DriverLicSubLevel, &r.DriverSafetyRating, &r.DriverRatingCategory,
 		&r.ClassifySourceJSON, &r.CaptureFile,
 		&r.CreatedAt, &r.UpdatedAt, &r.UploadedAt,
 	)

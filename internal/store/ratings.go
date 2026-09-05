@@ -18,6 +18,7 @@ type RatingPoint struct {
 	IRating      *int     `json:"iRating"`
 	SafetyRating *float64 `json:"safetyRating"`
 	LicString    *string  `json:"licString"`
+	Discipline   *string  `json:"discipline"`
 }
 
 // Ratings is the driver's identity plus how their ratings moved over the
@@ -89,7 +90,8 @@ LIMIT 1`, pred)
 	// neither value contributes nothing but would flatten the line if emitted as a gap.
 	q := fmt.Sprintf(`
 SELECT s.started_at, s.session_type, s.event_context,
-       s.driver_irating, s.driver_safety_rating, s.driver_lic_string
+       s.driver_irating, s.driver_safety_rating, s.driver_lic_string,
+       s.driver_rating_category
 FROM sessions s
 WHERE (%s)
   AND (s.driver_irating IS NOT NULL OR s.driver_safety_rating IS NOT NULL)
@@ -104,9 +106,10 @@ ORDER BY s.started_at ASC`, pred)
 	for rows.Next() {
 		var p RatingPoint
 		if err := rows.Scan(&p.StartedAt, &p.SessionType, &p.EventContext,
-			&p.IRating, &p.SafetyRating, &p.LicString); err != nil {
+			&p.IRating, &p.SafetyRating, &p.LicString, &p.Discipline); err != nil {
 			return Ratings{}, fmt.Errorf("store: ratings scan: %w", err)
 		}
+		p.Discipline = ratingDiscipline(p.Discipline)
 		out.Points = append(out.Points, p)
 	}
 	if err := rows.Err(); err != nil {
@@ -114,6 +117,31 @@ ORDER BY s.started_at ASC`, pred)
 	}
 	out.summarise()
 	return out, nil
+}
+
+// ratingDiscipline maps the simulator's category names onto the five licence
+// disciplines. Road is the pre-split name; SportsCar is its current equivalent.
+// Unknown values remain absent so a future SDK change cannot mislabel a chart.
+func ratingDiscipline(category *string) *string {
+	if category == nil {
+		return nil
+	}
+	var discipline string
+	switch *category {
+	case "Road", "SportsCar":
+		discipline = "Road"
+	case "FormulaCar":
+		discipline = "Formula"
+	case "Oval":
+		discipline = "Oval"
+	case "DirtRoad":
+		discipline = "Dirt Road"
+	case "DirtOval":
+		discipline = "Dirt Oval"
+	default:
+		return nil
+	}
+	return &discipline
 }
 
 // summarise fills the headline fields from the collected points.

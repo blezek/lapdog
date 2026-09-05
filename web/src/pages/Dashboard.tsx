@@ -1,7 +1,14 @@
 import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { api, type ComboCell, type DailyRow, type RatingPoint, type SummaryRow } from '../api'
+import {
+  api,
+  type ComboCell,
+  type DailyRow,
+  type RatingPoint,
+  type SummaryRow,
+  type Totals,
+} from '../api'
 import {
   hours,
   labelForKey,
@@ -18,7 +25,8 @@ import {
 } from '../format'
 import { monthNames, weekdayNames } from '../locale'
 import { useFilter } from '../useFilter'
-import { useTheme, type Theme } from '../theme'
+import { seriesColour, useTheme, type Theme } from '../theme'
+import { ratingDisciplines, ratingSeries } from '../ratings'
 import { categoryColour, categoryOrderAll, totalsFromSummary } from '../categories'
 import {
   Chart,
@@ -41,6 +49,13 @@ export function Dashboard() {
     queryKey: ['totals', filter],
     queryFn: () => api.totals(filter),
     ...keepPrevious,
+  })
+  // This query is deliberately independent of the dashboard filter. Its explicit
+  // all-time range and fixed key keep the lifetime summary stable while every
+  // chart below it responds to the controls.
+  const allTimeTotals = useQuery({
+    queryKey: ['totals', 'all-time'],
+    queryFn: () => api.totals({ range: 'all' }),
   })
   const byCategory = useQuery({
     queryKey: ['summary', filter, 'month-category'],
@@ -72,6 +87,9 @@ export function Dashboard() {
         Time in the simulator, and how it was spent. Driving time excludes the garage,
         the pit box and replay playback.
       </p>
+
+      {allTimeTotals.isError && <ErrorNote error={allTimeTotals.error} />}
+      {allTimeTotals.data && <AllTimeStats totals={allTimeTotals.data} />}
 
       <Filters />
 
@@ -170,6 +188,60 @@ export function Dashboard() {
   )
 }
 
+/** AllTimeStats is a compact lifetime summary that never follows dashboard filters. */
+function AllTimeStats({ totals }: { totals: Totals }) {
+  return (
+    <section className="all-time-stats" aria-label="All-time statistics">
+      <span className="all-time-title">All time</span>
+      <dl>
+        <div>
+          <dt>Driving</dt>
+          <dd>{hours(totals.drivingHours)}</dd>
+        </div>
+        <div>
+          <dt>Laps</dt>
+          <dd>{num(totals.laps)}</dd>
+        </div>
+        <div>
+          <dt>Clean laps</dt>
+          <dd>{num(totals.cleanLaps)}</dd>
+        </div>
+        <div>
+          <dt>Hours / active day</dt>
+          <dd>
+            {totals.averageDrivingHoursPerActiveDay == null
+              ? '—'
+              : hours(totals.averageDrivingHoursPerActiveDay)}
+          </dd>
+        </div>
+        <div>
+          <dt>Active days</dt>
+          <dd>{num(totals.activeDays)}</dd>
+        </div>
+        <div>
+          <dt>Longest streak</dt>
+          <dd>
+            {num(totals.longestActiveDayStreak)}{' '}
+            {totals.longestActiveDayStreak === 1 ? 'day' : 'days'}
+          </dd>
+        </div>
+        <div>
+          <dt>Cars raced</dt>
+          <dd>{num(totals.uniqueCars)}</dd>
+        </div>
+        <div>
+          <dt>Tracks raced</dt>
+          <dd>{num(totals.uniqueTracks)}</dd>
+        </div>
+        <div>
+          <dt>Car-track combos</dt>
+          <dd>{num(totals.uniqueCarTrackCombos)}</dd>
+        </div>
+      </dl>
+    </section>
+  )
+}
+
 /* ---------------------------------------------------------------- ratings */
 
 /**
@@ -198,6 +270,15 @@ function RatingPanels() {
   // Nothing rated in range: the whole section is absent rather than empty.
   if (!data || data.points.length === 0) return null
 
+  const disciplines = new Set(data.points.flatMap((p) => (p.discipline ? [p.discipline] : [])))
+  const mixedDisciplines = disciplines.size > 1
+  const latestIRDiscipline = [...data.points]
+    .reverse()
+    .find((p) => p.iRating != null)?.discipline
+  const latestSRDiscipline = [...data.points]
+    .reverse()
+    .find((p) => p.safetyRating != null)?.discipline
+
   return (
     <div className="grid two-col" style={{ marginBottom: 14 }}>
       <Card
@@ -205,9 +286,19 @@ function RatingPanels() {
         actions={
           <RatingHead
             value={data.iRating == null ? '—' : num(data.iRating)}
-            delta={data.iRatingDelta == null ? null : signedInt(data.iRatingDelta)}
+            delta={
+              mixedDisciplines || data.iRatingDelta == null
+                ? null
+                : signedInt(data.iRatingDelta)
+            }
             good={(data.iRatingDelta ?? 0) >= 0}
-            note={data.peakIRating == null ? undefined : `peak ${num(data.peakIRating)}`}
+            note={
+              mixedDisciplines
+                ? latestIRDiscipline ?? undefined
+                : data.peakIRating == null
+                  ? undefined
+                  : `peak ${num(data.peakIRating)}`
+            }
           />
         }
         table={<RatingTable points={data.points} />}
@@ -227,9 +318,12 @@ function RatingPanels() {
           <RatingHead
             value={licenceLabel(data.licString, data.safetyRating)}
             delta={
-              data.safetyRatingDelta == null ? null : signedFixed(data.safetyRatingDelta, 2)
+              mixedDisciplines || data.safetyRatingDelta == null
+                ? null
+                : signedFixed(data.safetyRatingDelta, 2)
             }
             good={(data.safetyRatingDelta ?? 0) >= 0}
+            note={mixedDisciplines ? latestSRDiscipline ?? undefined : undefined}
           />
         }
         table={<RatingTable points={data.points} />}
@@ -270,11 +364,12 @@ function RatingHead({
 }
 
 /**
- * RatingLine plots one rating against the sessions that observed it.
+ * RatingLine plots one rating against the sessions that observed it, with one
+ * independently coloured line per iRacing licence discipline.
  *
- * Sessions with no reading of this particular rating are dropped rather than
- * plotted as zero: a gap in the record is not a fall to zero, and connectNulls
- * would draw a straight line through it as though nothing happened.
+ * Sessions with no reading of this particular rating are not plotted as zero.
+ * Nulls on one line are observations belonging to another licence, so that line
+ * connects its own consecutive readings across them.
  */
 function RatingLine({
   points,
@@ -289,28 +384,49 @@ function RatingLine({
   label: string
   theme: Theme
 }) {
-  const rows = useMemo(
-    () => points.filter((p) => pick(p) != null),
+  const groups = useMemo(
+    () => ratingSeries(points, pick),
     // pick is a stable arrow per render but its identity changes; points is what
     // actually varies, so the filter is keyed on it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [points],
   )
+  const chartedPoints = useMemo(
+    () => points.filter((point) => point.discipline != null && pick(point) != null),
+    // See the grouping memo above: the selected field is fixed for this component.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [points],
+  )
 
-  const option = useMemo(
-    () => ({
+  const colours = groups.map((group) => ({
+    label: group.discipline,
+    colour: seriesColour(theme, ratingDisciplines.indexOf(group.discipline)),
+  }))
+
+  const option = useMemo(() => {
+    // All observations share one category axis. A null means this session belongs
+    // to another licence; connectNulls joins only the observations from the same
+    // discipline instead of drawing a false zero between them.
+    const valueAt = new Map(chartedPoints.map((point, index) => [point, index]))
+    return {
       grid: baseGrid,
       tooltip: {
         trigger: 'axis',
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
-        formatter: (ps: { name: string; value: number }[]) => {
-          const p = ps[0]
-          return p ? `${p.name}<br/><strong>${format(p.value)}</strong> ${label}` : ''
+        formatter: (ps: { name: string; value: number | null; seriesName: string }[]) => {
+          const present = ps.filter((p) => p.value != null)
+          if (present.length === 0) return ''
+          return `${present[0]?.name}${present
+            .map(
+              (p) =>
+                `<br/>${p.seriesName}: <strong>${format(p.value as number)}</strong> ${label}`,
+            )
+            .join('')}`
         },
       },
       xAxis: {
         type: 'category',
-        data: rows.map((p) => day(p.startedAt)),
+        data: chartedPoints.map((p) => day(p.startedAt)),
         ...axisStyle(theme.textMuted, theme.baseline),
       },
       // scale: true keeps zero out of the range. An iRating sits in the thousands
@@ -325,32 +441,45 @@ function RatingLine({
           formatter: (v: number) => format(v),
         },
       },
-      series: [
-        {
+      series: groups.map((group) => {
+        const colour = seriesColour(
+          theme,
+          ratingDisciplines.indexOf(group.discipline),
+        )
+        const indices = new Set(group.points.map((point) => valueAt.get(point)))
+        return {
+          name: group.discipline,
           type: 'line',
-          data: rows.map((p) => pick(p) as number),
+          data: chartedPoints.map((point, index) =>
+            indices.has(index) ? (pick(point) as number) : null,
+          ),
+          connectNulls: true,
           smooth: false,
           // A rating is observed once per session, and two years of practice is over
           // a thousand observations. Beyond a few dozen the markers merge into a band
           // that hides the very line they were meant to mark, so past that they go
           // and the stroke carries the shape alone. Hover still reports every point.
-          showSymbol: rows.length <= 60,
+          showSymbol: group.points.length <= 60,
           symbolSize: 8,
-          lineStyle: { width: 2, color: theme.accent },
-          itemStyle: { color: theme.accent },
-        },
-      ],
-    }),
+          lineStyle: { width: 2, color: colour },
+          itemStyle: { color: colour },
+        }
+      }),
+    }
+  },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [rows, theme, label],
+    [chartedPoints, groups, theme, label],
   )
 
-  if (rows.length === 0) return <Empty>No {label} recorded in this range.</Empty>
+  if (groups.length === 0) return <Empty>No classified {label} recorded in this range.</Empty>
   return (
-    <Chart
-      option={option}
-      ariaLabel={`${label} for each recorded session, oldest first`}
-    />
+    <>
+      <Legend items={colours} />
+      <Chart
+        option={option}
+        ariaLabel={`${label} by racing discipline for each recorded session, oldest first`}
+      />
+    </>
   )
 }
 
@@ -363,6 +492,7 @@ function RatingTable({ points }: { points: RatingPoint[] }) {
           <tr>
             <th className="no-sort">Session</th>
             <th className="no-sort">Type</th>
+            <th className="no-sort">Discipline</th>
             <th className="no-sort num">iRating</th>
             <th className="no-sort num">Safety Rating</th>
           </tr>
@@ -374,6 +504,7 @@ function RatingTable({ points }: { points: RatingPoint[] }) {
             <tr key={`${p.startedAt}-${p.sessionType}`}>
               <td>{dateTime(p.startedAt)}</td>
               <td>{label(p.sessionType, p.eventContext)}</td>
+              <td>{p.discipline ?? '—'}</td>
               <td className="num">{p.iRating == null ? '—' : num(p.iRating)}</td>
               <td className="num">{licenceLabel(p.licString, p.safetyRating)}</td>
             </tr>

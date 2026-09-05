@@ -38,7 +38,7 @@ describe('date filter presets', () => {
     applyDateTimeReset(update, dismiss)
 
     expect(update).toHaveBeenCalledWith({
-      range: '90',
+      range: 'all',
       from: undefined,
       to: undefined,
       hf: undefined,

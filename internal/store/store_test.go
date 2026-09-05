@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -752,14 +753,113 @@ func TestTotals(t *testing.T) {
 	if got.Sessions != 6 {
 		t.Errorf("Sessions = %d, want 6", got.Sessions)
 	}
+	if got.ActiveDays != 4 {
+		t.Errorf("ActiveDays = %d, want 4 distinct local dates", got.ActiveDays)
+	}
+	if got.LongestActiveDayStreak != 1 {
+		t.Errorf("LongestActiveDayStreak = %d, want 1", got.LongestActiveDayStreak)
+	}
+	if got.AverageDrivingHoursPerActiveDay == nil ||
+		math.Abs(*got.AverageDrivingHoursPerActiveDay-got.DrivingHours/4) > 1e-9 {
+		t.Errorf("AverageDrivingHoursPerActiveDay = %v, want DrivingHours / 4 active days",
+			got.AverageDrivingHoursPerActiveDay)
+	}
 	if want := 20 + 15 + 3 + 25 + 30 + 10; got.Laps != want {
 		t.Errorf("Laps = %d, want %d from summing laps_completed", got.Laps, want)
+	}
+	if got.CleanLaps != 12 {
+		t.Errorf("CleanLaps = %d, want 12 timed non-pit laps without incidents", got.CleanLaps)
+	}
+	if got.UniqueCars != 2 || got.UniqueTracks != 2 || got.UniqueCarTrackCombos != 3 {
+		t.Errorf("unique cars/tracks/combos = %d/%d/%d, want 2/2/3",
+			got.UniqueCars, got.UniqueTracks, got.UniqueCarTrackCombos)
 	}
 	// Three races, each with one OnTrack pass and one OnTrack loss. The pit-caused
 	// gain must be excluded.
 	if got.PassesMade != 3 || got.TimesPassed != 3 {
 		t.Errorf("passes=%d passed=%d, want 3 and 3 — attrition must be excluded",
 			got.PassesMade, got.TimesPassed)
+	}
+}
+
+// Multiple sessions on one day count once, while a gap ends the run. The
+// longest run can be historical; it is not required to include today.
+func TestTotalsLongestActiveDayStreak(t *testing.T) {
+	s := openTemp(t)
+	for i, started := range []string{
+		"2026-08-01T12:00:00Z",
+		"2026-08-02T10:00:00Z",
+		"2026-08-02T18:00:00Z",
+		"2026-08-03T12:00:00Z",
+		"2026-08-05T12:00:00Z",
+		"2026-08-06T12:00:00Z",
+	} {
+		rec := minimalSession(fmt.Sprintf("streak/%d", i))
+		rec.StartedAt = started
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.Totals(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ActiveDays != 5 || got.LongestActiveDayStreak != 3 {
+		t.Errorf("active days/streak = %d/%d, want 5/3",
+			got.ActiveDays, got.LongestActiveDayStreak)
+	}
+}
+
+// Clean laps are observed lap records, not the simulator's session-level lap
+// counter. Pit, incident-bearing, and untimed records must not enter the total.
+func TestTotalsCleanLapsUsesCleanTimedNonPitDefinition(t *testing.T) {
+	s := openTemp(t)
+	sid := seedSession(t, s)
+	for _, lap := range []*Lap{
+		{SessionID: sid, LapNumber: 1, LapTimeS: f64p(100)},
+		{SessionID: sid, LapNumber: 2, LapTimeS: f64p(101), IsPitLap: true},
+		{SessionID: sid, LapNumber: 3, LapTimeS: f64p(102), IncidentsOnLap: 1},
+		{SessionID: sid, LapNumber: 4},
+	} {
+		if _, err := s.InsertLap(lap); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.Totals(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CleanLaps != 1 {
+		t.Errorf("CleanLaps = %d, want only the timed non-pit lap without incidents", got.CleanLaps)
+	}
+}
+
+// The dashboard says "raced", so practice-only equipment and venues must not
+// inflate these counts. Stable ids, rather than names, define uniqueness.
+func TestTotalsUniqueRaceEntitiesExcludePracticeOnly(t *testing.T) {
+	s := openTemp(t)
+	for i, rec := range []*Session{
+		{SessionType: "Practice", CarID: intp(10), TrackID: intp(20)},
+		{SessionType: "Race", CarID: intp(30), TrackID: intp(40)},
+		{SessionType: "Race", CarID: intp(30), TrackID: intp(50)},
+	} {
+		rec.SessionKey = fmt.Sprintf("unique-race/%d", i)
+		rec.StartedAt = fmt.Sprintf("2026-08-%02dT12:00:00Z", i+1)
+		rec.ClassifySourceJSON = "{}"
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.Totals(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.UniqueCars != 1 || got.UniqueTracks != 2 || got.UniqueCarTrackCombos != 2 {
+		t.Errorf("unique raced cars/tracks/combos = %d/%d/%d, want 1/2/2",
+			got.UniqueCars, got.UniqueTracks, got.UniqueCarTrackCombos)
 	}
 }
 
@@ -786,6 +886,17 @@ func TestTotalsEmptySet(t *testing.T) {
 	}
 	if got.Sessions != 0 || got.Utilisation != 0 || got.IncidentsPerHour != 0 {
 		t.Errorf("Totals = %+v, want zeroes", got)
+	}
+	if got.ActiveDays != 0 || got.AverageDrivingHoursPerActiveDay != nil {
+		t.Errorf("empty active-day totals = %d, %v; want 0 days and no average",
+			got.ActiveDays, got.AverageDrivingHoursPerActiveDay)
+	}
+	if got.LongestActiveDayStreak != 0 {
+		t.Errorf("LongestActiveDayStreak = %d, want 0", got.LongestActiveDayStreak)
+	}
+	if got.CleanLaps != 0 || got.UniqueCars != 0 || got.UniqueTracks != 0 ||
+		got.UniqueCarTrackCombos != 0 {
+		t.Errorf("empty lifetime counters = %+v, want zeroes", got)
 	}
 }
 

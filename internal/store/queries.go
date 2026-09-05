@@ -403,16 +403,23 @@ ORDER BY day`
 
 // Totals is the headline figures for the dashboard KPI row.
 type Totals struct {
-	ConnectedHours   float64 `json:"connectedHours"`
-	InCarHours       float64 `json:"inCarHours"`
-	DrivingHours     float64 `json:"drivingHours"`
-	Utilisation      float64 `json:"utilisation"`
-	IncidentsPerHour float64 `json:"incidentsPerHour"`
-	Sessions         int     `json:"sessions"`
-	Laps             int     `json:"laps"`
-	Incidents        int     `json:"incidents"`
-	PassesMade       int     `json:"passesMade"`
-	TimesPassed      int     `json:"timesPassed"`
+	ConnectedHours                  float64  `json:"connectedHours"`
+	InCarHours                      float64  `json:"inCarHours"`
+	DrivingHours                    float64  `json:"drivingHours"`
+	Utilisation                     float64  `json:"utilisation"`
+	IncidentsPerHour                float64  `json:"incidentsPerHour"`
+	AverageDrivingHoursPerActiveDay *float64 `json:"averageDrivingHoursPerActiveDay"`
+	LongestActiveDayStreak          int      `json:"longestActiveDayStreak"`
+	Sessions                        int      `json:"sessions"`
+	ActiveDays                      int      `json:"activeDays"`
+	Laps                            int      `json:"laps"`
+	CleanLaps                       int      `json:"cleanLaps"`
+	Incidents                       int      `json:"incidents"`
+	UniqueCars                      int      `json:"uniqueCars"`
+	UniqueTracks                    int      `json:"uniqueTracks"`
+	UniqueCarTrackCombos            int      `json:"uniqueCarTrackCombos"`
+	PassesMade                      int      `json:"passesMade"`
+	TimesPassed                     int      `json:"timesPassed"`
 }
 
 // Totals computes the dashboard headline figures.
@@ -426,10 +433,14 @@ SELECT COALESCE(SUM(s.connected_seconds), 0) / 3600.0,
        COALESCE(SUM(s.in_car_seconds), 0) / 3600.0,
        COALESCE(SUM(s.driving_seconds), 0) / 3600.0,
        COUNT(*),
+	   COUNT(DISTINCT date(s.started_at, 'localtime')),
        COALESCE(SUM(s.laps_completed), 0),
-       COALESCE(SUM(s.incidents), 0)
+       COALESCE(SUM(s.incidents), 0),
+       COUNT(DISTINCT CASE WHEN s.session_type = 'Race' THEN s.car_id END),
+       COUNT(DISTINCT CASE WHEN s.session_type = 'Race' THEN s.track_id END)
 FROM sessions s WHERE `+pred, args...,
-	).Scan(&t.ConnectedHours, &t.InCarHours, &t.DrivingHours, &t.Sessions, &t.Laps, &t.Incidents)
+	).Scan(&t.ConnectedHours, &t.InCarHours, &t.DrivingHours, &t.Sessions, &t.ActiveDays,
+		&t.Laps, &t.Incidents, &t.UniqueCars, &t.UniqueTracks)
 	if err != nil {
 		return Totals{}, fmt.Errorf("store: totals: %w", err)
 	}
@@ -438,6 +449,57 @@ FROM sessions s WHERE `+pred, args...,
 	}
 	if t.DrivingHours > 0 {
 		t.IncidentsPerHour = float64(t.Incidents) / t.DrivingHours
+	}
+	if t.ActiveDays > 0 {
+		average := t.DrivingHours / float64(t.ActiveDays)
+		t.AverageDrivingHoursPerActiveDay = &average
+	}
+
+	// Collapse multiple sessions on one local calendar day before identifying
+	// consecutive-day runs. Subtracting each row number from its Julian day gives
+	// every date in one uninterrupted run the same grouping value.
+	err = s.reader.QueryRow(`
+WITH active_days AS (
+  SELECT DISTINCT date(s.started_at, 'localtime') AS day
+  FROM sessions s
+  WHERE `+pred+`
+), runs AS (
+  SELECT day, julianday(day) - ROW_NUMBER() OVER (ORDER BY day) AS run
+  FROM active_days
+), streaks AS (
+  SELECT COUNT(*) AS days FROM runs GROUP BY run
+)
+SELECT COALESCE(MAX(days), 0) FROM streaks`, args...).Scan(&t.LongestActiveDayStreak)
+	if err != nil {
+		return Totals{}, fmt.Errorf("store: active-day streak: %w", err)
+	}
+
+	// A clean lap is the same unit used by the lap browser and entity statistics:
+	// timed, non-pit, and carrying no incident points. It cannot be derived from
+	// sessions.laps_completed because sessions joined part-way through may have no
+	// corresponding lap rows.
+	err = s.reader.QueryRow(`
+SELECT COUNT(*)
+FROM laps l JOIN sessions s ON s.id = l.session_id
+WHERE l.lap_time_s > 0 AND l.is_pit_lap = 0 AND l.incidents_on_lap = 0 AND `+pred, args...,
+	).Scan(&t.CleanLaps)
+	if err != nil {
+		return Totals{}, fmt.Errorf("store: clean lap totals: %w", err)
+	}
+
+	// "Raced" means an actual Race session, rather than a car or track seen only
+	// in practice or qualifying. A pairing only exists when both stable iRacing
+	// identifiers are known.
+	err = s.reader.QueryRow(`
+SELECT COUNT(*) FROM (
+  SELECT 1
+  FROM sessions s
+  WHERE s.session_type = 'Race'
+    AND s.car_id IS NOT NULL AND s.track_id IS NOT NULL AND `+pred+`
+  GROUP BY s.car_id, s.track_id
+)`, args...).Scan(&t.UniqueCarTrackCombos)
+	if err != nil {
+		return Totals{}, fmt.Errorf("store: car-track combo totals: %w", err)
 	}
 
 	// Only OnTrack causes count: a position gained because someone else pitted

@@ -243,7 +243,7 @@ export function applyDateTimeReset(
   dismiss: () => void,
 ) {
   update({
-    range: '90',
+    range: 'all',
     from: undefined,
     to: undefined,
     hf: undefined,

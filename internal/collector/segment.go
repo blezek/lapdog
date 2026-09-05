@@ -59,9 +59,10 @@ type Segment struct {
 	qualifyBestTimeS     *float64
 	fieldSize            *int
 
-	captureFile *string
-	identity    sessionyaml.Identity
-	sourceJSON  string
+	captureFile    *string
+	identity       sessionyaml.Identity
+	ratingCategory *string
+	sourceJSON     string
 }
 
 // NewSegment starts tracking a session segment.
@@ -117,6 +118,7 @@ func (g *Segment) ApplyInfo(info *sessionyaml.Info) {
 
 	w := info.WeekendInfo
 	g.leagueID, g.seriesID, g.seasonID, g.official = w.LeagueID, w.SeriesID, w.SeasonID, w.Official
+	g.ratingCategory = strPtrIfSet(w.Category)
 
 	g.trackID = intPtr(w.TrackID)
 	g.trackName = strPtrIfSet(w.TrackDisplayName)
@@ -286,12 +288,13 @@ func (g *Segment) ToStore() *store.Session {
 
 		AIOpponentCount: g.Class.AIOpponentCount,
 
-		DriverUserID:       g.identity.UserID,
-		DriverIRating:      g.identity.IRating,
-		DriverLicString:    g.identity.LicString,
-		DriverLicLevel:     g.identity.LicLevel,
-		DriverLicSubLevel:  g.identity.LicSubLevel,
-		DriverSafetyRating: g.identity.SafetyRating,
+		DriverUserID:         g.identity.UserID,
+		DriverIRating:        g.identity.IRating,
+		DriverLicString:      g.identity.LicString,
+		DriverLicLevel:       g.identity.LicLevel,
+		DriverLicSubLevel:    g.identity.LicSubLevel,
+		DriverSafetyRating:   g.identity.SafetyRating,
+		DriverRatingCategory: g.ratingCategory,
 
 		ClassifySourceJSON: g.sourceJSON,
 		CaptureFile:        g.captureFile,
