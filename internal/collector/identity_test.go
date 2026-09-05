@@ -51,6 +51,10 @@ func TestIngestRecordsDriverIdentityAndRatings(t *testing.T) {
 			t.Errorf("session %d SafetyRating was not derived as 3.55 from %v",
 				got.SessionNum, got.DriverLicString)
 		}
+		if got.DriverRatingCategory == nil || *got.DriverRatingCategory != "Road" {
+			t.Errorf("session %d rating category = %v, want Road from WeekendInfo.Category",
+				got.SessionNum, got.DriverRatingCategory)
+		}
 	}
 }
 

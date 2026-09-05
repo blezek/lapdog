@@ -144,6 +144,7 @@ func newTestServer(t *testing.T) (http.Handler, *store.Store, *fakeConfig) {
 			ClassifySourceJSON: "{}", IncidentSource: "yaml",
 			DriverUserID: intp(271828), DriverIRating: intp(r.irating),
 			DriverSafetyRating: f64p(r.sr), DriverLicString: strp("A 3.55"),
+			DriverRatingCategory: strp("SportsCar"),
 		}
 		if r.isRace {
 			rec.FinishPosition = intp(4)
@@ -476,6 +477,17 @@ func TestTotalsEndpoint(t *testing.T) {
 	}
 	if body.DrivingHours == 0 || body.Utilisation == 0 {
 		t.Errorf("DrivingHours=%v Utilisation=%v", body.DrivingHours, body.Utilisation)
+	}
+	if body.ActiveDays != 2 || body.AverageDrivingHoursPerActiveDay == nil {
+		t.Errorf("active-day totals = %d, %v; want two days and an average",
+			body.ActiveDays, body.AverageDrivingHoursPerActiveDay)
+	}
+	if body.CleanLaps != 4 {
+		t.Errorf("CleanLaps = %d, want 4", body.CleanLaps)
+	}
+	if body.UniqueCars != 1 || body.UniqueTracks != 1 || body.UniqueCarTrackCombos != 1 {
+		t.Errorf("unique cars/tracks/combos = %d/%d/%d, want 1/1/1",
+			body.UniqueCars, body.UniqueTracks, body.UniqueCarTrackCombos)
 	}
 	// One OnTrack pass; the pit-caused gain must not be counted.
 	if body.PassesMade != 1 {
@@ -1304,6 +1316,9 @@ func TestRatingsEndpoint(t *testing.T) {
 	}
 	if len(got.Points) != 2 {
 		t.Errorf("points = %d, want 2", len(got.Points))
+	}
+	if got.Points[0].Discipline == nil || *got.Points[0].Discipline != "Road" {
+		t.Errorf("discipline = %v, want Road", got.Points[0].Discipline)
 	}
 }
 

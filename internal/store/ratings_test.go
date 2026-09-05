@@ -1,6 +1,10 @@
 package store
 
-import "testing"
+import (
+	"database/sql"
+	"path/filepath"
+	"testing"
+)
 
 // rated writes a session with the given ratings on the given day.
 func rated(t *testing.T, s *Store, key, day string, ir *int, sr *float64) {
@@ -10,12 +14,125 @@ func rated(t *testing.T, s *Store, key, day string, ir *int, sr *float64) {
 		EventContext: "OfficialRace",
 		StartedAt:    day + "T18:00:00Z",
 		DriverUserID: intp(271828), DriverIRating: ir, DriverSafetyRating: sr,
+		DriverRatingCategory: strp("SportsCar"),
 	}
 	if sr != nil {
 		rec.DriverLicString = strp("A 3.55")
 	}
 	if _, err := s.UpsertSession(rec); err != nil {
 		t.Fatalf("UpsertSession %s: %v", key, err)
+	}
+}
+
+// WeekendInfo.Category identifies which independent iRacing licence supplied a
+// rating. Current paved categories use SportsCar and FormulaCar, while Road is
+// retained for captures from before that licence split.
+func TestRatingsIdentifiesTheLicenceDiscipline(t *testing.T) {
+	s := openTemp(t)
+	cases := []struct {
+		raw, want, day string
+	}{
+		{"Road", "Road", "01"},
+		{"SportsCar", "Road", "02"},
+		{"FormulaCar", "Formula", "03"},
+		{"Oval", "Oval", "04"},
+		{"DirtRoad", "Dirt Road", "05"},
+		{"DirtOval", "Dirt Oval", "06"},
+	}
+	for i, tc := range cases {
+		rec := &Session{
+			UUID: "u-discipline-" + tc.raw, SessionKey: "discipline-" + tc.raw,
+			SessionType: "Race", EventContext: "OfficialRace",
+			StartedAt:     "2026-03-" + tc.day + "T18:00:00Z",
+			DriverIRating: intp(2000 + i), DriverRatingCategory: strp(tc.raw),
+		}
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := s.Ratings(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Points) != len(cases) {
+		t.Fatalf("points = %d, want %d", len(got.Points), len(cases))
+	}
+	for i, tc := range cases {
+		if got.Points[i].Discipline == nil || *got.Points[i].Discipline != tc.want {
+			t.Errorf("category %q discipline = %v, want %q", tc.raw, got.Points[i].Discipline, tc.want)
+		}
+	}
+}
+
+// Version 3 backfills the category from the classification provenance already
+// stored by existing installs. Without this, only sessions recorded after the
+// upgrade would gain coloured discipline lines.
+func TestRatingCategoryMigrationBackfillsExistingRatings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version-two.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"0001_init.sql", "0002_driver_identity.sql"} {
+		body, err := migrationFS.ReadFile("migrations/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := db.Exec(string(body)); err != nil {
+			t.Fatalf("apply %s: %v", name, err)
+		}
+	}
+	if _, err := db.Exec(`UPDATE schema_version SET version = 2`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO sessions (
+  uuid, session_key, session_num, session_type, event_context, started_at,
+  driver_irating, classify_source_json, created_at, updated_at
+) VALUES (
+  'u-old-rating', 'old-rating', 0, 'Race', 'OfficialRace',
+  '2026-03-01T18:00:00Z', 2431,
+  '{"WeekendInfo":{"Category":"FormulaCar"}}',
+  '2026-03-01T18:00:00Z', '2026-03-01T18:00:00Z'
+)`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	got, err := s.Ratings(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Points) != 1 || got.Points[0].Discipline == nil ||
+		*got.Points[0].Discipline != "Formula" {
+		t.Fatalf("backfilled discipline = %v, want Formula", got.Points)
+	}
+}
+
+// An unfamiliar SDK category is not guessed. It stays in storage for diagnosis,
+// but has no chart discipline until LapDog knows what licence it represents.
+func TestRatingsDoesNotGuessUnknownDiscipline(t *testing.T) {
+	s := openTemp(t)
+	rated(t, s, "k-a", "2026-03-01", intp(2431), f64p(3.55))
+	if _, err := s.Writer().Exec(
+		`UPDATE sessions SET driver_rating_category = 'Hovercraft' WHERE session_key = 'k-a'`,
+	); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Ratings(Filter{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Points[0].Discipline != nil {
+		t.Errorf("unknown category was labelled %q", *got.Points[0].Discipline)
 	}
 }
 

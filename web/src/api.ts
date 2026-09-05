@@ -90,9 +90,15 @@ export interface Totals {
   drivingHours: number
   utilisation: number
   incidentsPerHour: number
+  averageDrivingHoursPerActiveDay: number | null
   sessions: number
+  activeDays: number
   laps: number
+  cleanLaps: number
   incidents: number
+  uniqueCars: number
+  uniqueTracks: number
+  uniqueCarTrackCombos: number
   passesMade: number
   timesPassed: number
 }
@@ -207,6 +213,8 @@ export interface RatingPoint {
   iRating: number | null
   safetyRating: number | null
   licString: string | null
+  /** The independent iRacing licence that supplied these ratings. */
+  discipline: 'Road' | 'Formula' | 'Oval' | 'Dirt Road' | 'Dirt Oval' | null
 }
 
 /**
