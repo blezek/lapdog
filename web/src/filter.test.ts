@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   canonicalFilterQuery,
+  clearedFilterParams,
   filterParams,
   readSavedFilterSets,
   removeSavedFilterSet,
@@ -21,6 +22,10 @@ describe('shared filter parameters', () => {
       'range=30&type=Race,Practice&car=1,2&track=18,341&sel=99&page=4',
     ))
     expect(got.toString()).toBe('range=30&type=Race%2CPractice&car=1%2C2&track=18%2C341')
+  })
+
+  it('clears every filter into the all-time history view', () => {
+    expect(clearedFilterParams().toString()).toBe('range=all')
   })
 })
 

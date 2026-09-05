@@ -257,7 +257,7 @@ function FilterSetManager({
   onToggle: () => void
   onClose: () => void
 }) {
-  const { params, savedSets, saveSet, loadSet, deleteSet, clear } = useFilter()
+  const { params, savedSets, saveSet, loadSet, deleteSet, resetDefault } = useFilter()
   const [loadedID, setLoadedID] = useState<string | null>(null)
   const [mode, setMode] = useState<'list' | 'save' | 'manage'>('list')
   const [name, setName] = useState('')
@@ -287,7 +287,7 @@ function FilterSetManager({
   }
 
   const loadDefault = () => {
-    clear()
+    resetDefault()
     setLoadedID(null)
     onClose()
   }
