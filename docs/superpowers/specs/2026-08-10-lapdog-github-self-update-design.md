@@ -28,11 +28,11 @@ application the GUI subsystem, and stamps both semantic version and source commi
 
 Release builds check shortly after startup when the persisted last check is at least 24
 hours old, then every 24 hours. A check never opens a browser. A release is prompted once;
-manual checks still display a skipped release. “Ask again tomorrow” persists a 24-hour
+manual checks still display a skipped release. “Ask me later” persists a 24-hour
 deferral. “Skip” persists that exact version, and a newer version clears the skip.
 
-Installation always requires consent. “Update after session” and “Update and restart”
-mean the same durable authorization: download and verify now, then replace and restart
+Installation always requires consent. “Upgrade after session” and “Upgrade now” mean the
+same durable authorization: download and verify now, then replace and restart
 automatically once recording and capture re-indexing are idle. Consent, last check,
 deferral, skip, selected release, staging and pending restart live in an atomically
 replaced updater JSON file under the data directory, not in user preferences.
@@ -72,8 +72,10 @@ installer registry entries. `lapdogctl.exe` remains a portable/installer update 
 
 `GET /api/update` exposes current version, nullable revision, coordinator state, nullable
 release and timestamps, prompt eligibility, recording/re-index/restart safety, and a
-nullable actionable error. `POST /api/update/check` refreshes metadata. `POST
-/api/update/action` accepts `install`, `later`, `skip` or `shown`.
+nullable actionable error. While transferring, it also exposes the archive bytes received
+and the nullable server-reported total; verification is a separate progress phase. `POST
+/api/update/check` refreshes metadata. `POST /api/update/action` accepts `install`,
+`later`, `skip` or `shown`.
 
 States are `disabled`, `checking`, `current`, `available`, `deferred`, `skipped`,
 `downloading`, `waiting`, `applying`, `restart-required` and `failed`. Local mutation
@@ -82,9 +84,12 @@ the pre-existing settings and capture re-index routes.
 
 The sidebar shows a version badge and opens the update popdown once per discovered
 version. Tray selection opens that popdown directly. Release notes support safe Markdown
-without raw HTML. Settings shows version, nullable short revision, last check, and a
-manual check action. Background discovery failures do not prompt; accepted download or
-apply failures remain visible in the popdown and tray.
+without raw HTML. The popdown offers **Upgrade now**, **Ask me later**, and **Skip this
+version**, and shows a determinate progress bar when a content length is known or an
+indeterminate bar when it is not. Measured download percentage is also visible in the
+tray. Settings shows version, nullable short revision, last check, and a manual check
+action. Background discovery failures do not prompt; accepted download or apply failures
+remain visible in the popdown and tray.
 
 ## Verification boundary
 

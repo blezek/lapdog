@@ -55,7 +55,8 @@ func TestUpdateEndpointsExposeNullableFactsAndActions(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	updates := &fakeUpdates{s: updater.Snapshot{State: updater.Available, CurrentVersion: "v1.0.0", CurrentRevision: nil, Available: &updater.Release{Version: "v1.1.0"}}}
+	total := int64(100)
+	updates := &fakeUpdates{s: updater.Snapshot{State: updater.Downloading, CurrentVersion: "v1.0.0", CurrentRevision: nil, Available: &updater.Release{Version: "v1.1.0"}, Download: &updater.DownloadProgress{Phase: updater.DownloadArchive, DownloadedBytes: 25, TotalBytes: &total}}}
 	srv := New(st, nil, &fakeConfig{c: config.Default()}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv.SetUpdater(updates)
 	h, err := srv.Handler()
@@ -69,6 +70,9 @@ func TestUpdateEndpointsExposeNullableFactsAndActions(t *testing.T) {
 	body := rec.Body.String()
 	if !strings.Contains(body, `"currentRevision":null`) || !strings.Contains(body, `"lastCheck":null`) || !strings.Contains(body, `"publishedAt":null`) {
 		t.Fatalf("nullable fields missing: %s", body)
+	}
+	if !strings.Contains(body, `"download":{"phase":"archive","downloadedBytes":25,"totalBytes":100}`) {
+		t.Fatalf("download progress missing: %s", body)
 	}
 	check := httptest.NewRecorder()
 	h.ServeHTTP(check, jsonRequest(http.MethodPost, "/api/update/check", strings.NewReader(`{}`)))

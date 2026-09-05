@@ -1,4 +1,4 @@
-import type { UpdateStatus } from './api'
+import type { UpdateDownloadProgress, UpdateStatus } from './api'
 
 /** shouldOpenUpdate combines a tray deep-link with one-time prompt eligibility. */
 export function shouldOpenUpdate(status: UpdateStatus, search: string): boolean {
@@ -19,7 +19,22 @@ export function buildIdentity(version: string, revision: string | null): BuildId
 }
 
 export function installActionLabel(recording: boolean): string {
-  return recording ? 'Update after session' : 'Update and restart'
+  return recording ? 'Upgrade after session' : 'Upgrade now'
+}
+
+export function downloadProgressText(progress: UpdateDownloadProgress): string {
+  if (progress.phase === 'verifying') return 'Verifying downloaded update…'
+  if (progress.totalBytes === null || progress.totalBytes <= 0) {
+    return `Downloading update… ${formatBytes(progress.downloadedBytes)}`
+  }
+  const percent = Math.min(100, Math.round(progress.downloadedBytes / progress.totalBytes * 100))
+  return `Downloading update… ${percent}% · ${formatBytes(progress.downloadedBytes)} of ${formatBytes(progress.totalBytes)}`
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 export function updateStatusMessage(status: UpdateStatus): string | null {
