@@ -391,7 +391,14 @@ export interface UpdateStatus {
   reindexing: boolean
   restartSafe: boolean
   pendingRestart: boolean
+  download: UpdateDownloadProgress | null
   error: string | null
+}
+
+export interface UpdateDownloadProgress {
+  phase: 'archive' | 'verifying'
+  downloadedBytes: number
+  totalBytes: number | null
 }
 
 export interface ListResponse<T> {

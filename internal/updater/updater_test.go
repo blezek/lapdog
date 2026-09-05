@@ -253,6 +253,7 @@ func TestAcceptedUpdateWaitsAndLaunchFailureResumesRecording(t *testing.T) {
 func TestStageValidatesChecksumAndZipContract(t *testing.T) {
 	goodZip := zipBytes(t, map[string][]byte{"lapdog.exe": []byte("PE executable")})
 	sum := sha256.Sum256(goodZip)
+	var progress []DownloadProgress
 	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body := goodZip
 		if r.URL.Path == "/sums" {
@@ -261,12 +262,24 @@ func TestStageValidatesChecksumAndZipContract(t *testing.T) {
 		return response(r, body), nil
 	})}
 	dir := t.TempDir()
-	path, err := stage(context.Background(), client, dir, Release{AssetURL: "https://example.test/archive", ChecksumURL: "https://example.test/sums"})
+	path, err := stage(context.Background(), client, dir, Release{AssetURL: "https://example.test/archive", ChecksumURL: "https://example.test/sums"}, func(p DownloadProgress) {
+		progress = append(progress, p)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(path); err != nil || string(got) != "PE executable" {
 		t.Fatalf("staged=%q err=%v", got, err)
+	}
+	if len(progress) < 3 {
+		t.Fatalf("progress=%+v, want transfer start, bytes, and verification", progress)
+	}
+	first, last := progress[0], progress[len(progress)-1]
+	if first.Phase != DownloadArchive || first.DownloadedBytes != 0 || first.TotalBytes == nil || *first.TotalBytes != int64(len(goodZip)) {
+		t.Fatalf("initial progress=%+v", first)
+	}
+	if last.Phase != DownloadVerifying || last.DownloadedBytes != int64(len(goodZip)) || last.TotalBytes == nil || *last.TotalBytes != int64(len(goodZip)) {
+		t.Fatalf("verification progress=%+v", last)
 	}
 
 	for name, archive := range map[string][]byte{
@@ -294,8 +307,29 @@ func TestStageValidatesChecksumAndZipContract(t *testing.T) {
 		}
 		return response(r, body), nil
 	})}
-	if _, err := stage(context.Background(), badClient, t.TempDir(), Release{AssetURL: "https://example.test/archive", ChecksumURL: "https://example.test/sums"}); err == nil {
+	if _, err := stage(context.Background(), badClient, t.TempDir(), Release{AssetURL: "https://example.test/archive", ChecksumURL: "https://example.test/sums"}, nil); err == nil {
 		t.Fatal("checksum mismatch was accepted")
+	}
+}
+
+func TestSnapshotCopiesDownloadProgress(t *testing.T) {
+	u, err := New(Options{Version: "v1.0.0", GOOS: "windows", GOARCH: "amd64", DataDir: t.TempDir(), Detector: fakeDetector{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	total := int64(100)
+	u.mu.Lock()
+	u.state = Downloading
+	u.download = &DownloadProgress{Phase: DownloadArchive, DownloadedBytes: 25, TotalBytes: &total}
+	u.mu.Unlock()
+
+	s := u.Snapshot()
+	if s.Download == nil || s.Download.Phase != DownloadArchive || s.Download.DownloadedBytes != 25 || s.Download.TotalBytes == nil || *s.Download.TotalBytes != 100 {
+		t.Fatalf("snapshot progress=%+v", s.Download)
+	}
+	*s.Download.TotalBytes = 200
+	if got := u.Snapshot().Download; got == nil || got.TotalBytes == nil || *got.TotalBytes != 100 {
+		t.Fatalf("snapshot exposed coordinator progress: %+v", got)
 	}
 }
 
@@ -308,12 +342,12 @@ func TestDownloadLimitAndCancellation(t *testing.T) {
 		resp.ContentLength = 20
 		return resp, nil
 	})}
-	if _, err := downloadLimited(context.Background(), client, "https://example.test/file", 10); err == nil {
+	if _, err := downloadLimited(context.Background(), client, "https://example.test/file", 10, nil); err == nil {
 		t.Fatal("oversized response was accepted")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := downloadLimited(ctx, client, "https://example.test/file", 100); err == nil {
+	if _, err := downloadLimited(ctx, client, "https://example.test/file", 100, nil); err == nil {
 		t.Fatal("cancelled download succeeded")
 	}
 }

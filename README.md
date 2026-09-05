@@ -157,8 +157,11 @@ recovered.
 
 Release builds check the stable GitHub Releases channel after startup and then
 every 24 hours. An available update appears in the sidebar and tray. Installing
-always requires consent. LapDog verifies the downloaded archive, waits for an
-active recording or re-index to finish, replaces the executable, and restarts.
+always requires consent: choose **Upgrade now**, **Ask me later**, or **Skip this
+version**. While downloading, LapDog reports transferred bytes and percentage
+when GitHub supplies the archive size, then reports verification separately. It
+waits for an active recording or re-index to finish before replacing the
+executable and restarting.
 
 The updater changes `lapdog.exe` only. Portable users can instead download and
 extract the new portable archive manually.

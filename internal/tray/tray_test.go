@@ -9,7 +9,20 @@ import (
 	"time"
 
 	"github.com/blezek/lapdog/internal/collector"
+	"github.com/blezek/lapdog/internal/updater"
 )
+
+func TestUpdateTitleIncludesMeasuredDownloadProgress(t *testing.T) {
+	total := int64(100)
+	s := updater.Snapshot{
+		State:     updater.Downloading,
+		Available: &updater.Release{Version: "v1.2.0"},
+		Download:  &updater.DownloadProgress{Phase: updater.DownloadArchive, DownloadedBytes: 42, TotalBytes: &total},
+	}
+	if got := updateTitle(s); got != "Downloading update v1.2.0 (42%)" {
+		t.Fatalf("title=%q", got)
+	}
+}
 
 // The three icons must all render and must differ from one another, or the tray
 // would report the same thing whatever the collector was doing.

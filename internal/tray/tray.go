@@ -69,6 +69,10 @@ func updateTitle(s updater.Snapshot) string {
 	}
 	switch s.State {
 	case updater.Downloading:
+		if s.Download != nil && s.Download.TotalBytes != nil && *s.Download.TotalBytes > 0 {
+			percent := min(int64(100), s.Download.DownloadedBytes*100 / *s.Download.TotalBytes)
+			return fmt.Sprintf("Downloading update %s (%d%%)", s.Available.Version, percent)
+		}
 		return "Downloading update " + s.Available.Version
 	case updater.Waiting:
 		return "Update ready; waiting for session to finish"

@@ -33,6 +33,28 @@ Deliberately excluded, and recorded as such in the specs: `.ibt` file import, se
 
 ---
 
+## 2026-09-05 — visible update progress and clearer choices
+
+The update popdown now presents **Upgrade now**, **Ask me later**, and **Skip
+this version** as the three pre-download decisions. Upgrade still honours the
+existing recording and re-index gates: when either is active, the same durable
+consent is labelled **Upgrade after session** and replacement waits until safe.
+
+Archive transfer progress flows from the bounded HTTP reader through the
+coordinator snapshot and `/api/update`. A known content length produces byte
+totals and a capped percentage; an absent length remains absent and produces an
+indeterminate progress bar. Verification is reported as a distinct phase after
+the transfer, and the Windows tray title includes the measured percentage.
+
+Each new assertion was made to fail by mutating its covered behavior before it
+was restored. `make ci` passed with 97 frontend tests, all Go packages,
+typecheck, Windows cross-builds, and embedded-asset verification. The available
+and 50%-downloaded states were both inspected in headless Chrome at 1280×900;
+the dialog remained fully visible and the measured 574-pixel bar agreed with
+the byte label.
+
+---
+
 ## 2026-08-16 — automatic, consent-gated GitHub updates
 
 Windows release builds now check stable `blezek/lapdog` releases after startup and once

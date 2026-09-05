@@ -67,20 +67,21 @@ type persisted struct {
 
 // Snapshot is returned by GET /api/update.
 type Snapshot struct {
-	State           string     `json:"state"`
-	CurrentVersion  string     `json:"currentVersion"`
-	CurrentRevision *string    `json:"currentRevision"`
-	Available       *Release   `json:"availableRelease"`
-	LastCheck       *time.Time `json:"lastCheck"`
-	DeferredUntil   *time.Time `json:"deferredUntil"`
-	SkippedVersion  *string    `json:"skippedVersion"`
-	AcceptedVersion *string    `json:"acceptedVersion"`
-	PromptEligible  bool       `json:"promptEligible"`
-	Recording       bool       `json:"recording"`
-	Reindexing      bool       `json:"reindexing"`
-	RestartSafe     bool       `json:"restartSafe"`
-	PendingRestart  bool       `json:"pendingRestart"`
-	Error           *string    `json:"error"`
+	State           string            `json:"state"`
+	CurrentVersion  string            `json:"currentVersion"`
+	CurrentRevision *string           `json:"currentRevision"`
+	Available       *Release          `json:"availableRelease"`
+	LastCheck       *time.Time        `json:"lastCheck"`
+	DeferredUntil   *time.Time        `json:"deferredUntil"`
+	SkippedVersion  *string           `json:"skippedVersion"`
+	AcceptedVersion *string           `json:"acceptedVersion"`
+	PromptEligible  bool              `json:"promptEligible"`
+	Recording       bool              `json:"recording"`
+	Reindexing      bool              `json:"reindexing"`
+	RestartSafe     bool              `json:"restartSafe"`
+	PendingRestart  bool              `json:"pendingRestart"`
+	Download        *DownloadProgress `json:"download"`
+	Error           *string           `json:"error"`
 }
 
 // Detector is the narrow release-discovery seam used by tests.
@@ -117,6 +118,7 @@ type Coordinator struct {
 	op                   sync.Mutex
 	p                    persisted
 	state, lastError     string
+	download             *DownloadProgress
 	opts                 Options
 	statePath, updateDir string
 	enabled              bool
@@ -256,7 +258,7 @@ func (u *Coordinator) Snapshot() Snapshot {
 	s := Snapshot{State: u.state, CurrentVersion: u.opts.Version, Available: cloneRelease(u.p.Release),
 		LastCheck: cloneTime(u.p.LastCheck), DeferredUntil: cloneTime(u.p.DeferredUntil),
 		PromptEligible: u.promptEligibleLocked(now), Recording: recording, Reindexing: reindexing,
-		RestartSafe: !recording && !reindexing, PendingRestart: u.p.Pending}
+		RestartSafe: !recording && !reindexing, PendingRestart: u.p.Pending, Download: cloneDownloadProgress(u.download)}
 	if u.opts.Revision != "" && u.opts.Revision != "unknown" {
 		r := u.opts.Revision
 		s.CurrentRevision = &r
@@ -375,6 +377,7 @@ func (u *Coordinator) Action(ctx context.Context, action string) error {
 		u.p.Accepted = rel.Version
 		u.p.DeferredUntil = nil
 		u.state = Downloading
+		u.download = &DownloadProgress{Phase: DownloadArchive}
 		u.lastError = ""
 		if err := u.saveLocked(); err != nil {
 			u.mu.Unlock()
@@ -402,7 +405,7 @@ func (u *Coordinator) resume(ctx context.Context) {
 	u.mu.Unlock()
 	if staged == "" {
 		u.setState(Downloading, "")
-		path, err := stage(ctx, u.opts.HTTPClient, u.updateDir, rel)
+		path, err := stage(ctx, u.opts.HTTPClient, u.updateDir, rel, u.setDownloadProgress)
 		if err != nil {
 			u.fail("download or verification failed: " + actionable(err))
 			return
@@ -410,6 +413,7 @@ func (u *Coordinator) resume(ctx context.Context) {
 		u.mu.Lock()
 		u.p.Staged = path
 		u.state = Waiting
+		u.download = nil
 		_ = u.saveLocked()
 		u.mu.Unlock()
 		staged = path
@@ -471,9 +475,27 @@ func (u *Coordinator) promptEligibleLocked(now time.Time) bool {
 func (u *Coordinator) setState(state, message string) {
 	u.mu.Lock()
 	u.state = state
+	if state != Downloading {
+		u.download = nil
+	}
 	u.lastError = message
 	_ = u.saveLocked()
 	u.mu.Unlock()
+}
+
+func (u *Coordinator) setDownloadProgress(progress DownloadProgress) {
+	u.mu.Lock()
+	u.download = cloneDownloadProgress(&progress)
+	u.mu.Unlock()
+}
+
+func cloneDownloadProgress(progress *DownloadProgress) *DownloadProgress {
+	if progress == nil {
+		return nil
+	}
+	copy := *progress
+	copy.TotalBytes = cloneInt64(progress.TotalBytes)
+	return &copy
 }
 func (u *Coordinator) fail(message string) { u.setState(Failed, message) }
 

@@ -1,8 +1,8 @@
 import { Fragment, type ReactNode, useEffect, useRef } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 
-import { api, type UpdateStatus } from '../api'
-import { installActionLabel, updateStatusMessage } from '../update'
+import { api, type UpdateDownloadProgress, type UpdateStatus } from '../api'
+import { downloadProgressText, installActionLabel, updateStatusMessage } from '../update'
 
 function inline(text: string): ReactNode[] {
   const out: ReactNode[] = []
@@ -38,6 +38,34 @@ export function ReleaseNotes({ source }: { source: string }) {
   return <Fragment>{blocks.length ? blocks : <p>No release notes were published.</p>}</Fragment>
 }
 
+export function UpdateProgress({ progress }: { progress: UpdateDownloadProgress }) {
+  const measured = progress.totalBytes !== null && progress.totalBytes > 0
+  return (
+    <div className="update-progress" aria-live="polite">
+      <span>{downloadProgressText(progress)}</span>
+      <progress
+        aria-label="Update download progress"
+        max={measured ? progress.totalBytes ?? undefined : undefined}
+        value={measured ? progress.downloadedBytes : undefined}
+      />
+    </div>
+  )
+}
+
+export function UpdateActions({ recording, disabled, onAction }: {
+  recording: boolean
+  disabled: boolean
+  onAction: (action: 'install' | 'later' | 'skip') => void
+}) {
+  return (
+    <div className="update-actions">
+      <button type="button" className="control primary" disabled={disabled} onClick={() => onAction('install')}>{installActionLabel(recording)}</button>
+      <button type="button" className="control" disabled={disabled} onClick={() => onAction('later')}>Ask me later</button>
+      <button type="button" className="control" disabled={disabled} onClick={() => onAction('skip')}>Skip this version</button>
+    </div>
+  )
+}
+
 export function UpdatePopdown({ status, open, onClose }: { status: UpdateStatus; open: boolean; onClose: () => void }) {
   const qc = useQueryClient()
   const dialog = useRef<HTMLDialogElement>(null)
@@ -55,7 +83,6 @@ export function UpdatePopdown({ status, open, onClose }: { status: UpdateStatus;
 
   const rel = status.availableRelease
   const busy = ['checking', 'downloading', 'applying'].includes(status.state)
-  const installLabel = installActionLabel(status.recording)
   const message = updateStatusMessage(status)
   return (
     <dialog ref={dialog} className="update-popdown" aria-labelledby="update-title" onClose={onClose} onCancel={onClose}>
@@ -68,13 +95,10 @@ export function UpdatePopdown({ status, open, onClose }: { status: UpdateStatus;
         <>
           <p className="update-target">{rel.version} is available. <a href={rel.url} target="_blank" rel="noreferrer">View on GitHub</a></p>
           <div className="release-notes"><ReleaseNotes source={rel.notes} /></div>
+          {status.state === 'downloading' && status.download && <UpdateProgress progress={status.download} />}
           {message && <p className={status.state === 'restart-required' ? 'update-error' : 'update-message'}>{message}</p>}
           {status.error && <p className="update-error">{status.error}</p>}
-          <div className="update-actions">
-            {!status.acceptedVersion && <button type="button" className="control primary" disabled={busy || action.isPending} onClick={() => action.mutate('install')}>{installLabel}</button>}
-            {!status.acceptedVersion && <button type="button" className="control" disabled={busy || action.isPending} onClick={() => action.mutate('later')}>Ask again tomorrow</button>}
-            {!status.acceptedVersion && <button type="button" className="control" disabled={busy || action.isPending} onClick={() => action.mutate('skip')}>Skip this version</button>}
-          </div>
+          {!status.acceptedVersion && <UpdateActions recording={status.recording} disabled={busy || action.isPending} onAction={(next) => action.mutate(next)} />}
         </>
       ) : (
         <p>{status.state === 'checking' ? 'Checking GitHub…' : status.state === 'disabled' ? 'Automatic updates are available in Windows release builds.' : 'LapDog is current.'}</p>

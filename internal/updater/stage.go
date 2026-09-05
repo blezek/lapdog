@@ -21,7 +21,17 @@ const (
 	maxArchiveBytes    = 128 << 20
 	maxChecksumBytes   = 1 << 20
 	maxExecutableBytes = 256 << 20
+	DownloadArchive    = "archive"
+	DownloadVerifying  = "verifying"
 )
+
+// DownloadProgress describes transient archive transfer and verification work.
+// TotalBytes remains nil when the server did not provide a content length.
+type DownloadProgress struct {
+	Phase           string `json:"phase"`
+	DownloadedBytes int64  `json:"downloadedBytes"`
+	TotalBytes      *int64 `json:"totalBytes"`
+}
 
 func newer(candidate, current string) bool {
 	a, err := semver.NewVersion(candidate)
@@ -43,15 +53,24 @@ func equalVersion(a, b string) bool {
 	return e == nil && av.Equal(bv)
 }
 
-func stage(ctx context.Context, client *http.Client, dir string, rel Release) (string, error) {
+func stage(ctx context.Context, client *http.Client, dir string, rel Release, progress func(DownloadProgress)) (string, error) {
 	if rel.AssetURL == "" || rel.ChecksumURL == "" {
 		return "", errors.New("release is missing the update archive or SHA256SUMS")
 	}
-	archive, err := downloadLimited(ctx, client, rel.AssetURL, maxArchiveBytes)
+	var archiveTotal *int64
+	archive, err := downloadLimited(ctx, client, rel.AssetURL, maxArchiveBytes, func(downloaded int64, total *int64) {
+		archiveTotal = cloneInt64(total)
+		if progress != nil {
+			progress(DownloadProgress{Phase: DownloadArchive, DownloadedBytes: downloaded, TotalBytes: cloneInt64(total)})
+		}
+	})
 	if err != nil {
 		return "", fmt.Errorf("archive: %w", err)
 	}
-	sums, err := downloadLimited(ctx, client, rel.ChecksumURL, maxChecksumBytes)
+	if progress != nil {
+		progress(DownloadProgress{Phase: DownloadVerifying, DownloadedBytes: int64(len(archive)), TotalBytes: archiveTotal})
+	}
+	sums, err := downloadLimited(ctx, client, rel.ChecksumURL, maxChecksumBytes, nil)
 	if err != nil {
 		return "", fmt.Errorf("checksums: %w", err)
 	}
@@ -78,7 +97,7 @@ func stage(ctx context.Context, client *http.Client, dir string, rel Release) (s
 	return dst, nil
 }
 
-func downloadLimited(ctx context.Context, client *http.Client, url string, limit int64) ([]byte, error) {
+func downloadLimited(ctx context.Context, client *http.Client, url string, limit int64, progress func(int64, *int64)) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
@@ -94,7 +113,15 @@ func downloadLimited(ctx context.Context, client *http.Client, url string, limit
 	if resp.ContentLength > limit {
 		return nil, fmt.Errorf("response exceeds %d bytes", limit)
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, limit+1))
+	var total *int64
+	if resp.ContentLength >= 0 {
+		total = cloneInt64(&resp.ContentLength)
+	}
+	if progress != nil {
+		progress(0, cloneInt64(total))
+	}
+	reader := &progressReader{r: io.LimitReader(resp.Body, limit+1), total: total, notify: progress}
+	b, err := io.ReadAll(reader)
 	if err != nil {
 		return nil, err
 	}
@@ -102,6 +129,30 @@ func downloadLimited(ctx context.Context, client *http.Client, url string, limit
 		return nil, fmt.Errorf("response exceeds %d bytes", limit)
 	}
 	return b, nil
+}
+
+type progressReader struct {
+	r      io.Reader
+	total  *int64
+	read   int64
+	notify func(int64, *int64)
+}
+
+func (r *progressReader) Read(p []byte) (int, error) {
+	n, err := r.r.Read(p)
+	r.read += int64(n)
+	if n > 0 && r.notify != nil {
+		r.notify(r.read, cloneInt64(r.total))
+	}
+	return n, err
+}
+
+func cloneInt64(v *int64) *int64 {
+	if v == nil {
+		return nil
+	}
+	copy := *v
+	return &copy
 }
 
 func checksumFor(name string, data []byte) (string, error) {
