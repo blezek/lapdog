@@ -1,0 +1,140 @@
+.brake-it {
+  --brake-bg: var(--plane);
+  --brake-surface: var(--surface-1);
+  --brake-surface-2: var(--surface-2);
+  --brake-text: var(--text-primary);
+  --brake-muted: var(--text-secondary);
+  --brake-border: var(--line);
+  --brake-green: #2d8b5a;
+  --brake-green-soft: color-mix(in srgb, var(--brake-green) 14%, var(--brake-surface));
+  --brake-red: #cf433f;
+  --brake-red-soft: color-mix(in srgb, var(--brake-red) 14%, var(--brake-surface));
+  --brake-blue: var(--accent);
+  --brake-blue-soft: color-mix(in srgb, var(--accent) 12%, var(--brake-surface));
+  --brake-amber: #bc7c1d;
+  min-width: 320px;
+  min-height: 100%;
+  background: var(--brake-bg);
+  color: var(--brake-text);
+}
+
+.brake-it button,
+.brake-it input { font: inherit; }
+.brake-it button { cursor: pointer; }
+.brake-it button:disabled { cursor: not-allowed; opacity: .55; }
+.brake-loading, .brake-empty { display: grid; min-height: 50vh; place-items: center; color: var(--brake-muted); }
+
+.brake-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: grid;
+  grid-template-columns: minmax(190px, 1fr) auto minmax(190px, 1fr);
+  gap: 20px;
+  align-items: center;
+  padding: 12px 24px;
+  border-bottom: 1px solid var(--brake-border);
+  background: color-mix(in srgb, var(--brake-surface) 94%, transparent);
+  backdrop-filter: blur(10px);
+}
+
+.brake-brand, .brake-brand > div { display: flex; align-items: center; }
+.brake-brand { gap: 10px; }
+.brake-brand > div { align-items: flex-start; flex-direction: column; gap: 2px; }
+.brake-brand span, .brake-panel-head span, .brake-list span, .brake-key-hint { color: var(--brake-muted); font-size: 12px; }
+.brake-mark { display: grid; width: 40px; height: 40px; flex: 0 0 40px; overflow: hidden; place-items: center; border: 1px solid var(--brake-border); border-radius: 9px; background: var(--brake-red-soft); }
+.brake-mark img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+.brake-tabs { display: flex; gap: 5px; padding: 4px; border: 1px solid var(--brake-border); border-radius: 8px; background: var(--brake-surface-2); }
+.brake-tabs a { display: inline-flex; min-height: 38px; align-items: center; gap: 7px; border-radius: 6px; padding: 0 12px; color: var(--brake-muted); text-decoration: none; }
+.brake-tabs a.active { color: var(--brake-text); background: var(--brake-surface); box-shadow: 0 1px 6px rgb(0 0 0 / 10%); }
+.brake-tabs svg { width: 18px; height: 18px; }
+.brake-back { justify-self: end; color: var(--accent); font-weight: 650; text-decoration: none; }
+
+.brake-error { display: flex; justify-content: space-between; gap: 16px; align-items: center; margin: 14px auto 0; width: min(1400px, calc(100vw - 32px)); border: 1px solid var(--status-critical); border-radius: 7px; padding: 10px 14px; background: var(--brake-red-soft); }
+.brake-error button { border: 0; background: transparent; color: inherit; font-weight: 650; }
+
+.brake-simulator, .brake-results, .brake-screen-grid { width: min(1500px, calc(100vw - 32px)); margin: 20px auto 32px; }
+.brake-screen-grid { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; }
+.brake-sim-grid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; }
+.brake-panel { min-width: 0; border: 1px solid var(--brake-border); border-radius: 8px; padding: 18px; background: var(--brake-surface); box-shadow: 0 12px 34px rgb(0 0 0 / 7%); }
+.brake-panel h1, .brake-panel h2 { margin: 0 0 14px; }
+.brake-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.brake-panel-head > div { display: grid; gap: 4px; }
+.brake-panel-head > .brake-scenario-heading { display: flex; align-items: center; gap: 14px; }
+.brake-scenario-heading > div { display: grid; gap: 4px; }
+.brake-scenario-art { display: block; width: 76px; height: 76px; flex: 0 0 76px; border: 1px solid var(--brake-border); border-radius: 10px; object-fit: cover; }
+.brake-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.brake-actions button, .brake-panel-head button, .brake-device > button:last-child { min-height: 38px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 0 12px; background: var(--brake-surface); color: var(--brake-text); }
+.brake-it button.primary { border-color: #1f5e3f; background: var(--brake-green); color: white; font-weight: 700; }
+.brake-it button.danger { border-color: #a82825; background: var(--brake-red); color: white; font-weight: 700; }
+.brake-it button.danger-text { color: var(--brake-red); }
+
+.brake-cue { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; border: 1px solid var(--brake-border); border-radius: 8px; padding: 14px; background: var(--brake-surface); }
+.brake-cue > div { display: grid; gap: 3px; }
+.brake-cue span, .brake-targets span, .brake-metrics span { color: var(--brake-muted); font-size: 12px; }
+.brake-cue-green { border-left: 5px solid var(--brake-green); }
+.brake-cue-red { border-left: 5px solid var(--brake-red); }
+.brake-cue-amber { border-left: 5px solid var(--brake-amber); }
+.brake-cue-blue { border-left: 5px solid var(--brake-blue); }
+.brake-cue-neutral { border-left: 5px solid var(--text-muted); }
+
+.brake-chart { display: block; width: 100%; min-height: 260px; border: 1px solid var(--brake-border); border-radius: 8px; background: var(--brake-surface); }
+.brake-chart.compact { min-height: 160px; margin-top: 16px; }
+.brake-chart .grid { stroke: var(--brake-border); stroke-width: 1; }
+.brake-chart .tolerance { fill: color-mix(in srgb, var(--brake-red) 15%, transparent); stroke: color-mix(in srgb, var(--brake-red) 38%, transparent); }
+.brake-chart .target-accelerator, .brake-chart .target-brake, .brake-chart .live-accelerator, .brake-chart .live-brake { fill: none; stroke-linecap: round; stroke-linejoin: round; }
+.brake-chart .target-accelerator { stroke: color-mix(in srgb, var(--brake-green) 42%, transparent); stroke-width: 6; }
+.brake-chart .target-brake { stroke: color-mix(in srgb, var(--brake-red) 42%, transparent); stroke-width: 6; }
+.brake-chart .live-accelerator { stroke: var(--brake-green); stroke-width: 3; }
+.brake-chart .live-brake { stroke: var(--brake-red); stroke-width: 3; }
+.brake-chart .progress { stroke: var(--brake-text); stroke-width: 2; }
+
+.brake-live { display: grid; align-self: start; gap: 16px; }
+.brake-pedal { display: grid; gap: 7px; }
+.brake-pedal > div:first-child { display: flex; justify-content: space-between; }
+.brake-meter { position: relative; height: 20px; overflow: hidden; border: 1px solid var(--brake-border); border-radius: 5px; background: var(--brake-surface-2); }
+.brake-meter i { position: absolute; inset-block: 0; left: 0; }
+.brake-meter .accelerator { background: var(--brake-green); }
+.brake-meter .brake { background: var(--brake-red); }
+.brake-meter .band { background: color-mix(in srgb, var(--brake-amber) 38%, transparent); border-inline: 1px solid var(--brake-amber); }
+.brake-targets, .brake-metrics { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.brake-targets > div, .brake-metrics > div { display: grid; gap: 4px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 10px; background: var(--brake-surface-2); }
+.brake-metrics strong { font-size: 18px; }
+.brake-key-hint { margin: 12px 0 0; }
+
+.brake-list { display: grid; gap: 8px; margin-bottom: 14px; }
+.brake-catalog-filters { display: grid; gap: 9px; margin-bottom: 14px; }
+.brake-catalog-filters label { display: grid; gap: 5px; color: var(--brake-muted); font-size: 12px; font-weight: 650; }
+.brake-catalog-filters select { width: 100%; min-height: 38px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 7px 9px; background: var(--brake-surface); color: var(--brake-text); }
+.brake-list-empty { margin: 4px 0 14px; color: var(--brake-muted); font-size: 13px; }
+.brake-list > button, .brake-device > button:first-child { display: grid; width: 100%; gap: 3px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 11px; background: var(--brake-surface); color: var(--brake-text); text-align: left; }
+.brake-list > button.active, .brake-device.active { border-color: var(--brake-blue); background: var(--brake-blue-soft); }
+.brake-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.brake-form label, .brake-device-settings label { display: grid; gap: 6px; color: var(--brake-muted); font-size: 12px; font-weight: 650; }
+.brake-form label.wide { grid-column: 1 / -1; }
+.brake-form input, .brake-form select, .brake-device-settings input { width: 100%; min-height: 38px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 7px 9px; background: var(--brake-surface); color: var(--brake-text); }
+.brake-form .brake-check { display: flex; min-height: 42px; align-items: center; gap: 9px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 10px; background: var(--brake-surface-2); }
+.brake-form .brake-check input { width: 18px; min-height: 18px; margin: 0; accent-color: var(--brake-blue); }
+.brake-range { border: 1px solid var(--brake-border); border-radius: 7px; padding: 10px; background: var(--brake-surface-2); }
+.brake-range > span { display: flex; justify-content: space-between; gap: 8px; }
+.brake-range input { padding: 0; accent-color: var(--brake-blue); }
+.brake-device-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
+.brake-device { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid transparent; border-radius: 8px; padding: 5px; }
+.brake-results { display: grid; gap: 14px; }
+.brake-result .brake-panel-head b { display: grid; width: 50px; height: 50px; place-items: center; border-radius: 50%; background: var(--brake-green-soft); color: var(--brake-green); font-size: 20px; }
+
+@media (max-width: 1000px) {
+  .brake-topbar, .brake-screen-grid, .brake-sim-grid { grid-template-columns: 1fr; }
+  .brake-topbar { position: static; }
+  .brake-back { justify-self: start; }
+  .brake-tabs { overflow-x: auto; }
+}
+
+@media (max-width: 640px) {
+  .brake-topbar { padding: 10px; }
+  .brake-tabs a span { display: none; }
+  .brake-simulator, .brake-results, .brake-screen-grid { width: calc(100vw - 20px); margin-top: 10px; }
+  .brake-cue, .brake-form, .brake-device-settings, .brake-targets, .brake-metrics, .brake-device { grid-template-columns: 1fr; }
+  .brake-panel-head { align-items: stretch; flex-direction: column; }
+}

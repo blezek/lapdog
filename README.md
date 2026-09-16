@@ -106,6 +106,50 @@ can narrow the comparison before sorting.
 
 ![LapDog lap table using generated replay data](docs/images/laps.png)
 
+### Brake-It
+
+Brake-It is a pedal-timing trainer inside LapDog at
+`http://127.0.0.1:47047/brake-it`. It provides a keyboard simulator in every
+supported browser and can read a permitted serial pedal controller through Web
+Serial in Chrome or Edge. The serial path is implemented but has not yet been
+verified with a physical controller on Windows. Scenarios, controller settings,
+completed runs, and their sampled pedal traces are stored in the local LapDog
+database.
+
+The included baseline scenario is synthetic. LapDog does not bundle or publish
+Garage61-derived scenarios while permission for that use is unresolved.
+
+For an approved local Garage61 import, set the dedicated token and run:
+
+```bash
+python3 -m pip install -r tools/brake-it/requirements.txt  # once, for colored logs
+export GARAGE61_TOKEN=...
+make brake-it                         # imports into .dataset.db
+# or: make brake-it BRAKE_IT_DB=/path/to/lapdog.db
+```
+
+The target resolves the requested Mazda MX-5, BMW M2 Racing (G87, id 200),
+Porsche 911 Cup (992.2, id 194), and BMW M4 GT3 cars from Garage61's catalog,
+queries only the reviewed [free iRacing road-track
+list](docs/brake-it-free-road-tracks.md), averages visible telemetry into
+braking scenarios, and imports them through LapDog's SQLite store. LapDog
+checks each returned lap for visible telemetry before requesting its CSV; it
+does not use Garage61's Pro-only telemetry search filter. Lap searches use
+12-lap pages, verify fastest-first ordering across at least three pages when
+available, and stop after finding the fastest 12 telemetry-visible laps. All
+Garage61 requests are sequential and start at least one second apart by
+default; set `BRAKE_IT_REQUEST_INTERVAL=2` to use a more conservative interval.
+The importer honors Garage61's `Retry-After` header on successful responses and
+429s, also reads `retryAfterSeconds` from 429 bodies, and adds up to one second
+of random jitter before the next request. Set `BRAKE_IT_RETRY_JITTER` to change
+the jitter bound. It writes only a minimized local staging catalog under
+`ignore/brake-it/`; tokens, raw CSV, driver identity, lap IDs, and lap links are
+not stored. Each request reports its HTTP status and elapsed time rounded to a
+tenth of a second. Rich supplies colored output through Python's standard
+logging API; the importer falls back to plain structured logs when Rich is not
+installed. The Scenarios screen can filter the imported catalog by car and
+track.
+
 ### Every screen
 
 | Screen | What it shows |
@@ -119,6 +163,7 @@ can narrow the comparison before sorting.
 | **Laps** | A sortable, paged table of completed laps with lap time, delta, fuel, incidents, and position. |
 | **Top 10** | Filtered car and track rankings for completed laps, clean laps, and distance driven, split by session category. |
 | **Export** | CSV or JSON downloads of the currently filtered sessions, laps, or position changes. Empty values remain empty rather than being changed to zero. |
+| **Brake-It** | A separate pedal-timing trainer with editable scenarios, live target and input traces, scored results, keyboard simulation, and optional Web Serial controllers. |
 | **Settings** | Recording frequency, minimum session length, capture retention, units, theme, startup behavior, update checks, diagnostics, data paths, and collector status. |
 
 ## Tray menu
@@ -141,7 +186,7 @@ Choose metric or imperial units, light/dark/system theme, telemetry poll
 interval, minimum session length, capture retention, interface port, and
 whether LapDog starts with Windows.
 
-All data stays on the local machine. The interface binds only to `127.0.0.1`,
+All LapDog and Brake-It data stays on the local machine. The interface binds only to `127.0.0.1`,
 so it is not reachable from another computer. Files are stored in:
 
 ```text

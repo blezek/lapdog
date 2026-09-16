@@ -205,7 +205,10 @@ func TestUnknownRouteFallsBackToTheAppShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, route := range []string{"/sessions", "/laps", "/settings", "/sessions/1042"} {
+	for _, route := range []string{
+		"/sessions", "/laps", "/settings", "/sessions/1042",
+		"/brake-it", "/brake-it/simulator", "/brake-it/results",
+	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, route, nil))
 		if rec.Code != http.StatusOK {
@@ -328,7 +331,10 @@ func TestExtensionlessRoutesStillGetTheShell(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, p := range []string{"/sessions", "/sessions/1042", "/laps", "/deeply/nested/route"} {
+	for _, p := range []string{
+		"/sessions", "/sessions/1042", "/laps", "/deeply/nested/route",
+		"/brake-it/devices",
+	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, p, nil))
 		if rec.Code != http.StatusOK {

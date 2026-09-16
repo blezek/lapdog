@@ -53,7 +53,10 @@ func TestOpenAppliesMigrationsAndCreatesTables(t *testing.T) {
 	if v != CurrentSchemaVersion {
 		t.Errorf("SchemaVersion = %d, want %d", v, CurrentSchemaVersion)
 	}
-	for _, table := range []string{"schema_version", "sessions", "laps", "position_events"} {
+	for _, table := range []string{
+		"schema_version", "sessions", "laps", "position_events",
+		"brake_scenarios", "brake_runs", "brake_samples", "brake_settings",
+	} {
 		var name string
 		if err := s.Reader().QueryRow(
 			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`, table,

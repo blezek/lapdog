@@ -36,6 +36,16 @@ SETUP    := $(DIST)/lapdog-$(VERSION)-setup.exe
 DEV_DB   ?= .dataset.db
 DEV_PORT ?= 47047
 
+# `make brake-it` writes aggregate Garage61 scenarios into the same SQLite file
+# served by `make run`. The JSON is a local, minimized staging artifact under the
+# already-gitignored ignore/ tree; it contains no token, driver or lap identity.
+BRAKE_IT_DB          ?= $(DEV_DB)
+BRAKE_IT_CATALOG     ?= ignore/brake-it/catalog.json
+BRAKE_IT_CSV_LIMIT   ?= 12
+BRAKE_IT_MAX_LAPS    ?= 100
+BRAKE_IT_REQUEST_INTERVAL ?= 1.0
+BRAKE_IT_RETRY_JITTER ?= 1.0
+
 # Where `make ingest` reads captures from. Overridable so any directory of .lpd
 # files can be replayed: make ingest CAPTURES=path/to/captures
 CAPTURES ?= ignore/captures
@@ -56,7 +66,7 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 # target arguments only from 4.4.
 .NOTPARALLEL:
 
-.PHONY: help build ci test run ui-dev dataset dataset-db ingest release tools clean \
+.PHONY: help build ci test run ui-dev dataset dataset-db ingest brake-it release tools clean \
         lint ui verify-embed build-windows build-ctl build-gen \
         fixtures validate portable installer sign goreleaser-check \
         release-snapshot
@@ -72,6 +82,7 @@ help:
 	@echo "dataset     generate the synthetic capture files (~250 MB, gitignored)"
 	@echo "dataset-db  replay those captures into $(DEV_DB)"
 	@echo "ingest      replay existing captures from $(CAPTURES) into $(DEV_DB)"
+	@echo "brake-it    import free-road Garage61 brake scenarios into $(BRAKE_IT_DB)"
 	@echo "release     build, then Authenticode-sign and write SHA256SUMS"
 	@echo "release-snapshot  local GoReleaser release without publishing"
 	@echo "goreleaser-check  validate .goreleaser.yaml"
@@ -89,6 +100,7 @@ help:
 test: $(BUNDLE)
 	LAPDOG_REQUIRE_BUNDLE=1 go test -p=$(GO_TEST_PARALLEL) -parallel=$(GO_TEST_PARALLEL) ./...
 	cd web && npm run test
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/brake-it -p '*_test.py'
 
 # gofmt -l lists unformatted files and exits 0 regardless, so the failure has to
 # come from the output being non-empty rather than from the exit code. This is
@@ -205,6 +217,23 @@ ingest: build-ctl
 	./dist/lapdogctl ingest $(CAPTURES) $(DEV_DB)
 	./dist/lapdogctl summary $(DEV_DB)
 
+# Build aggregate Brake-It targets for the reviewed list of iRacing road tracks
+# included with membership. See docs/brake-it-free-road-tracks.md. The dedicated
+# token remains in this process environment. Raw CSV and lap-level metadata are
+# reduced in memory and are never written to the repository or DB.
+brake-it: build-ctl
+	@test -n "$${GARAGE61_TOKEN:-}" || { \
+	  echo "brake-it: GARAGE61_TOKEN is required"; \
+	  echo "          export GARAGE61_TOKEN=... and retry"; exit 2; }
+	mkdir -p $(dir $(BRAKE_IT_CATALOG))
+	GARAGE61_REQUEST_INTERVAL_SECONDS=$(BRAKE_IT_REQUEST_INTERVAL) \
+	GARAGE61_RETRY_JITTER_SECONDS=$(BRAKE_IT_RETRY_JITTER) \
+	python3 tools/brake-it/garage61_catalog.py \
+	  --output $(BRAKE_IT_CATALOG) \
+	  --csv-limit $(BRAKE_IT_CSV_LIMIT) \
+	  --max-laps $(BRAKE_IT_MAX_LAPS)
+	./dist/lapdogctl import-brake-catalog $(BRAKE_IT_CATALOG) $(BRAKE_IT_DB)
+
 # Serve a database locally, for looking at the interface with real data in it.
 #
 # This is the quickest way to see the UI: the synthetic dataset covers two years of
@@ -315,7 +344,7 @@ verify-embed: build-windows
 	    echo "verify-embed: $$f was not built for Windows:"; go version -m $$f | grep GOOS; exit 1; }; \
 	  go version -m $$f | grep -q "GOARCH=amd64" || { \
 	    echo "verify-embed: $$f is not amd64, the shipped target:"; go version -m $$f | grep GOARCH; exit 1; }; \
-	  for n in LapDog mdi-racing-helmet; do \
+	  for n in LapDog Brake-It mdi-racing-helmet; do \
 	    grep -qa "$$n" $$f || { echo "verify-embed: $$n is missing from $$f"; exit 1; }; \
 	  done; \
 	  echo "verify-embed: $$f is windows/amd64 with the interface and icons inside"; \

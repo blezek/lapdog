@@ -276,6 +276,14 @@ a {
   flex: 0 0 17px;
 }
 
+.nav-item .nav-module-icon {
+  width: 19px;
+  height: 19px;
+  flex: 0 0 19px;
+  border-radius: 5px;
+  object-fit: cover;
+}
+
 .nav-item:hover {
   background: var(--surface-2);
   color: var(--text-primary);
