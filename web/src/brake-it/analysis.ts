@@ -34,7 +34,11 @@ function integrateTimeInBand(
   return Math.max(0, total)
 }
 
-export function evaluateRun(scenario: Scenario, samples: PedalSample[]): RunMetrics {
+export function evaluateRun(
+  scenario: Scenario,
+  samples: PedalSample[],
+  accelerationIncluded = true,
+): RunMetrics {
   const timing = getScenarioTiming(scenario)
   const lowerTarget = scenario.targetBrakePercent - scenario.brakeTolerancePercent
   const upperTarget = scenario.targetBrakePercent + scenario.brakeTolerancePercent
@@ -70,7 +74,7 @@ export function evaluateRun(scenario: Scenario, samples: PedalSample[]): RunMetr
   const trailErrorPercent = mean(
     trailSamples.map((sample) => Math.abs(sample.brake - targetAt(scenario, sample.timeMs).brake)),
   )
-  const transitionErrorPercent = scenario.transitionEnabled
+  const transitionErrorPercent = accelerationIncluded && scenario.transitionEnabled
     ? mean(
         transitionSamples.map((sample) => {
           const target = targetAt(scenario, sample.timeMs)
@@ -78,11 +82,13 @@ export function evaluateRun(scenario: Scenario, samples: PedalSample[]): RunMetr
         }),
       )
     : null
-  const acceleratorRampErrorPercent = mean(
-    acceleratorSamples.map((sample) =>
-      Math.abs(sample.accelerator - targetAt(scenario, sample.timeMs).accelerator),
-    ),
-  )
+  const acceleratorRampErrorPercent = accelerationIncluded
+    ? mean(
+        acceleratorSamples.map((sample) =>
+          Math.abs(sample.accelerator - targetAt(scenario, sample.timeMs).accelerator),
+        ),
+      )
+    : null
   const fallPenalty = acceleratorFallMs === null ? 24 : Math.max(0, acceleratorFallMs - scenario.acceleratorFallTargetMs) / 18
   const risePenalty = brakeRiseMs === null ? 24 : Math.max(0, brakeRiseMs - scenario.brakeRiseTargetMs) / 18
   const holdTargetMS = timing.thresholdEndMs - timing.brakeRiseEndMs
@@ -95,7 +101,7 @@ export function evaluateRun(scenario: Scenario, samples: PedalSample[]): RunMetr
       holdMissRatio * 26 -
       trailErrorPercent * 0.75 -
       (transitionErrorPercent ?? 0) * 0.75 -
-      acceleratorRampErrorPercent * 0.75,
+      (acceleratorRampErrorPercent ?? 0) * 0.75,
     0,
     100,
   )

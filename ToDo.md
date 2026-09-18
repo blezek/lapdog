@@ -13,17 +13,19 @@ path has not.
 ## Brake-It Garage61 import verification
 
 After Garage61 permission is received, run `GARAGE61_TOKEN=... make brake-it`
-against a disposable `BRAKE_IT_DB`. Confirm the live car catalog resolves the
-Mazda MX-5, BMW M2 Racing (G87, id 200), Porsche 911 Cup (992.2, id 194), and
-BMW M4 GT3 cars intended here. Confirm it also resolves all 14 venues listed in
-`docs/brake-it-free-road-tracks.md` and does not query paid, oval, dirt, or
-rallycross tracks. Inspect the reported car and track variants before using the
-catalog. Then verify every imported row has car/track labels and aggregate
+against a disposable `BRAKE_IT_DB`. Confirm the live car catalog resolves only
+the Mazda MX-5 and the first eligible Circuito de Navarra road layout used for
+the current testing pass. Before removing that limit, confirm all 14 venues in
+`docs/brake-it-free-road-tracks.md` resolve without querying paid, oval, dirt,
+or rallycross tracks. Inspect the reported car and track variants before using
+the catalog. Then verify every imported row has car/track labels and aggregate
 source data but no driver, lap, raw CSV, token, or lap URL. This live API path
 cannot be exercised without the dedicated token. Confirm the default one-second
 request interval completes without repeated 429 responses and that a successful
 response carrying `Retry-After` delays the next request. Increase
-`BRAKE_IT_REQUEST_INTERVAL` if this application's allowance is lower.
+`BRAKE_IT_REQUEST_INTERVAL` if this application's allowance is lower. Interrupt
+a future multi-combination test after its first checkpoint and confirm the
+completed combination remains as valid JSON in the staging catalog.
 
 ## Automatic update Windows verification
 

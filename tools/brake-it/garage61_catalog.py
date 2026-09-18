@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Build a privacy-minimized Brake-It catalog from Garage 61 telemetry.
+"""Build a privacy-screened Brake-It catalog from Garage 61 telemetry.
 
 The access token is used only by this local developer tool. Raw telemetry and
-lap-level provenance stay in memory; the JSON written to disk contains only
-car/track labels and aggregate braking parameters.
+driver identity stay in memory. The JSON written to disk contains aggregate
+braking parameters and Garage61 links for the laps that informed each scenario.
 """
 
 from __future__ import annotations
@@ -14,6 +14,7 @@ import logging
 import math
 import os
 import re
+import urllib.parse
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,33 +44,14 @@ class TrackTarget:
 
 CAR_TARGETS = (
   CarTarget("Mazda MX-5", ("mazda", "mx", "5"), ("Global Mazda MX-5 Cup", "Mazda MX-5 Cup")),
-  CarTarget("BMW M2 Racing (G87)", ("bmw", "m2", "racing", "g87"), ("BMW M2 Racing (G87)",), 200),
-  CarTarget("Porsche 911 Cup (992.2)", ("porsche", "911", "cup", "992", "2"), ("Porsche 911 Cup (992.2)",), 194),
-  CarTarget("BMW M4 GT3", ("bmw", "m4", "gt3"), ("BMW M4 GT3",)),
 )
 
-# Scraped from iRacing's Included with Membership track list on 2026-09-16,
-# then narrowed to paved road-racing venues. See docs/brake-it-free-road-tracks.md.
+# Testing subset of the paved road-racing venues reviewed from iRacing's
+# Included with Membership list. See docs/brake-it-free-road-tracks.md.
 # Keep aliases exact: fuzzy matching could quietly turn a free venue into a paid
 # or legacy one after either catalog changes.
 FREE_ROAD_TRACK_TARGETS = (
   TrackTarget("Circuito de Navarra", ("Circuito de Navarra",)),
-  TrackTarget("Circuit de Ledenon", ("Circuit de Ledenon", "Circuit de Lédenon")),
-  TrackTarget("Virginia International Raceway", ("Virginia International Raceway",)),
-  TrackTarget("Motorsport Arena Oschersleben", ("Motorsport Arena Oschersleben",)),
-  TrackTarget("Rudskogen Motorsenter", ("Rudskogen Motorsenter",)),
-  TrackTarget("Winton Motor Raceway", ("Winton Motor Raceway",)),
-  TrackTarget("Lime Rock Park", ("Lime Rock Park",)),
-  TrackTarget("Tsukuba Circuit", ("Tsukuba Circuit",)),
-  TrackTarget("Charlotte Motor Speedway", ("Charlotte Motor Speedway",)),
-  TrackTarget("Snetterton Circuit", ("Snetterton Circuit",)),
-  TrackTarget("Oran Park Raceway", ("Oran Park Raceway",)),
-  TrackTarget("Oulton Park Circuit", ("Oulton Park Circuit",)),
-  TrackTarget("Okayama International Circuit", ("Okayama International Circuit",)),
-  TrackTarget(
-    "Summit Point Motorsports Park",
-    ("Summit Point Motorsports Park", "Summit Point Raceway"),
-  ),
 )
 
 NON_ROAD_VARIANT_TERMS = frozenset(("dirt", "oval", "rallycross"))
@@ -190,6 +172,16 @@ def resolve_tracks(
       + f". Available iRacing tracks: {available}",
     )
   return sorted(selected.values(), key=track_sort_key)
+
+
+def single_car_track_combination(
+  cars: list[dict[str, Any]],
+  tracks: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+  """Select exactly one concrete track record and one car for this pass."""
+  if not cars or not tracks:
+    return []
+  return [(tracks[0], cars[0])]
 
 
 def track_sort_key(track: dict[str, Any]) -> tuple[str, str, int]:
@@ -360,8 +352,56 @@ def minimize_scenario(
       **({"variant": str(track["variant"])} if track.get("variant") else {}),
     },
     "model": source["model"],
+    "sourceLaps": [sanitize_lap_citation(lap) for lap in source.get("sourceLaps", [])],
   }
   return scenario
+
+
+def sanitize_lap_citation(lap: dict[str, Any]) -> dict[str, Any]:
+  """Keep useful Garage61 provenance without copying driver or API details."""
+  lap_id = str(lap.get("lapId", "")).strip()
+  if not lap_id:
+    raise RuntimeError("Garage61 source lap has no lapId")
+  encoded_id = urllib.parse.quote(lap_id, safe="")
+  lap_url = f"https://garage61.net/app/analyze;t={encoded_id}"
+  contribution = lap.get("contribution")
+  if not isinstance(contribution, dict):
+    raise RuntimeError(f"Garage61 source lap {lap_id} has no contribution")
+  return {
+    "lapId": lap_id,
+    "garage61Url": lap_url,
+    "garage61AnalyzeUrl": lap_url,
+    "lapTimeSec": float(lap["lapTimeSec"]),
+    "contribution": {
+      key: value
+      for key, value in contribution.items()
+      if key in {
+        "zone",
+        "weight",
+        "eventStartLapPercent",
+        "eventThresholdEndLapPercent",
+        "eventTrailEndLapPercent",
+        "eventAccelerationStartLapPercent",
+        "telemetryWindowStartLapPercent",
+        "telemetryWindowEndLapPercent",
+        "peakBrakePercent",
+        "clusterDistanceLapPercent",
+      }
+      and isinstance(value, (int, float))
+    },
+  }
+
+
+def valid_citation_url(value: str) -> bool:
+  parsed = urllib.parse.urlparse(value)
+  return (
+    parsed.scheme == "https"
+    and parsed.netloc == "garage61.net"
+    and (
+      parsed.path.startswith("/app/analyze")
+      or parsed.path.startswith("/app/analysis/laps/")
+    )
+  )
 
 
 def validate_private_data_absent(value: Any, path: str = "catalog") -> None:
@@ -370,18 +410,12 @@ def validate_private_data_absent(value: Any, path: str = "catalog") -> None:
     "drivers",
     "driverid",
     "driverslug",
-    "lapid",
     "laps",
     "samples",
     "telemetry",
     "rows",
     "csv",
     "raw",
-    "sourcelaps",
-    "garage61url",
-    "garage61telemetryurl",
-    "garage61analysisurl",
-    "garage61analyzeurl",
     "apilapurl",
     "apicsvurl",
     "authorization",
@@ -392,6 +426,15 @@ def validate_private_data_absent(value: Any, path: str = "catalog") -> None:
       folded = re.sub(r"[^a-z0-9]", "", str(key).casefold())
       if folded in banned_keys:
         raise RuntimeError(f"private lap-level field {path}.{key} reached catalog output")
+      if folded in {
+        "garage61url",
+        "garage61telemetryurl",
+        "garage61analysisurl",
+        "garage61analyzeurl",
+      }:
+        if not isinstance(child, str) or not valid_citation_url(child):
+          raise RuntimeError(f"invalid Garage61 citation URL at {path}.{key}")
+        continue
       validate_private_data_absent(child, f"{path}.{key}")
   elif isinstance(value, list):
     for index, child in enumerate(value):
@@ -405,6 +448,147 @@ def validate_private_data_absent(value: Any, path: str = "catalog") -> None:
       or "http://" in folded
     ):
       raise RuntimeError(f"private lap-level value reached {path}")
+
+
+def unique_scenarios(scenarios: list[dict[str, Any]]) -> list[dict[str, Any]]:
+  """Return one scenario per stable ID, preserving the first completed copy."""
+  unique: dict[str, dict[str, Any]] = {}
+  for scenario in scenarios:
+    scenario_id = str(scenario.get("id", "")).strip()
+    if not scenario_id:
+      raise RuntimeError("Brake-It catalog scenario has no id")
+    unique.setdefault(scenario_id, scenario)
+  return list(unique.values())
+
+
+def load_existing_scenarios(output: Path) -> list[dict[str, Any]]:
+  """Load a prior valid checkpoint so completed combinations can be skipped."""
+  if not output.exists():
+    return []
+  try:
+    catalog = json.loads(output.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError) as error:
+    raise RuntimeError(f"Existing Brake-It catalog {output} is not valid JSON") from error
+  if catalog.get("catalogVersion") != CATALOG_VERSION:
+    raise RuntimeError(
+      f"Existing Brake-It catalog version is {catalog.get('catalogVersion')}, "
+      f"want {CATALOG_VERSION}",
+    )
+  if catalog.get("sourceProvider") != "garage61":
+    raise RuntimeError("Existing Brake-It catalog is not a Garage61 catalog")
+  scenarios = catalog.get("scenarios")
+  if not isinstance(scenarios, list):
+    raise RuntimeError("Existing Brake-It catalog has no scenarios array")
+  validate_private_data_absent(catalog)
+  loaded = unique_scenarios(scenarios)
+  LOGGER.info("Resume | %d existing scenarios | %s", len(loaded), output)
+  return loaded
+
+
+def combination_exists(
+  scenarios: list[dict[str, Any]],
+  track: dict[str, Any],
+  car: dict[str, Any],
+) -> bool:
+  car_name = str(car["name"])
+  track_name = track_label(track)
+  matches = [
+    scenario
+    for scenario in scenarios
+    if scenario.get("carName") == car_name and scenario.get("trackName") == track_name
+  ]
+  if not matches:
+    return False
+  for scenario in matches:
+    source = scenario.get("source")
+    if not isinstance(source, dict):
+      return False
+    citations = source.get("sourceLaps")
+    if not isinstance(citations, list) or not citations:
+      return False
+  return True
+
+
+def write_catalog_checkpoint(
+  output: Path,
+  generated_at: str,
+  scenarios: list[dict[str, Any]],
+) -> None:
+  """Atomically persist every scenario completed so far.
+
+  Raw telemetry and driver identity remain in memory. The checkpoint contains
+  only screened scenarios that have already passed the privacy validator.
+  """
+  ordered = sorted(
+    unique_scenarios(scenarios),
+    key=lambda scenario: (scenario["carName"], scenario["trackName"], scenario["id"]),
+  )
+  catalog = {
+    "catalogVersion": CATALOG_VERSION,
+    "generatedAt": generated_at,
+    "sourceProvider": "garage61",
+    "carsRequested": [target.label for target in CAR_TARGETS],
+    "scenarios": ordered,
+  }
+  validate_private_data_absent(catalog)
+  output.parent.mkdir(parents=True, exist_ok=True)
+  temporary = output.with_name(f".{output.name}.tmp")
+  try:
+    with temporary.open("w", encoding="utf-8") as checkpoint:
+      json.dump(catalog, checkpoint, indent=2)
+      checkpoint.write("\n")
+      checkpoint.flush()
+      os.fsync(checkpoint.fileno())
+    temporary.replace(output)
+  finally:
+    temporary.unlink(missing_ok=True)
+  LOGGER.info("Checkpoint | %d scenarios | %s", len(ordered), output)
+
+
+def generate_combinations(
+  token: str,
+  combinations: list[tuple[dict[str, Any], dict[str, Any]]],
+  args: argparse.Namespace,
+  generated_at: str,
+  output: Path,
+  existing_scenarios: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+  """Process one pair at a time and checkpoint it before starting the next."""
+  scenarios = unique_scenarios(list(existing_scenarios or []))
+  for index, (track, car) in enumerate(combinations, start=1):
+    LOGGER.info(
+      "Combination %d/%d | %s | %s",
+      index,
+      len(combinations),
+      track_label(track),
+      car["name"],
+    )
+    if combination_exists(scenarios, track, car):
+      LOGGER.info("Existing scenarios found; skipping Garage61 lap downloads")
+      continue
+    laps = fetch_laps(token, int(track["id"]), int(car["id"]))
+    if not laps:
+      continue
+    generated = analyze_combination(
+      token,
+      track,
+      car,
+      laps,
+      args,
+      generated_at,
+    )
+    if not generated:
+      continue
+    car_name = str(car["name"])
+    track_name = track_label(track)
+    scenarios = [
+      scenario
+      for scenario in scenarios
+      if scenario.get("carName") != car_name or scenario.get("trackName") != track_name
+    ]
+    scenarios = unique_scenarios([*scenarios, *generated])
+    write_catalog_checkpoint(output, generated_at, scenarios)
+  return scenarios
 
 
 def main() -> int:
@@ -422,42 +606,23 @@ def main() -> int:
   cars = resolve_cars(items(generator.request(token, "/cars"), "/cars"))
   tracks = resolve_tracks(items(generator.request(token, "/tracks"), "/tracks"))
   generated_at = generator.now_iso()
-  scenarios: list[dict[str, Any]] = []
-
-  for index, track in enumerate(tracks, start=1):
-    LOGGER.info("Track %d/%d | %s", index, len(tracks), track_label(track))
-    for car in cars:
-      laps = fetch_laps(token, int(track["id"]), int(car["id"]))
-      if not laps:
-        continue
-      scenarios.extend(
-        analyze_combination(
-          token,
-          track,
-          car,
-          laps,
-          args,
-          generated_at,
-        ),
-      )
+  combinations = single_car_track_combination(cars, tracks)
+  output = Path(args.output)
+  existing_scenarios = load_existing_scenarios(output)
+  scenarios = generate_combinations(
+    token,
+    combinations,
+    args,
+    generated_at,
+    output,
+    existing_scenarios,
+  )
 
   if not scenarios:
     raise RuntimeError("No aggregate scenarios could be generated from visible telemetry")
-  scenarios.sort(key=lambda scenario: (scenario["carName"], scenario["trackName"], scenario["id"]))
-  catalog = {
-    "catalogVersion": CATALOG_VERSION,
-    "generatedAt": generated_at,
-    "sourceProvider": "garage61",
-    "carsRequested": [target.label for target in CAR_TARGETS],
-    "scenarios": scenarios,
-  }
-  validate_private_data_absent(catalog)
-  output = Path(args.output)
-  output.parent.mkdir(parents=True, exist_ok=True)
-  output.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
   LOGGER.info(
-    "Complete | %d tracks | %d scenarios | %s",
-    len(tracks),
+    "Complete | %d combination | %d scenarios | %s",
+    len(combinations),
     len(scenarios),
     output,
   )

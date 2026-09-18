@@ -69,6 +69,24 @@
 .brake-it button.primary { border-color: #1f5e3f; background: var(--brake-green); color: white; font-weight: 700; }
 .brake-it button.danger { border-color: #a82825; background: var(--brake-red); color: white; font-weight: 700; }
 .brake-it button.danger-text { color: var(--brake-red); }
+.brake-actions button[aria-pressed="true"] { border-color: var(--brake-blue); background: var(--brake-blue-soft); }
+
+.brake-visual-cue { display: grid; min-height: 270px; place-items: center; align-content: center; gap: 5px; margin-bottom: 14px; border: 2px solid var(--brake-border); border-radius: 12px; padding: 18px; background: var(--brake-surface-2); text-align: center; }
+.brake-visual-cue > div { display: grid; width: 132px; height: 132px; place-items: center; color: var(--brake-muted); }
+.brake-visual-cue svg { width: 100%; height: 100%; overflow: visible; fill: currentColor; }
+.brake-visual-cue .cue-icon-stroke { fill: none; stroke: currentColor; stroke-width: 10; stroke-linecap: round; stroke-linejoin: round; }
+.brake-visual-cue strong { font-size: clamp(28px, 4vw, 46px); line-height: 1; }
+.brake-visual-cue > span:last-child { color: var(--brake-muted); font-size: 14px; }
+.brake-visual-cue.cue-brake { border-color: var(--brake-red); background: var(--brake-red-soft); }
+.brake-visual-cue.cue-brake > div { color: white; }
+.cue-stop { display: grid; width: 124px; height: 124px; place-items: center; background: var(--brake-red); clip-path: polygon(29% 0, 71% 0, 100% 29%, 100% 71%, 71% 100%, 29% 100%, 0 71%, 0 29%); color: white; font-size: 25px; font-weight: 900; letter-spacing: .04em; }
+.brake-visual-cue.cue-trail { border-color: var(--brake-blue); background: var(--brake-blue-soft); }
+.brake-visual-cue.cue-trail > div { color: var(--brake-blue); }
+.brake-visual-cue.cue-coast > div { color: var(--brake-muted); }
+.brake-visual-cue.cue-accelerate { border-color: var(--brake-green); background: var(--brake-green-soft); }
+.brake-visual-cue.cue-accelerate > div { color: var(--brake-green); }
+.cue-ready { display: grid; width: 124px; height: 124px; place-items: center; border: 8px solid currentColor; border-radius: 50%; font-size: 19px; font-weight: 900; letter-spacing: .08em; }
+.cue-complete { display: grid; width: 124px; height: 124px; place-items: center; border-radius: 50%; background: var(--brake-green); color: white; font-size: 78px; font-weight: 900; }
 
 .brake-cue { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; border: 1px solid var(--brake-border); border-radius: 8px; padding: 14px; background: var(--brake-surface); }
 .brake-cue > div { display: grid; gap: 3px; }
@@ -81,14 +99,50 @@
 
 .brake-chart { display: block; width: 100%; min-height: 260px; border: 1px solid var(--brake-border); border-radius: 8px; background: var(--brake-surface); }
 .brake-chart.compact { min-height: 160px; margin-top: 16px; }
-.brake-chart .grid { stroke: var(--brake-border); stroke-width: 1; }
+.brake-chart .chart-background { fill: url(#brake-track-gradient); }
+.brake-chart .gradient-approach, .brake-chart .gradient-finish { stop-color: var(--brake-green-soft); }
+.brake-chart .gradient-threshold { stop-color: color-mix(in srgb, var(--brake-amber) 16%, var(--brake-surface)); }
+.brake-chart .gradient-trail { stop-color: var(--brake-blue-soft); }
+.brake-chart .zone { opacity: .48; }
+.brake-chart .zone-approach, .brake-chart .zone-ramp, .brake-chart .zone-full { fill: var(--brake-green-soft); }
+.brake-chart .zone-attack { fill: var(--brake-red-soft); }
+.brake-chart .zone-threshold, .brake-chart .zone-low-brake { fill: color-mix(in srgb, var(--brake-amber) 17%, var(--brake-surface)); }
+.brake-chart .zone-trail { fill: var(--brake-blue-soft); }
+.brake-chart .zone-coast { fill: var(--brake-surface-2); }
+.brake-chart .grid, .brake-chart .time-grid { stroke: color-mix(in srgb, var(--brake-muted) 28%, transparent); stroke-width: 1; }
+.brake-chart .time-grid { stroke-dasharray: 4 8; }
+.brake-chart .axis-label, .brake-chart .marker-label { fill: var(--brake-muted); font-size: 13px; font-weight: 650; user-select: none; }
 .brake-chart .tolerance { fill: color-mix(in srgb, var(--brake-red) 15%, transparent); stroke: color-mix(in srgb, var(--brake-red) 38%, transparent); }
+.brake-chart .marker { stroke-width: 2; stroke-dasharray: 8 8; }
+.brake-chart .marker-brake { stroke: var(--brake-red); }
+.brake-chart .marker-trail { stroke: var(--brake-blue); }
+.brake-chart .marker-accelerator, .brake-chart .marker-full { stroke: var(--brake-green); }
+.brake-chart .marker-transition { stroke: var(--brake-muted); }
 .brake-chart .target-accelerator, .brake-chart .target-brake, .brake-chart .live-accelerator, .brake-chart .live-brake { fill: none; stroke-linecap: round; stroke-linejoin: round; }
 .brake-chart .target-accelerator { stroke: color-mix(in srgb, var(--brake-green) 42%, transparent); stroke-width: 6; }
 .brake-chart .target-brake { stroke: color-mix(in srgb, var(--brake-red) 42%, transparent); stroke-width: 6; }
 .brake-chart .live-accelerator { stroke: var(--brake-green); stroke-width: 3; }
 .brake-chart .live-brake { stroke: var(--brake-red); stroke-width: 3; }
 .brake-chart .progress { stroke: var(--brake-text); stroke-width: 2; }
+.brake-trace-editor { margin-top: 4px; }
+.brake-trace-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
+.brake-trace-editor > header > div { display: grid; gap: 3px; }
+.brake-trace-editor > header span { color: var(--brake-muted); font-size: 12px; }
+.brake-trace-editor > header label { display: flex; min-width: min(340px, 100%); align-items: center; justify-content: flex-end; gap: 9px; }
+.brake-trace-editor > header input { min-width: 150px; accent-color: var(--brake-blue); }
+.brake-trace-editor > header label strong { min-width: 62px; font-size: 12px; }
+.brake-chart-scroll { overflow-x: auto; overflow-y: hidden; border-radius: 8px; padding-bottom: 9px; scrollbar-color: var(--brake-muted) var(--brake-surface-2); }
+.brake-interactive-chart { position: relative; height: 360px; touch-action: none; }
+.brake-drag-handle, .brake-time-handle { position: absolute; z-index: 2; transform: translate(-50%, -50%); border: 2px solid var(--brake-surface); box-shadow: 0 2px 10px rgb(0 0 0 / 25%); }
+.brake-drag-handle { width: 22px; height: 22px; border-radius: 50%; }
+.brake-time-handle { top: 50%; width: 14px; height: 68%; border-radius: 999px; opacity: .82; }
+.brake-drag-handle.handle-brake-rise, .brake-time-handle.handle-threshold { background: var(--brake-red); }
+.brake-time-handle.handle-approach { background: var(--brake-text); }
+.brake-drag-handle.handle-accel-fall, .brake-time-handle.handle-finish { background: var(--brake-green); }
+.brake-time-handle.handle-trail { background: var(--brake-blue); }
+.brake-time-handle.handle-coast { background: var(--brake-muted); }
+.brake-time-handle.handle-low-brake { background: var(--brake-amber); }
+.brake-zone-summary { display: flex; justify-content: flex-end; gap: 8px; margin-top: 3px; color: var(--brake-muted); font-size: 12px; }
 
 .brake-live { display: grid; align-self: start; gap: 16px; }
 .brake-pedal { display: grid; gap: 7px; }
@@ -110,7 +164,7 @@
 .brake-list-empty { margin: 4px 0 14px; color: var(--brake-muted); font-size: 13px; }
 .brake-list > button, .brake-device > button:first-child { display: grid; width: 100%; gap: 3px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 11px; background: var(--brake-surface); color: var(--brake-text); text-align: left; }
 .brake-list > button.active, .brake-device.active { border-color: var(--brake-blue); background: var(--brake-blue-soft); }
-.brake-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; }
+.brake-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; margin-top: 18px; }
 .brake-form label, .brake-device-settings label { display: grid; gap: 6px; color: var(--brake-muted); font-size: 12px; font-weight: 650; }
 .brake-form label.wide { grid-column: 1 / -1; }
 .brake-form input, .brake-form select, .brake-device-settings input { width: 100%; min-height: 38px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 7px 9px; background: var(--brake-surface); color: var(--brake-text); }
@@ -119,6 +173,24 @@
 .brake-range { border: 1px solid var(--brake-border); border-radius: 7px; padding: 10px; background: var(--brake-surface-2); }
 .brake-range > span { display: flex; justify-content: space-between; gap: 8px; }
 .brake-range input { padding: 0; accent-color: var(--brake-blue); }
+.brake-source { display: grid; gap: 14px; margin-top: 18px; border: 1px solid var(--brake-border); border-radius: 8px; padding: 14px; background: var(--brake-surface-2); }
+.brake-source-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.brake-source-head > div { display: grid; gap: 3px; }
+.brake-source-head > .brake-source-actions { display: flex; align-items: center; gap: 9px; }
+.brake-source-actions button { min-height: 32px; border: 1px solid var(--brake-border); border-radius: 6px; padding: 0 9px; background: var(--brake-surface); color: var(--brake-blue); font-size: 12px; font-weight: 700; }
+.brake-source h2 { margin: 0; font-size: 16px; }
+.brake-source-head span, .brake-source-meta span, .brake-source-variation span, .brake-source-variation small, .brake-source-lap small { color: var(--brake-muted); font-size: 12px; }
+.brake-source-meta, .brake-source-variation { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.brake-source-meta > div, .brake-source-variation > div { display: grid; min-width: 0; gap: 4px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 10px; background: var(--brake-surface); }
+.brake-source-meta strong, .brake-source-variation strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.brake-source-variation > div { background: var(--brake-red-soft); }
+.brake-source-laps { display: grid; max-height: 280px; overflow: auto; border: 1px solid var(--brake-border); border-radius: 7px; background: var(--brake-surface); }
+.brake-source-laps > p { margin: 0; padding: 14px; color: var(--brake-muted); }
+.brake-source-lap { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 12px; align-items: center; padding: 10px 12px; border-bottom: 1px solid var(--brake-border); }
+.brake-source-lap:last-child { border-bottom: 0; }
+.brake-source-lap > span { display: grid; gap: 3px; min-width: 0; }
+.brake-source-lap a { display: inline-flex; min-height: 30px; align-items: center; border: 1px solid var(--brake-border); border-radius: 6px; padding: 0 9px; color: var(--brake-blue); font-size: 12px; font-weight: 700; text-decoration: none; white-space: nowrap; }
+.brake-source-lap a:hover { background: var(--brake-blue-soft); }
 .brake-device-settings { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-bottom: 18px; }
 .brake-device { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; align-items: center; border: 1px solid transparent; border-radius: 8px; padding: 5px; }
 .brake-results { display: grid; gap: 14px; }
@@ -135,6 +207,10 @@
   .brake-topbar { padding: 10px; }
   .brake-tabs a span { display: none; }
   .brake-simulator, .brake-results, .brake-screen-grid { width: calc(100vw - 20px); margin-top: 10px; }
-  .brake-cue, .brake-form, .brake-device-settings, .brake-targets, .brake-metrics, .brake-device { grid-template-columns: 1fr; }
+  .brake-cue, .brake-form, .brake-device-settings, .brake-targets, .brake-metrics, .brake-device, .brake-source-meta, .brake-source-variation, .brake-source-lap { grid-template-columns: 1fr; }
   .brake-panel-head { align-items: stretch; flex-direction: column; }
+  .brake-trace-editor > header { align-items: stretch; flex-direction: column; }
+  .brake-trace-editor > header label { justify-content: flex-start; }
+  .brake-source-head { align-items: stretch; flex-direction: column; }
+  .brake-source-head > .brake-source-actions { justify-content: space-between; }
 }

@@ -40,7 +40,7 @@ func TestImportBrakeCatalogCommandWritesServerDatabase(t *testing.T) {
 		CatalogVersion: 1, GeneratedAt: "2026-09-16T18:00:00Z", SourceProvider: "garage61",
 		Scenarios: []store.BrakeCatalogScenario{{
 			BrakeScenario: store.BrakeScenario{
-				ID: "garage61-iracing-track-40-car-68-zone-1", Name: "BMW M2 zone 1",
+				ID: "garage61-test-command-bmw-zone-1", Name: "BMW M2 zone 1",
 				ApproachMS: 2200, AcceleratorFallTargetMS: 280, BrakeRiseTargetMS: 420,
 				TargetBrakePercent: 76, BrakeTolerancePercent: 6, BrakeHoldMS: 1050,
 				TrailBrakeReleaseMS: 1850, AcceleratorRampMS: 1700,
@@ -71,7 +71,11 @@ func TestImportBrakeCatalogCommandWritesServerDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 || rows[1].CarName == nil || *rows[1].CarName != car {
+	got, err := st.BrakeScenarioByID("garage61-test-command-bmw-zone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CarName == nil || *got.CarName != car {
 		t.Fatalf("imported scenarios = %+v", rows)
 	}
 }

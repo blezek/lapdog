@@ -1,18 +1,28 @@
 package store
 
 import (
+	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"net/url"
 	"strings"
 )
 
 const BrakeCatalogVersion = 1
 
-// BrakeCatalog is the privacy-minimized interchange format produced by the
-// local Garage61 generator. It contains aggregate targets, never raw telemetry
-// or lap/driver identity.
+// packagedBrakeCatalogFS contains the privacy-screened catalog copied into
+// this package by `make brake-it`. The tracked placeholder keeps ordinary Go
+// builds valid when no local Garage61 catalog has been generated.
+//
+//go:embed all:brake_catalog_data
+var packagedBrakeCatalogFS embed.FS
+
+// BrakeCatalog is the privacy-screened interchange format produced by the
+// local Garage61 generator. It contains aggregate targets and Garage61 lap
+// citations, but never raw telemetry, credentials, or driver identity.
 type BrakeCatalog struct {
 	CatalogVersion int                    `json:"catalogVersion"`
 	GeneratedAt    string                 `json:"generatedAt"`
@@ -47,6 +57,31 @@ func DecodeBrakeCatalog(r io.Reader) (BrakeCatalog, error) {
 		return BrakeCatalog{}, err
 	}
 	return catalog, nil
+}
+
+// importPackagedBrakeCatalog reconciles the catalog captured when this binary
+// was built. A clean checkout has no catalog.json and retains only the
+// synthetic scenario seeded by the migration.
+func (s *Store) importPackagedBrakeCatalog() error {
+	body, err := packagedBrakeCatalogFS.ReadFile("brake_catalog_data/catalog.json")
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("store: read packaged brake catalog: %w", err)
+	}
+	return s.importPackagedBrakeCatalogBytes(body)
+}
+
+func (s *Store) importPackagedBrakeCatalogBytes(body []byte) error {
+	catalog, err := DecodeBrakeCatalog(strings.NewReader(string(body)))
+	if err != nil {
+		return fmt.Errorf("store: packaged brake catalog: %w", err)
+	}
+	if _, err := s.ImportBrakeCatalog(catalog); err != nil {
+		return fmt.Errorf("store: reconcile packaged brake catalog: %w", err)
+	}
+	return nil
 }
 
 func validateBrakeCatalog(catalog BrakeCatalog) error {
@@ -93,11 +128,14 @@ func validateBrakeCatalog(catalog BrakeCatalog) error {
 func rejectPrivateBrakeCatalogData(value any, path string) error {
 	banned := map[string]struct{}{
 		"driver": {}, "drivers": {}, "driverid": {}, "driverslug": {},
-		"lapid": {}, "laps": {}, "sourcelaps": {}, "samples": {},
-		"telemetry": {}, "rows": {}, "csv": {}, "raw": {}, "garage61url": {},
-		"garage61telemetryurl": {}, "garage61analysisurl": {},
-		"garage61analyzeurl": {}, "apilapurl": {}, "apicsvurl": {},
+		"laps": {}, "samples": {},
+		"telemetry": {}, "rows": {}, "csv": {}, "raw": {},
+		"apilapurl": {}, "apicsvurl": {},
 		"authorization": {}, "token": {},
+	}
+	allowedURLFields := map[string]struct{}{
+		"garage61url": {}, "garage61telemetryurl": {},
+		"garage61analysisurl": {}, "garage61analyzeurl": {},
 	}
 	switch typed := value.(type) {
 	case map[string]any:
@@ -113,6 +151,13 @@ func rejectPrivateBrakeCatalogData(value any, path string) error {
 			}, key)
 			if _, found := banned[folded]; found {
 				return fmt.Errorf("private lap-level field %s.%s is not allowed", path, key)
+			}
+			if _, isURL := allowedURLFields[folded]; isURL {
+				text, ok := child.(string)
+				if !ok || !validGarage61CitationURL(text) {
+					return fmt.Errorf("invalid Garage61 citation URL at %s.%s", path, key)
+				}
+				continue
 			}
 			if err := rejectPrivateBrakeCatalogData(child, path+"."+key); err != nil {
 				return err
@@ -132,6 +177,15 @@ func rejectPrivateBrakeCatalogData(value any, path string) error {
 		}
 	}
 	return nil
+}
+
+func validGarage61CitationURL(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host != "garage61.net" || parsed.User != nil {
+		return false
+	}
+	return strings.HasPrefix(parsed.Path, "/app/analyze") ||
+		strings.HasPrefix(parsed.Path, "/app/analysis/laps/")
 }
 
 // ImportBrakeCatalog atomically upserts generated scenarios into the same

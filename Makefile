@@ -37,10 +37,12 @@ DEV_DB   ?= .dataset.db
 DEV_PORT ?= 47047
 
 # `make brake-it` writes aggregate Garage61 scenarios into the same SQLite file
-# served by `make run`. The JSON is a local, minimized staging artifact under the
-# already-gitignored ignore/ tree; it contains no token, driver or lap identity.
+# served by `make run`. The JSON is a local, screened staging artifact under the
+# already-gitignored ignore/ tree. It keeps Garage61 lap citations for the local
+# UI, but contains no token, driver identity, API URL, or raw telemetry.
 BRAKE_IT_DB          ?= $(DEV_DB)
 BRAKE_IT_CATALOG     ?= ignore/brake-it/catalog.json
+BRAKE_IT_EMBEDDED_CATALOG := internal/store/brake_catalog_data/catalog.json
 BRAKE_IT_CSV_LIMIT   ?= 12
 BRAKE_IT_MAX_LAPS    ?= 100
 BRAKE_IT_REQUEST_INTERVAL ?= 1.0
@@ -221,7 +223,7 @@ ingest: build-ctl
 # included with membership. See docs/brake-it-free-road-tracks.md. The dedicated
 # token remains in this process environment. Raw CSV and lap-level metadata are
 # reduced in memory and are never written to the repository or DB.
-brake-it: build-ctl
+brake-it:
 	@test -n "$${GARAGE61_TOKEN:-}" || { \
 	  echo "brake-it: GARAGE61_TOKEN is required"; \
 	  echo "          export GARAGE61_TOKEN=... and retry"; exit 2; }
@@ -232,6 +234,9 @@ brake-it: build-ctl
 	  --output $(BRAKE_IT_CATALOG) \
 	  --csv-limit $(BRAKE_IT_CSV_LIMIT) \
 	  --max-laps $(BRAKE_IT_MAX_LAPS)
+	mkdir -p $(dir $(BRAKE_IT_EMBEDDED_CATALOG))
+	cp $(BRAKE_IT_CATALOG) $(BRAKE_IT_EMBEDDED_CATALOG)
+	$(MAKE) build-ctl
 	./dist/lapdogctl import-brake-catalog $(BRAKE_IT_CATALOG) $(BRAKE_IT_DB)
 
 # Serve a database locally, for looking at the interface with real data in it.

@@ -126,7 +126,7 @@ func importBrakeCatalog(catalogPath, dbPath string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("Imported %d Brake-It scenarios into %s\n", count, dbPath)
+	fmt.Printf("Reconciled %d Brake-It scenarios into %s\n", count, dbPath)
 	return nil
 }
 

@@ -1,32 +1,20 @@
+import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 import garage61_catalog as catalog
 
 
 class Garage61CatalogTest(unittest.TestCase):
-  def test_free_road_track_list_matches_reviewed_iracing_membership_page(self):
+  def test_testing_pass_requests_only_circuito_de_navarra(self):
     self.assertEqual(
-      [
-        "Circuito de Navarra",
-        "Circuit de Ledenon",
-        "Virginia International Raceway",
-        "Motorsport Arena Oschersleben",
-        "Rudskogen Motorsenter",
-        "Winton Motor Raceway",
-        "Lime Rock Park",
-        "Tsukuba Circuit",
-        "Charlotte Motor Speedway",
-        "Snetterton Circuit",
-        "Oran Park Raceway",
-        "Oulton Park Circuit",
-        "Okayama International Circuit",
-        "Summit Point Motorsports Park",
-      ],
+      ["Circuito de Navarra"],
       [target.label for target in catalog.FREE_ROAD_TRACK_TARGETS],
     )
 
-  def test_resolves_requested_iracing_car_families(self):
+  def test_resolves_only_requested_mx5(self):
     cars = [
       {"id": 1, "name": "Global Mazda MX-5 Cup", "platform": "iracing"},
       {"id": 200, "name": "BMW M2 Racing (G87)", "platform": "iracing"},
@@ -38,7 +26,7 @@ class Garage61CatalogTest(unittest.TestCase):
       {"id": 6, "name": "Global Mazda MX-5 Cup", "platform": "acc"},
     ]
 
-    self.assertEqual([200, 4, 1, 194], [car["id"] for car in catalog.resolve_cars(cars)])
+    self.assertEqual([1], [car["id"] for car in catalog.resolve_cars(cars)])
 
   def test_resolves_only_road_layouts_at_requested_free_venues(self):
     targets = (
@@ -59,6 +47,14 @@ class Garage61CatalogTest(unittest.TestCase):
     ]
 
     self.assertEqual([10, 13], [track["id"] for track in catalog.resolve_tracks(tracks, targets)])
+
+  def test_testing_pass_selects_one_concrete_track_and_one_car(self):
+    cars = [{"id": 1}, {"id": 2}]
+    tracks = [{"id": 10}, {"id": 20}]
+
+    combinations = catalog.single_car_track_combination(cars, tracks)
+
+    self.assertEqual([(10, 1)], [(track["id"], car["id"]) for track, car in combinations])
 
   def test_track_resolution_fails_if_a_reviewed_venue_disappears(self):
     targets = (catalog.TrackTarget("Lime Rock Park", ("Lime Rock Park",)),)
@@ -137,7 +133,7 @@ class Garage61CatalogTest(unittest.TestCase):
       with self.assertRaisesRegex(RuntimeError, "no numeric lapTime"):
         catalog.fetch_laps("dedicated-token", 42, 7)
 
-  def test_minimized_scenario_keeps_aggregates_but_not_laps(self):
+  def test_minimized_scenario_keeps_sanitized_lap_links(self):
     scenario = {
       "id": "garage61-iracing-track-40-car-1-zone-1",
       "source": {
@@ -145,7 +141,17 @@ class Garage61CatalogTest(unittest.TestCase):
         "generatorVersion": "0.2.0",
         "method": "aggregate",
         "model": {"sourceLapCount": 12},
-        "sourceLaps": [{"lapId": "private", "driver": {"name": "Private"}}],
+        "sourceLaps": [{
+          "lapId": "lap/one",
+          "driver": {"name": "Private"},
+          "apiLapUrl": "https://garage61.net/api/v1/laps/lap%2Fone",
+          "lapTimeSec": 87.123,
+          "contribution": {
+            "zone": 1,
+            "telemetryWindowStartLapPercent": 12.5,
+            "telemetryWindowEndLapPercent": 16.75,
+          },
+        }],
       },
     }
     got = catalog.minimize_scenario(
@@ -156,13 +162,148 @@ class Garage61CatalogTest(unittest.TestCase):
 
     catalog.validate_private_data_absent(got)
     self.assertEqual(12, got["source"]["model"]["sourceLapCount"])
-    self.assertNotIn("sourceLaps", got["source"])
+    self.assertEqual("lap/one", got["source"]["sourceLaps"][0]["lapId"])
+    self.assertEqual(
+      "https://garage61.net/app/analyze;t=lap%2Fone",
+      got["source"]["sourceLaps"][0]["garage61Url"],
+    )
+    self.assertNotIn("driver", got["source"]["sourceLaps"][0])
+    self.assertNotIn("apiLapUrl", got["source"]["sourceLaps"][0])
 
-  def test_privacy_validator_rejects_lap_identity(self):
+  def test_privacy_validator_rejects_driver_identity_and_raw_telemetry(self):
     with self.assertRaisesRegex(RuntimeError, "private lap-level field"):
-      catalog.validate_private_data_absent({"source": {"lapId": "private"}})
+      catalog.validate_private_data_absent({"source": {"driver": {"name": "Private"}}})
     with self.assertRaisesRegex(RuntimeError, "private lap-level field"):
       catalog.validate_private_data_absent({"source": {"samples": [0.1, 0.2]}})
+
+  def test_privacy_validator_only_allows_garage61_app_links(self):
+    catalog.validate_private_data_absent({
+      "source": {
+        "garage61Url": "https://garage61.net/app/analyze;t=lap-one",
+      },
+    })
+    with self.assertRaisesRegex(RuntimeError, "invalid Garage61 citation URL"):
+      catalog.validate_private_data_absent({
+        "source": {"garage61Url": "https://example.com/app/analyze;t=lap-one"},
+      })
+
+  def test_completed_combination_is_checkpointed_before_the_next_one(self):
+    first = {
+      "id": "first-scenario",
+      "carName": "Global Mazda MX-5 Cup",
+      "trackName": "Circuito de Navarra Speed Circuit",
+      "source": {"provider": "garage61"},
+    }
+    combinations = [
+      (
+        {"id": 10, "name": "Circuito de Navarra", "variant": "Speed Circuit"},
+        {"id": 1, "name": "Global Mazda MX-5 Cup"},
+      ),
+      (
+        {"id": 20, "name": "Second Track", "variant": "Road"},
+        {"id": 1, "name": "Global Mazda MX-5 Cup"},
+      ),
+    ]
+    with tempfile.TemporaryDirectory() as temp_dir:
+      output = Path(temp_dir) / "catalog.json"
+      with mock.patch.object(catalog, "fetch_laps", return_value=[{"id": "lap"}]):
+        with mock.patch.object(
+          catalog,
+          "analyze_combination",
+          side_effect=([first], RuntimeError("second combination failed")),
+        ):
+          with self.assertRaisesRegex(RuntimeError, "second combination failed"):
+            catalog.generate_combinations(
+              "dedicated-token",
+              combinations,
+              mock.Mock(),
+              "2026-09-18T12:00:00Z",
+              output,
+            )
+
+      checkpoint = json.loads(output.read_text(encoding="utf-8"))
+
+    self.assertEqual(["first-scenario"], [item["id"] for item in checkpoint["scenarios"]])
+
+  def test_existing_combination_is_not_downloaded_or_duplicated(self):
+    existing = {
+      "id": "existing-scenario",
+      "carName": "Global Mazda MX-5 Cup",
+      "trackName": "Circuito de Navarra Speed Circuit",
+      "source": {
+        "provider": "garage61",
+        "sourceLaps": [{
+          "lapId": "lap-one",
+          "garage61Url": "https://garage61.net/app/analyze;t=lap-one",
+        }],
+      },
+    }
+    combination = [
+      (
+        {"id": 436, "name": "Circuito de Navarra", "variant": "Speed Circuit"},
+        {"id": 8, "name": "Global Mazda MX-5 Cup"},
+      ),
+    ]
+    with tempfile.TemporaryDirectory() as temp_dir:
+      output = Path(temp_dir) / "catalog.json"
+      catalog.write_catalog_checkpoint(
+        output,
+        "2026-09-18T12:00:00Z",
+        [existing, existing],
+      )
+      loaded = catalog.load_existing_scenarios(output)
+      with mock.patch.object(catalog, "fetch_laps") as fetch_laps:
+        scenarios = catalog.generate_combinations(
+          "dedicated-token",
+          combination,
+          mock.Mock(),
+          "2026-09-18T13:00:00Z",
+          output,
+          loaded,
+        )
+      saved = json.loads(output.read_text(encoding="utf-8"))
+
+    fetch_laps.assert_not_called()
+    self.assertEqual(["existing-scenario"], [item["id"] for item in scenarios])
+    self.assertEqual(["existing-scenario"], [item["id"] for item in saved["scenarios"]])
+
+  def test_existing_combination_without_lap_links_is_regenerated(self):
+    existing = {
+      "id": "legacy-scenario",
+      "carName": "Global Mazda MX-5 Cup",
+      "trackName": "Circuito de Navarra Speed Circuit",
+      "source": {"provider": "garage61"},
+    }
+    combination = [(
+      {"id": 436, "name": "Circuito de Navarra", "variant": "Speed Circuit"},
+      {"id": 8, "name": "Global Mazda MX-5 Cup"},
+    )]
+    replacement = {
+      **existing,
+      "id": "replacement-scenario",
+      "source": {
+        "provider": "garage61",
+        "sourceLaps": [{
+          "lapId": "lap-one",
+          "garage61Url": "https://garage61.net/app/analyze;t=lap-one",
+        }],
+      },
+    }
+    with tempfile.TemporaryDirectory() as temp_dir:
+      output = Path(temp_dir) / "catalog.json"
+      with mock.patch.object(catalog, "fetch_laps", return_value=[{"id": "lap"}]) as fetch_laps:
+        with mock.patch.object(catalog, "analyze_combination", return_value=[replacement]):
+          scenarios = catalog.generate_combinations(
+            "dedicated-token",
+            combination,
+            mock.Mock(),
+            "2026-09-18T13:00:00Z",
+            output,
+            [existing],
+          )
+
+    fetch_laps.assert_called_once()
+    self.assertEqual(["replacement-scenario"], [item["id"] for item in scenarios])
 
   @staticmethod
   def laps(start: int, count: int, *, visible=None, visible_count: int = 0):

@@ -116,8 +116,19 @@ verified with a physical controller on Windows. Scenarios, controller settings,
 completed runs, and their sampled pedal traces are stored in the local LapDog
 database.
 
-The included baseline scenario is synthetic. LapDog does not bundle or publish
-Garage61-derived scenarios while permission for that use is unresolved.
+The Simulator can hide the target traces while keeping the driver's recorded
+brake and accelerator traces visible. Audio cues remain independently
+selectable, and an optional large visual cue uses a stop sign for braking, a
+pedal-release symbol for trail braking, a pause symbol for coasting, and a green
+flag for acceleration. Braking-only practice ends after the trail-brake phase;
+its saved result records that acceleration was omitted instead of reporting a
+false zero accelerator-ramp error.
+
+The baseline scenario in a clean checkout is synthetic. An approved local
+Garage61 import also stages its privacy-screened catalog as a Go embed input,
+so subsequent LapDog builds include those read-only scenarios and reconcile
+them into each database when it opens. The generated catalog remains ignored
+by Git.
 
 For an approved local Garage61 import, set the dedicated token and run:
 
@@ -128,11 +139,12 @@ make brake-it                         # imports into .dataset.db
 # or: make brake-it BRAKE_IT_DB=/path/to/lapdog.db
 ```
 
-The target resolves the requested Mazda MX-5, BMW M2 Racing (G87, id 200),
-Porsche 911 Cup (992.2, id 194), and BMW M4 GT3 cars from Garage61's catalog,
-queries only the reviewed [free iRacing road-track
-list](docs/brake-it-free-road-tracks.md), averages visible telemetry into
-braking scenarios, and imports them through LapDog's SQLite store. LapDog
+For the current testing pass, the target resolves only the Mazda MX-5 and the
+first eligible Circuito de Navarra road layout from Garage61's catalog. It
+averages visible telemetry into braking scenarios and imports them through
+LapDog's SQLite store. The full reviewed [free iRacing road-track
+list](docs/brake-it-free-road-tracks.md) remains documented for expanding the
+catalog after testing. LapDog
 checks each returned lap for visible telemetry before requesting its CSV; it
 does not use Garage61's Pro-only telemetry search filter. Lap searches use
 12-lap pages, verify fastest-first ordering across at least three pages when
@@ -142,13 +154,22 @@ default; set `BRAKE_IT_REQUEST_INTERVAL=2` to use a more conservative interval.
 The importer honors Garage61's `Retry-After` header on successful responses and
 429s, also reads `retryAfterSeconds` from 429 bodies, and adds up to one second
 of random jitter before the next request. Set `BRAKE_IT_RETRY_JITTER` to change
-the jitter bound. It writes only a minimized local staging catalog under
-`ignore/brake-it/`; tokens, raw CSV, driver identity, lap IDs, and lap links are
-not stored. Each request reports its HTTP status and elapsed time rounded to a
+the jitter bound. It writes only a screened local staging catalog under
+`ignore/brake-it/` and an ignored copy used as Go build input. The catalog keeps
+each cited lap's Garage61 link, lap time, and braking-window contribution so the
+Scenarios screen can show its provenance; tokens, raw CSV, Garage61 API URLs,
+and driver identity are not stored. Each request reports
+its HTTP status and elapsed time rounded to a
 tenth of a second. Rich supplies colored output through Python's standard
 logging API; the importer falls back to plain structured logs when Rich is not
 installed. The Scenarios screen can filter the imported catalog by car and
-track.
+track. As soon as a car/track combination has been analyzed, its screened
+scenarios are fsynced to the staging catalog and installed with an atomic
+rename. A later failure therefore cannot discard completed combinations. On a
+subsequent run, the importer validates the checkpoint and skips lap and CSV
+downloads when that car/track combination already has scenarios with retained
+citations. Older link-free checkpoints are regenerated. Stable
+scenario IDs are merged once, and SQLite imports update the existing rows.
 
 ### Every screen
 

@@ -76,15 +76,17 @@ Before importing any Garage 61-derived catalog:
 1. Obtain express written permission for the authenticated API access,
    aggregation, redistribution, attribution, and source-link behavior described
    in `Garage61-Permission.md`.
-2. Do not import names, driver IDs, driver slugs, lap IDs, raw telemetry,
-   lap-specific API URLs, or raw coaching transcripts.
-3. If permission is granted, produce a minimized catalog containing only the
-   approved track/car labels, aggregate brake trace or parameters, aggregate
-   percentiles, sample count, method, generated-at time, and generator version.
+2. Do not import names, driver IDs, driver slugs, raw telemetry, authenticated
+   API URLs, or raw coaching transcripts. A local ignored catalog may retain a
+   lap ID and Garage61 app link solely to provide the requested citation UI.
+3. If permission is granted, produce a screened catalog containing the approved
+   track/car labels, aggregate brake trace or parameters, aggregate percentiles,
+   sample count, method, generated-at time, generator version, and whatever
+   Garage61 lap-link attribution it approves.
 4. If permission is not granted, ship only synthetic scenarios and scenarios
    derived from the user's own telemetry or LapDog captures.
-5. Add an automated privacy check that rejects identifying and lap-level fields
-   in every distributable catalog.
+5. Add an automated privacy check that rejects driver identity, credentials,
+   raw telemetry, API URLs, and non-Garage61 citation URLs in every catalog.
 
 The application and persistence work can proceed with the default synthetic
 scenario while this decision is pending.
@@ -290,10 +292,10 @@ If Garage 61 grants permission:
 2. Do not invoke it from ordinary builds, CI, or release builds.
 3. Document its Python environment, dedicated token, rate limits, and approved
    endpoints.
-4. Split private generation output from the minimized distributable catalog.
+4. Split private generation output from the screened distributable catalog.
 5. Add schema/version validation and deterministic generation where possible.
-6. Add a privacy test that fails on driver identity, lap identity, lap-specific
-   URLs, bearer tokens, or unapproved raw telemetry.
+6. Add a privacy test that fails on driver identity, API URLs, bearer tokens,
+   unapproved raw telemetry, or citation links outside Garage61's app.
 
 Update `README.md` and `DEVELOPMENT.md` with:
 

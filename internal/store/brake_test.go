@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"path/filepath"
 	"testing"
 )
 
@@ -11,18 +13,22 @@ func TestBrakeMigrationSeedsBuiltinScenarioAndSettings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 1 {
-		t.Fatalf("seeded scenarios = %d, want 1: %+v", len(rows), rows)
+	var seeded *BrakeScenario
+	for i := range rows {
+		if rows[i].ID == "builtin-threshold-to-trail-baseline" {
+			seeded = &rows[i]
+			break
+		}
 	}
-	if rows[0].ID != "builtin-threshold-to-trail-baseline" || rows[0].Origin != "builtin" {
-		t.Errorf("seeded scenario = %+v", rows[0])
+	if seeded == nil || seeded.Origin != "builtin" {
+		t.Fatalf("synthetic seeded scenario missing from %+v", rows)
 	}
 	settings, err := s.GetBrakeSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if settings.SelectedScenarioID == nil || *settings.SelectedScenarioID != rows[0].ID {
-		t.Errorf("selected scenario = %v, want %q", settings.SelectedScenarioID, rows[0].ID)
+	if settings.SelectedScenarioID == nil || *settings.SelectedScenarioID != seeded.ID {
+		t.Errorf("selected scenario = %v, want %q", settings.SelectedScenarioID, seeded.ID)
 	}
 	if settings.BaudRate != 115200 {
 		t.Errorf("baud rate = %d, want 115200", settings.BaudRate)
@@ -68,14 +74,15 @@ func TestCustomBrakeScenarioAndRunRoundTrip(t *testing.T) {
 	}
 
 	fall := 190.0
+	rampError := 4.0
 	run := &BrakeRun{
 		ID: "run-one", ScenarioID: rec.ID, ScenarioName: rec.Name,
 		ScenarioSnapshot: `{"id":"custom-one"}`, DeviceLabel: "Keyboard",
-		CreatedAt: Now(), ScoringVersion: 1,
+		CreatedAt: Now(), ScoringVersion: 2, AccelerationIncluded: true,
 		Metrics: BrakeRunMetrics{
 			Score: 91, AcceleratorFallMS: &fall, AverageBrakeDeviationPercent: 2,
 			HoldTimeInBandMS: 450, TrailErrorPercent: 3,
-			AcceleratorRampErrorPercent: 4,
+			AcceleratorRampErrorPercent: &rampError,
 		},
 		Samples: []BrakeSample{
 			{TimeMS: 0, Accelerator: 100, Brake: 0, Source: "keyboard"},
@@ -96,8 +103,86 @@ func TestCustomBrakeScenarioAndRunRoundTrip(t *testing.T) {
 	if runs[0].Metrics.BrakeRiseMS != nil {
 		t.Errorf("absent brake rise became %v", *runs[0].Metrics.BrakeRiseMS)
 	}
+	if !runs[0].AccelerationIncluded || runs[0].Metrics.AcceleratorRampErrorPercent == nil || *runs[0].Metrics.AcceleratorRampErrorPercent != 4 {
+		t.Errorf("acceleration facts = included %v, error %v", runs[0].AccelerationIncluded, runs[0].Metrics.AcceleratorRampErrorPercent)
+	}
 	if err := s.DeleteBrakeScenario(rec.ID); err == nil {
 		t.Fatal("deleted a scenario referenced by a run")
+	}
+}
+
+func TestBrakingOnlyRunKeepsAccelerationMetricAbsent(t *testing.T) {
+	s := openTemp(t)
+	run := &BrakeRun{
+		ID: "braking-only", ScenarioID: "builtin-threshold-to-trail-baseline",
+		ScenarioName: "Baseline", ScenarioSnapshot: `{}`, DeviceLabel: "Keyboard",
+		CreatedAt: Now(), ScoringVersion: 2, AccelerationIncluded: false,
+		Metrics: BrakeRunMetrics{Score: 90},
+		Samples: []BrakeSample{
+			{TimeMS: 0, Accelerator: 100, Brake: 0, Source: "keyboard"},
+			{TimeMS: 100, Accelerator: 0, Brake: 70, Source: "keyboard"},
+			{TimeMS: 200, Accelerator: 0, Brake: 0, Source: "keyboard"},
+		},
+	}
+	if err := s.InsertBrakeRun(run); err != nil {
+		t.Fatal(err)
+	}
+	runs, err := s.ListBrakeRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || runs[0].AccelerationIncluded || runs[0].Metrics.AcceleratorRampErrorPercent != nil {
+		t.Fatalf("braking-only run = %+v", runs)
+	}
+}
+
+func TestBrakePracticeMigrationPreservesAccelerationMetric(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "version-five.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for version, name := range []string{
+		"0001_init.sql", "0002_driver_identity.sql", "0003_rating_category.sql",
+		"0004_brake_it.sql", "0005_brake_catalog.sql",
+	} {
+		body, readErr := migrationFS.ReadFile("migrations/" + name)
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if _, execErr := db.Exec(string(body)); execErr != nil {
+			t.Fatalf("apply %s: %v", name, execErr)
+		}
+		if version > 0 {
+			if _, execErr := db.Exec(`UPDATE schema_version SET version=?`, version+1); execErr != nil {
+				t.Fatal(execErr)
+			}
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO brake_runs (
+		id, scenario_id, scenario_name, scenario_snapshot_json, device_label,
+		scoring_version, score, average_brake_deviation_percent,
+		hold_time_in_band_ms, trail_error_percent,
+		accelerator_ramp_error_percent, created_at
+	) VALUES ('old-run', 'builtin-threshold-to-trail-baseline', 'Baseline', '{}',
+		'Keyboard', 1, 90, 2, 400, 3, 4, ?)`, Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	runs, err := s.ListBrakeRuns()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(runs) != 1 || !runs[0].AccelerationIncluded || runs[0].Metrics.AcceleratorRampErrorPercent == nil || *runs[0].Metrics.AcceleratorRampErrorPercent != 4 {
+		t.Fatalf("upgraded run = %+v", runs)
 	}
 }
 

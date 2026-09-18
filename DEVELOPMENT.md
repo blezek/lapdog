@@ -122,8 +122,11 @@ Brake-It lives under `/brake-it/*` but uses the same Vite bundle and Go server.
 Its scenarios, settings, results, and sampled traces are SQLite records served
 through `/api/brake-it/*`; Web Serial permission and an open port remain
 browser-owned transient state. The committed built-in exercise is synthetic.
-Do not commit or publish a Garage61-derived scenario catalog unless the
-permission and privacy conditions in `Garage61-Permission.md` and the
+`make brake-it` also copies its privacy-screened output to the ignored Go embed input
+at `internal/store/brake_catalog_data/catalog.json`; builds made afterward
+carry that catalog and reconcile it into every database they open. Do not
+commit or publish a Garage61-derived catalog or a binary containing one unless
+the permission and privacy conditions in `Garage61-Permission.md` and the
 integration plan are satisfied.
 
 The developer-only Garage61 importer uses `GARAGE61_TOKEN` and writes into the
@@ -137,14 +140,14 @@ make brake-it BRAKE_IT_REQUEST_INTERVAL=2
 make brake-it BRAKE_IT_RETRY_JITTER=2
 ```
 
-Stop a running LapDog process before importing into its database. The target
-reads `/cars` and `/tracks`, then queries only the reviewed
-[free iRacing road-track list](docs/brake-it-free-road-tracks.md) for the Mazda
-MX-5, BMW M2 Racing (G87, id 200), Porsche 911 Cup (992.2, id 194), and BMW M4
-GT3 cars. For each car and track, the lap query avoids Garage61's Pro-only
-telemetry filter and reads 12-lap pages. It validates ascending lap-time order,
-checks at least three pages when available, and continues only until it has the
-fastest 12 telemetry-visible laps or exhausts the results. Any ordering change
+Stop a running LapDog process before importing into its database. For the
+current testing pass, the target reads `/cars` and `/tracks`, then queries only
+the Mazda MX-5 on the first eligible Circuito de Navarra road layout. For every
+configured car/track combination, the lap query avoids Garage61's Pro-only
+telemetry filter and reads 12-lap pages. It validates
+ascending lap-time order, checks at least three pages when available, and
+continues only until it has the fastest 12 telemetry-visible laps or exhausts
+the results. Any ordering change
 aborts the import. Every request, including retries and CSV downloads, starts
 at least `BRAKE_IT_REQUEST_INTERVAL` seconds after the previous request
 (default `1.0`). The target honors `Retry-After` on successful and rate-limited
@@ -152,10 +155,17 @@ responses, as well as `retryAfterSeconds` in documented 429 bodies, and adds up
 to `BRAKE_IT_RETRY_JITTER` seconds of random delay (default `1.0`). It reduces
 authorized CSV telemetry in memory. Progress uses Python's standard logging
 API with Rich color when installed, and every request logs its status and
-elapsed time to the nearest tenth of a second. The intermediate
-`ignore/brake-it/catalog.json` and SQLite rows contain aggregate scenario
-parameters plus car/track labels; the generator and Go importer both reject
-lap IDs, driver identity, lap URLs, authorization fields, and bearer tokens.
+elapsed time to the nearest tenth of a second. Each completed car/track pair is
+immediately privacy-checked and atomically checkpointed to the intermediate
+`ignore/brake-it/catalog.json`. The catalog and SQLite rows contain aggregate
+scenario parameters, car/track labels, and screened Garage61 lap citations for
+the local UI. The generator and Go importer retain lap IDs, lap times, braking
+window contributions, and Garage61 app links, while rejecting driver identity,
+raw telemetry, Garage61 API URLs, authorization fields, and bearer tokens.
+Reruns validate and resume that checkpoint, skip completed car/track
+combinations only when citations are present, regenerate older link-free
+checkpoints, merge stable scenario IDs once, and rely on SQLite upserts rather
+than inserting duplicate rows.
 
 ## Make targets
 

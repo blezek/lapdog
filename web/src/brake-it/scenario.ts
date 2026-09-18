@@ -40,6 +40,11 @@ export function getScenarioTiming(scenario: Scenario): ScenarioTiming {
   }
 }
 
+export function getPracticeFinishMS(scenario: Scenario, accelerationIncluded: boolean): number {
+  const timing = getScenarioTiming(scenario)
+  return accelerationIncluded ? timing.finishMs : timing.trailEndMs
+}
+
 export function targetAt(scenario: Scenario, timeMs: number): PedalSample {
   const timing = getScenarioTiming(scenario)
   const transitionBrake = transitionBrakeFor(scenario)
@@ -99,8 +104,8 @@ export function phaseForTime(scenario: Scenario, timeMs: number) {
   return { id: 'complete', label: 'Complete', color: 'neutral' }
 }
 
-export function buildTargetSamples(scenario: Scenario, count = 180): PedalSample[] {
-  const { finishMs } = getScenarioTiming(scenario)
+export function buildTargetSamples(scenario: Scenario, count = 180, endMS?: number): PedalSample[] {
+  const finishMs = endMS ?? getScenarioTiming(scenario).finishMs
   return Array.from({ length: count }, (_, index) =>
     targetAt(scenario, (finishMs * index) / (count - 1)),
   )

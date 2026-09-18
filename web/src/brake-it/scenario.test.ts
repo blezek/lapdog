@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { evaluateRun } from './analysis'
-import { buildTargetSamples, getScenarioTiming, targetAt } from './scenario'
+import { buildTargetSamples, getPracticeFinishMS, getScenarioTiming, targetAt } from './scenario'
 import type { Scenario } from './types'
 
 const scenario: Scenario = {
@@ -59,5 +59,17 @@ describe('Brake-It scenario model', () => {
     expect(metrics.acceleratorFallMs).toBeNull()
     expect(metrics.brakeRiseMs).toBeNull()
     expect(metrics.score).toBeLessThan(40)
+  })
+
+  it('ends braking-only practice after the trail and leaves acceleration absent', () => {
+    const finishMS = getPracticeFinishMS(scenario, false)
+    expect(finishMS).toBe(2800)
+    expect(getPracticeFinishMS(scenario, true)).toBe(5900)
+
+    const brakingOnly = buildTargetSamples(scenario, 180, finishMS)
+    const metrics = evaluateRun(scenario, brakingOnly, false)
+    expect(metrics.score).toBeGreaterThan(95)
+    expect(metrics.transitionErrorPercent).toBeNull()
+    expect(metrics.acceleratorRampErrorPercent).toBeNull()
   })
 })

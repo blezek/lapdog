@@ -25,7 +25,7 @@ import (
 var migrationFS embed.FS
 
 // CurrentSchemaVersion is the schema this build understands.
-const CurrentSchemaVersion = 5
+const CurrentSchemaVersion = 6
 
 // ErrSchemaTooNew indicates the database was written by a newer build. Downgrade
 // is not supported, so this is refused rather than risked.
@@ -75,6 +75,10 @@ func Open(path string) (*Store, error) {
 
 	s := &Store{path: path, writer: writer}
 	if err := s.migrate(); err != nil {
+		writer.Close()
+		return nil, err
+	}
+	if err := s.importPackagedBrakeCatalog(); err != nil {
 		writer.Close()
 		return nil, err
 	}

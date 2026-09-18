@@ -12,7 +12,7 @@ const validBrakeCatalog = `{
   "sourceProvider": "garage61",
   "carsRequested": ["Mazda MX-5"],
   "scenarios": [{
-    "id": "garage61-iracing-track-40-car-67-zone-1",
+    "id": "garage61-test-road-atlanta-mx5-zone-1",
     "name": "Road Atlanta Mazda braking zone 1",
     "description": "Aggregate target from 12 visible laps.",
     "approachMs": 2200,
@@ -34,7 +34,13 @@ const validBrakeCatalog = `{
     "source": {
       "provider": "garage61",
       "method": "brake-event clustering by lap-distance percentage",
-      "model": {"sourceLapCount": 12, "targetBrakeMedianPercent": 76}
+      "model": {"sourceLapCount": 12, "targetBrakeMedianPercent": 76},
+      "sourceLaps": [{
+        "lapId": "lap-one",
+        "garage61Url": "https://garage61.net/app/analyze;t=lap-one",
+        "lapTimeSec": 87.123,
+        "contribution": {"zone": 1}
+      }]
     }
   }]
 }`
@@ -49,8 +55,15 @@ func TestBrakeCatalogPersistsSearchMetadataInServerDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	before, err := st.ListBrakeScenarios()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if count, err := st.ImportBrakeCatalog(catalog); err != nil || count != 1 {
 		t.Fatalf("ImportBrakeCatalog count=%d err=%v, want 1, nil", count, err)
+	}
+	if count, err := st.ImportBrakeCatalog(catalog); err != nil || count != 1 {
+		t.Fatalf("second ImportBrakeCatalog count=%d err=%v, want 1, nil", count, err)
 	}
 	if err := st.Close(); err != nil {
 		t.Fatal(err)
@@ -65,10 +78,13 @@ func TestBrakeCatalogPersistsSearchMetadataInServerDatabase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) != 2 {
-		t.Fatalf("ListBrakeScenarios returned %d rows, want seeded plus imported", len(rows))
+	if len(rows) != len(before)+1 {
+		t.Fatalf("ListBrakeScenarios returned %d rows, want %d", len(rows), len(before)+1)
 	}
-	got := rows[1]
+	got, err := st.BrakeScenarioByID("garage61-test-road-atlanta-mx5-zone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if got.CarName == nil || *got.CarName != "Global Mazda MX-5 Cup" ||
 		got.TrackName == nil || *got.TrackName != "Road Atlanta Full Course" ||
 		got.SourceProvider == nil || *got.SourceProvider != "garage61" {
@@ -77,18 +93,57 @@ func TestBrakeCatalogPersistsSearchMetadataInServerDatabase(t *testing.T) {
 	if got.Origin != "builtin" {
 		t.Fatalf("imported origin = %q, want read-only builtin", got.Origin)
 	}
+	if !strings.Contains(string(got.Source), `https://garage61.net/app/analyze;t=lap-one`) {
+		t.Fatalf("imported source lost Garage61 lap citation: %s", got.Source)
+	}
 }
 
-func TestBrakeCatalogRejectsLapIdentityBeforeImport(t *testing.T) {
+func TestPackagedBrakeCatalogIsReconciled(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lapdog.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.ListBrakeScenarios()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.importPackagedBrakeCatalogBytes([]byte(validBrakeCatalog)); err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rows, err := st.ListBrakeScenarios()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != len(before)+1 {
+		t.Fatalf("reconciled scenarios = %+v", rows)
+	}
+}
+
+func TestBrakeCatalogRejectsDriverIdentityBeforeImport(t *testing.T) {
 	private := strings.Replace(
 		validBrakeCatalog,
 		`"sourceLapCount": 12`,
-		`"sourceLapCount": 12, "lapId": "private-lap"`,
+		`"sourceLapCount": 12, "driver": {"name": "Private"}`,
 		1,
 	)
 	_, err := DecodeBrakeCatalog(strings.NewReader(private))
 	if err == nil || !strings.Contains(err.Error(), "private lap-level field") {
 		t.Fatalf("DecodeBrakeCatalog private data error = %v", err)
+	}
+}
+
+func TestBrakeCatalogRejectsNonGarage61CitationURL(t *testing.T) {
+	private := strings.Replace(
+		validBrakeCatalog,
+		`https://garage61.net/app/analyze;t=lap-one`,
+		`https://example.com/app/analyze;t=lap-one`,
+		1,
+	)
+	_, err := DecodeBrakeCatalog(strings.NewReader(private))
+	if err == nil || !strings.Contains(err.Error(), "invalid Garage61 citation URL") {
+		t.Fatalf("DecodeBrakeCatalog external URL error = %v", err)
 	}
 }
 

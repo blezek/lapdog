@@ -105,6 +105,113 @@ async function screenshot(client, name) {
   return path
 }
 
+async function verifyScenarioParity(client) {
+  const catalog = await client.evaluate(`fetch('/api/brake-it/scenarios')
+    .then(response => response.json())
+    .then(rows => {
+      const row = rows.find(item => item.sourceProvider === 'garage61');
+      return row ? { id: row.id, name: row.name } : null;
+    })`)
+  if (catalog) {
+    await client.evaluate(`{
+      const scenario = ${JSON.stringify(catalog)};
+      [...document.querySelectorAll('.brake-list > button')]
+        .find(button => button.textContent.includes(scenario.name))
+        ?.click();
+    }`)
+    await sleep(300)
+  }
+  const state = await client.evaluate(`({
+    labels: document.querySelector('.brake-chart')?.textContent ?? '',
+    markers: document.querySelectorAll('.brake-chart .marker').length,
+    zones: document.querySelectorAll('.brake-chart .zone').length,
+    handles: document.querySelectorAll('.brake-interactive-chart button').length,
+    hasZoom: Boolean(document.querySelector('input[aria-label="Trace zoom"]')),
+    hasTolerance: Boolean(document.querySelector('.brake-chart .tolerance')),
+    chartBeforeForm: (() => {
+      const chart = document.querySelector('.brake-chart');
+      const form = document.querySelector('.brake-form');
+      return Boolean(chart && form && (chart.compareDocumentPosition(form) & Node.DOCUMENT_POSITION_FOLLOWING));
+    })(),
+    sourceLinks: [...document.querySelectorAll('.brake-source-lap a')].map(link => link.href),
+  })`)
+  for (const label of ['0%', '100%', 'Brake', 'Trail', 'Accel']) {
+    if (!state.labels.includes(label)) throw new Error(`scenarios: trace is missing ${label}`)
+  }
+  if (state.markers < 4 || state.zones < 6 || state.handles < 6 || !state.hasZoom || !state.hasTolerance || !state.chartBeforeForm) {
+    throw new Error(`scenarios: trace parity failed: ${JSON.stringify(state)}`)
+  }
+  if (catalog && (state.sourceLinks.length === 0 || state.sourceLinks.some(link => !link.startsWith('https://garage61.net/app/')))) {
+    throw new Error(`scenarios: Garage61 citations are missing or invalid: ${JSON.stringify(state.sourceLinks)}`)
+  }
+  if (catalog) {
+    await client.evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Duplicate')?.click()`)
+    await sleep(500)
+    const editable = await client.evaluate(`({
+      enabledHandles: [...document.querySelectorAll('.brake-interactive-chart button')].filter(button => !button.disabled).length,
+      text: document.querySelector('.brake-panel-head')?.textContent ?? '',
+    })`)
+    if (editable.enabledHandles < 6 || !editable.text.includes('Custom scenario')) {
+      throw new Error(`scenarios: duplicate did not enable trace editing: ${JSON.stringify(editable)}`)
+    }
+    const drag = await client.evaluate(`(() => {
+      const handle = document.querySelector('.handle-brake-rise');
+      const field = [...document.querySelectorAll('.brake-range')]
+        .find(label => label.textContent.includes('Target brake'));
+      if (!handle || !field) return null;
+      const rect = handle.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, before: field.textContent };
+    })()`)
+    if (!drag) throw new Error('scenarios: brake-rise handle is not measurable')
+    await client.send('Input.dispatchMouseEvent', { type: 'mousePressed', x: drag.x, y: drag.y, button: 'left', buttons: 1, clickCount: 1 })
+    await client.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: drag.x, y: drag.y - 35, button: 'left', buttons: 1 })
+    await client.send('Input.dispatchMouseEvent', { type: 'mouseReleased', x: drag.x, y: drag.y - 35, button: 'left', buttons: 0, clickCount: 1 })
+    await sleep(200)
+    const afterDrag = await client.evaluate(`[...document.querySelectorAll('.brake-range')]
+      .find(label => label.textContent.includes('Target brake'))?.textContent ?? ''`)
+    if (afterDrag === drag.before) {
+      throw new Error(`scenarios: dragging the brake-rise handle did not change the target (${afterDrag})`)
+    }
+    await client.evaluate(`{
+      const scenario = ${JSON.stringify(catalog)};
+      [...document.querySelectorAll('.brake-list > button')]
+        .find(button => button.textContent.includes(scenario.name) && !button.textContent.includes('Copy'))
+        ?.click();
+    }`)
+    await sleep(300)
+  }
+  console.log(`  PASS scenario trace controls and ${state.sourceLinks.length} Garage61 citations`)
+}
+
+async function configureBrakingOnlyPractice(client) {
+  const controls = await client.evaluate(`({
+    audio: [...document.querySelectorAll('button')].some(button => button.textContent === 'Audio on'),
+    target: [...document.querySelectorAll('button')].some(button => button.textContent === 'Target trace on'),
+    visual: [...document.querySelectorAll('button')].some(button => button.textContent === 'Visual cues off'),
+    acceleration: [...document.querySelectorAll('button')].some(button => button.textContent === 'Acceleration on'),
+  })`)
+  if (Object.values(controls).some(value => !value)) {
+    throw new Error(`simulator: practice controls are incomplete: ${JSON.stringify(controls)}`)
+  }
+  await client.evaluate(`{
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Target trace on').click();
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Visual cues off').click();
+    [...document.querySelectorAll('button')].find(button => button.textContent === 'Acceleration on').click();
+  }`)
+  await sleep(200)
+  const state = await client.evaluate(`({
+    targetTraces: document.querySelectorAll('.target-accelerator, .target-brake').length,
+    targetTolerance: document.querySelectorAll('.brake-chart .tolerance').length,
+    cue: document.querySelector('.brake-visual-cue')?.getAttribute('aria-label'),
+    accelerationLabel: [...document.querySelectorAll('button')].find(button => button.textContent === 'Braking only')?.textContent,
+    chartLabels: document.querySelector('.brake-chart')?.textContent ?? '',
+  })`)
+  if (state.targetTraces !== 0 || state.targetTolerance !== 0 || state.cue !== 'Approach: Get ready' || state.accelerationLabel !== 'Braking only' || state.chartLabels.includes('Accel')) {
+    throw new Error(`simulator: braking-only visual mode is wrong: ${JSON.stringify(state)}`)
+  }
+  console.log('  PASS target-free visual cues and braking-only practice controls')
+}
+
 async function main() {
   mkdirSync(OUT, { recursive: true })
   const chrome = await launch()
@@ -116,6 +223,7 @@ async function main() {
       await inspectRoute(client, route, 1440, 1000)
       console.log(`  PASS desktop /brake-it/${route}`)
       if (route === 'simulator' || route === 'scenarios') {
+        if (route === 'scenarios') await verifyScenarioParity(client)
         console.log(`       ${await screenshot(client, `${route}-desktop`)}`)
       }
     }
@@ -127,6 +235,8 @@ async function main() {
     console.log(`       ${await screenshot(client, 'scenarios-phone')}`)
 
     await inspectRoute(client, 'simulator', 1440, 1000)
+    await configureBrakingOnlyPractice(client)
+    console.log(`       ${await screenshot(client, 'simulator-braking-only')}`)
     const before = await client.evaluate(`fetch('/api/brake-it/results').then(r => r.json()).then(r => r.length)`)
     await client.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Audio on')?.click()`)
     await sleep(100)
@@ -134,9 +244,21 @@ async function main() {
     await sleep(12000)
     const after = await client.evaluate(`fetch('/api/brake-it/results').then(r => r.json()).then(r => r.length)`)
     if (after !== before + 1) throw new Error(`completed run count changed from ${before} to ${after}`)
+    const completed = await client.evaluate(`fetch('/api/brake-it/results').then(r => r.json()).then(rows => ({
+      accelerationIncluded: rows[0]?.accelerationIncluded,
+      acceleratorRampErrorPercent: rows[0]?.metrics?.acceleratorRampErrorPercent,
+      liveTraces: document.querySelectorAll('.live-accelerator, .live-brake').length,
+      targetTraces: document.querySelectorAll('.target-accelerator, .target-brake').length,
+    }))`)
+    if (completed.accelerationIncluded !== false || completed.acceleratorRampErrorPercent !== null || completed.liveTraces !== 2 || completed.targetTraces !== 0) {
+      throw new Error(`braking-only run facts are wrong: ${JSON.stringify(completed)}`)
+    }
     await inspectRoute(client, 'results', 1440, 1000)
     if (!await client.evaluate(`document.body.innerText.includes('1 completed run') || document.body.innerText.includes('${after} completed runs')`)) {
       throw new Error('saved run did not survive results-page reload')
+    }
+    if (!await client.evaluate(`document.body.innerText.includes('Braking only')`)) {
+      throw new Error('results page does not identify the braking-only run')
     }
     console.log('  PASS completed run persisted through the API and route reload')
 

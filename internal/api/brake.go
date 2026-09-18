@@ -127,7 +127,7 @@ func (s *Server) handleBrakeResults(w http.ResponseWriter, r *http.Request) {
 		}
 		run.ScenarioName = scenario.Name
 		run.ScenarioSnapshot = string(snapshot)
-		run.ScoringVersion = 1
+		run.ScoringVersion = 2
 		run.CreatedAt = store.Now()
 		if err := s.st.InsertBrakeRun(&run); err != nil {
 			s.fail(w, http.StatusInternalServerError, err)
@@ -262,14 +262,20 @@ func validateBrakeRun(run store.BrakeRun) error {
 	if !finiteRange(run.Metrics.Score, 0, 100) ||
 		!nonNegative(run.Metrics.AverageBrakeDeviationPercent) ||
 		!nonNegative(run.Metrics.HoldTimeInBandMS) ||
-		!nonNegative(run.Metrics.TrailErrorPercent) ||
-		!nonNegative(run.Metrics.AcceleratorRampErrorPercent) {
+		!nonNegative(run.Metrics.TrailErrorPercent) {
 		return errors.New("run metrics contain an invalid value")
 	}
 	if run.Metrics.AcceleratorFallMS != nil && !nonNegative(*run.Metrics.AcceleratorFallMS) ||
 		run.Metrics.BrakeRiseMS != nil && !nonNegative(*run.Metrics.BrakeRiseMS) ||
-		run.Metrics.TransitionErrorPercent != nil && !nonNegative(*run.Metrics.TransitionErrorPercent) {
+		run.Metrics.TransitionErrorPercent != nil && !nonNegative(*run.Metrics.TransitionErrorPercent) ||
+		run.Metrics.AcceleratorRampErrorPercent != nil && !nonNegative(*run.Metrics.AcceleratorRampErrorPercent) {
 		return errors.New("run metrics contain an invalid optional value")
+	}
+	if run.AccelerationIncluded && run.Metrics.AcceleratorRampErrorPercent == nil {
+		return errors.New("acceleration practice requires an accelerator ramp metric")
+	}
+	if !run.AccelerationIncluded && run.Metrics.AcceleratorRampErrorPercent != nil {
+		return errors.New("braking-only practice cannot include an accelerator ramp metric")
 	}
 	previous := -1.0
 	for i, sample := range run.Samples {

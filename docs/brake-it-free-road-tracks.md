@@ -29,11 +29,11 @@ The resulting venues are:
 - Okayama International Circuit
 - Summit Point Motorsports Park
 
-`tools/brake-it/garage61_catalog.py` holds this same reviewed allowlist. The
-`brake-it` target reads Garage61's track catalog so it can resolve IDs, but it
-only requests laps and telemetry for matching venues. At mixed venues it drops
-layouts whose Garage61 variant contains `oval`, `dirt`, or `rallycross`; for
-example, Charlotte's Roval remains eligible while its oval does not.
+The current testing configuration in `tools/brake-it/garage61_catalog.py` uses
+only Circuito de Navarra and selects its first eligible road layout. The full
+list above remains the reviewed expansion set. The `brake-it` target reads
+Garage61's track catalog so it can resolve IDs, and it drops layouts whose
+variant contains `oval`, `dirt`, or `rallycross`.
 
 Treat the list as dated source data. Re-scrape iRacing's archive and review any
 membership changes before editing the allowlist; do not infer that a newly

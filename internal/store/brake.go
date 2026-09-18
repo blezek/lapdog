@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 )
@@ -11,29 +12,30 @@ var ErrReadOnly = errors.New("store: built-in brake scenario is read-only")
 
 // BrakeScenario is one pedal-training target.
 type BrakeScenario struct {
-	ID                      string   `json:"id"`
-	Name                    string   `json:"name"`
-	Description             string   `json:"description"`
-	ApproachMS              int      `json:"approachMs"`
-	AcceleratorFallTargetMS int      `json:"acceleratorFallTargetMs"`
-	BrakeRiseTargetMS       int      `json:"brakeRiseTargetMs"`
-	TargetBrakePercent      float64  `json:"targetBrakePercent"`
-	BrakeTolerancePercent   float64  `json:"brakeTolerancePercent"`
-	BrakeHoldMS             int      `json:"brakeHoldMs"`
-	TrailBrakeReleaseMS     int      `json:"trailBrakeReleaseMs"`
-	TransitionEnabled       bool     `json:"transitionEnabled"`
-	TransitionMode          *string  `json:"transitionMode"`
-	TransitionDurationMS    *int     `json:"transitionDurationMs"`
-	TransitionBrakePercent  *float64 `json:"transitionBrakePercent"`
-	AcceleratorRampMS       int      `json:"acceleratorRampMs"`
-	Origin                  string   `json:"origin"`
-	CatalogVersion          *int     `json:"catalogVersion"`
-	CarName                 *string  `json:"carName"`
-	TrackName               *string  `json:"trackName"`
-	SourceProvider          *string  `json:"sourceProvider"`
-	Retired                 bool     `json:"retired"`
-	CreatedAt               string   `json:"createdAt"`
-	UpdatedAt               string   `json:"updatedAt"`
+	ID                      string          `json:"id"`
+	Name                    string          `json:"name"`
+	Description             string          `json:"description"`
+	ApproachMS              int             `json:"approachMs"`
+	AcceleratorFallTargetMS int             `json:"acceleratorFallTargetMs"`
+	BrakeRiseTargetMS       int             `json:"brakeRiseTargetMs"`
+	TargetBrakePercent      float64         `json:"targetBrakePercent"`
+	BrakeTolerancePercent   float64         `json:"brakeTolerancePercent"`
+	BrakeHoldMS             int             `json:"brakeHoldMs"`
+	TrailBrakeReleaseMS     int             `json:"trailBrakeReleaseMs"`
+	TransitionEnabled       bool            `json:"transitionEnabled"`
+	TransitionMode          *string         `json:"transitionMode"`
+	TransitionDurationMS    *int            `json:"transitionDurationMs"`
+	TransitionBrakePercent  *float64        `json:"transitionBrakePercent"`
+	AcceleratorRampMS       int             `json:"acceleratorRampMs"`
+	Origin                  string          `json:"origin"`
+	CatalogVersion          *int            `json:"catalogVersion"`
+	CarName                 *string         `json:"carName"`
+	TrackName               *string         `json:"trackName"`
+	SourceProvider          *string         `json:"sourceProvider"`
+	Source                  json.RawMessage `json:"source,omitempty"`
+	Retired                 bool            `json:"retired"`
+	CreatedAt               string          `json:"createdAt"`
+	UpdatedAt               string          `json:"updatedAt"`
 }
 
 const brakeScenarioColumns = `
@@ -42,10 +44,11 @@ const brakeScenarioColumns = `
 	brake_hold_ms, trail_brake_release_ms, transition_enabled,
 	transition_mode, transition_duration_ms, transition_brake_percent,
 	accelerator_ramp_ms, origin, catalog_version, car_name, track_name,
-	source_provider, retired, created_at, updated_at`
+	source_provider, source_json, retired, created_at, updated_at`
 
 func scanBrakeScenario(row rowScanner) (BrakeScenario, error) {
 	var out BrakeScenario
+	var source sql.NullString
 	err := row.Scan(
 		&out.ID, &out.Name, &out.Description, &out.ApproachMS,
 		&out.AcceleratorFallTargetMS, &out.BrakeRiseTargetMS,
@@ -53,9 +56,12 @@ func scanBrakeScenario(row rowScanner) (BrakeScenario, error) {
 		&out.TrailBrakeReleaseMS, &out.TransitionEnabled, &out.TransitionMode,
 		&out.TransitionDurationMS, &out.TransitionBrakePercent,
 		&out.AcceleratorRampMS, &out.Origin, &out.CatalogVersion, &out.CarName,
-		&out.TrackName, &out.SourceProvider, &out.Retired,
+		&out.TrackName, &out.SourceProvider, &source, &out.Retired,
 		&out.CreatedAt, &out.UpdatedAt,
 	)
+	if err == nil && source.Valid {
+		out.Source = json.RawMessage(source.String)
+	}
 	return out, err
 }
 
@@ -101,17 +107,18 @@ func (s *Store) CreateBrakeScenario(rec *BrakeScenario) error {
 	rec.Origin = "custom"
 	rec.CatalogVersion = nil
 	rec.SourceProvider = nil
+	rec.Source = nil
 	rec.Retired = false
 	rec.CreatedAt = Now()
 	rec.UpdatedAt = rec.CreatedAt
 	_, err := s.writer.Exec(`INSERT INTO brake_scenarios (`+brakeScenarioColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ID, rec.Name, rec.Description, rec.ApproachMS, rec.AcceleratorFallTargetMS,
 		rec.BrakeRiseTargetMS, rec.TargetBrakePercent, rec.BrakeTolerancePercent,
 		rec.BrakeHoldMS, rec.TrailBrakeReleaseMS, rec.TransitionEnabled,
 		rec.TransitionMode, rec.TransitionDurationMS, rec.TransitionBrakePercent,
 		rec.AcceleratorRampMS, rec.Origin, rec.CatalogVersion, rec.CarName,
-		rec.TrackName, rec.SourceProvider, rec.Retired,
+		rec.TrackName, rec.SourceProvider, rec.Source, rec.Retired,
 		rec.CreatedAt, rec.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("store: create brake scenario %q: %w", rec.ID, err)
@@ -134,6 +141,7 @@ func (s *Store) UpdateBrakeScenario(rec *BrakeScenario) error {
 	rec.Origin = "custom"
 	rec.CatalogVersion = nil
 	rec.SourceProvider = nil
+	rec.Source = nil
 	rec.Retired = false
 	rec.CreatedAt = existing.CreatedAt
 	rec.UpdatedAt = Now()
@@ -142,7 +150,7 @@ func (s *Store) UpdateBrakeScenario(rec *BrakeScenario) error {
 		brake_rise_target_ms=?, target_brake_percent=?, brake_tolerance_percent=?,
 		brake_hold_ms=?, trail_brake_release_ms=?, transition_enabled=?,
 		transition_mode=?, transition_duration_ms=?, transition_brake_percent=?,
-		accelerator_ramp_ms=?, car_name=?, track_name=?, source_provider=NULL,
+		accelerator_ramp_ms=?, car_name=?, track_name=?, source_provider=NULL, source_json=NULL,
 		updated_at=? WHERE id=? AND origin='custom'`,
 		rec.Name, rec.Description, rec.ApproachMS, rec.AcceleratorFallTargetMS,
 		rec.BrakeRiseTargetMS, rec.TargetBrakePercent, rec.BrakeTolerancePercent,
@@ -191,20 +199,21 @@ type BrakeRunMetrics struct {
 	HoldTimeInBandMS             float64  `json:"holdTimeInBandMs"`
 	TrailErrorPercent            float64  `json:"trailErrorPercent"`
 	TransitionErrorPercent       *float64 `json:"transitionErrorPercent"`
-	AcceleratorRampErrorPercent  float64  `json:"acceleratorRampErrorPercent"`
+	AcceleratorRampErrorPercent  *float64 `json:"acceleratorRampErrorPercent"`
 }
 
 // BrakeRun is a completed Brake-it exercise and its samples.
 type BrakeRun struct {
-	ID               string          `json:"id"`
-	ScenarioID       string          `json:"scenarioId"`
-	ScenarioName     string          `json:"scenarioName"`
-	DeviceLabel      string          `json:"deviceLabel"`
-	CreatedAt        string          `json:"createdAt"`
-	ScoringVersion   int             `json:"scoringVersion"`
-	Metrics          BrakeRunMetrics `json:"metrics"`
-	Samples          []BrakeSample   `json:"samples"`
-	ScenarioSnapshot string          `json:"-"`
+	ID                   string          `json:"id"`
+	ScenarioID           string          `json:"scenarioId"`
+	ScenarioName         string          `json:"scenarioName"`
+	DeviceLabel          string          `json:"deviceLabel"`
+	CreatedAt            string          `json:"createdAt"`
+	ScoringVersion       int             `json:"scoringVersion"`
+	AccelerationIncluded bool            `json:"accelerationIncluded"`
+	Metrics              BrakeRunMetrics `json:"metrics"`
+	Samples              []BrakeSample   `json:"samples"`
+	ScenarioSnapshot     string          `json:"-"`
 }
 
 // InsertBrakeRun atomically stores a run and every sample.
@@ -217,17 +226,23 @@ func (s *Store) InsertBrakeRun(run *BrakeRun) error {
 		return fmt.Errorf("store: begin brake run: %w", err)
 	}
 	defer tx.Rollback()
+	legacyAcceleratorRampError := 0.0
+	if run.Metrics.AcceleratorRampErrorPercent != nil {
+		legacyAcceleratorRampError = *run.Metrics.AcceleratorRampErrorPercent
+	}
 	_, err = tx.Exec(`INSERT INTO brake_runs (
 		id, scenario_id, scenario_name, scenario_snapshot_json, device_label,
 		scoring_version, score, accelerator_fall_ms, brake_rise_ms,
 		average_brake_deviation_percent, hold_time_in_band_ms, trail_error_percent,
-		transition_error_percent, accelerator_ramp_error_percent, created_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		transition_error_percent, accelerator_ramp_error_percent_v1,
+		acceleration_included, accelerator_ramp_error_percent, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		run.ID, run.ScenarioID, run.ScenarioName, run.ScenarioSnapshot,
 		run.DeviceLabel, run.ScoringVersion, run.Metrics.Score,
 		run.Metrics.AcceleratorFallMS, run.Metrics.BrakeRiseMS,
 		run.Metrics.AverageBrakeDeviationPercent, run.Metrics.HoldTimeInBandMS,
 		run.Metrics.TrailErrorPercent, run.Metrics.TransitionErrorPercent,
+		legacyAcceleratorRampError, run.AccelerationIncluded,
 		run.Metrics.AcceleratorRampErrorPercent, run.CreatedAt)
 	if err != nil {
 		return fmt.Errorf("store: insert brake run %q: %w", run.ID, err)
@@ -255,7 +270,7 @@ func (s *Store) ListBrakeRuns() ([]BrakeRun, error) {
 	rows, err := s.reader.Query(`SELECT id, scenario_id, scenario_name, device_label,
 		created_at, scoring_version, score, accelerator_fall_ms, brake_rise_ms,
 		average_brake_deviation_percent, hold_time_in_band_ms, trail_error_percent,
-		transition_error_percent, accelerator_ramp_error_percent
+		transition_error_percent, acceleration_included, accelerator_ramp_error_percent
 		FROM brake_runs ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("store: list brake runs: %w", err)
@@ -270,6 +285,7 @@ func (s *Store) ListBrakeRuns() ([]BrakeRun, error) {
 			&run.Metrics.BrakeRiseMS, &run.Metrics.AverageBrakeDeviationPercent,
 			&run.Metrics.HoldTimeInBandMS, &run.Metrics.TrailErrorPercent,
 			&run.Metrics.TransitionErrorPercent,
+			&run.AccelerationIncluded,
 			&run.Metrics.AcceleratorRampErrorPercent); err != nil {
 			return nil, fmt.Errorf("store: scan brake run: %w", err)
 		}
