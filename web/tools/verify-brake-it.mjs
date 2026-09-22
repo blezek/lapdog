@@ -9,7 +9,7 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 
 const OUT = process.argv[2] ?? '/tmp/lapdog-brake-it-shots'
-const BASE = 'http://127.0.0.1:47047'
+const BASE = process.env.LAPDOG_BASE ?? 'http://127.0.0.1:47047'
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const PROFILE = '/tmp/chrome-lapdog-brake-it'
 const PORT = 9335
@@ -128,6 +128,12 @@ async function verifyScenarioParity(client) {
     handles: document.querySelectorAll('.brake-interactive-chart button').length,
     hasZoom: Boolean(document.querySelector('input[aria-label="Trace zoom"]')),
     hasTolerance: Boolean(document.querySelector('.brake-chart .tolerance')),
+    metadata: {
+      car: document.querySelector('input[aria-label="Scenario car"]')?.value ?? null,
+      track: document.querySelector('input[aria-label="Scenario track"]')?.value ?? null,
+      readonly: [...document.querySelectorAll('input[aria-label="Scenario car"], input[aria-label="Scenario track"]')]
+        .every(input => input.disabled),
+    },
     chartBeforeForm: (() => {
       const chart = document.querySelector('.brake-chart');
       const form = document.querySelector('.brake-form');
@@ -140,6 +146,9 @@ async function verifyScenarioParity(client) {
   }
   if (state.markers < 4 || state.zones < 6 || state.handles < 6 || !state.hasZoom || !state.hasTolerance || !state.chartBeforeForm) {
     throw new Error(`scenarios: trace parity failed: ${JSON.stringify(state)}`)
+  }
+  if (catalog && (!state.metadata.car || !state.metadata.track || !state.metadata.readonly)) {
+    throw new Error(`scenarios: catalog car and track metadata is missing or editable: ${JSON.stringify(state.metadata)}`)
   }
   if (catalog && (state.sourceLinks.length === 0 || state.sourceLinks.some(link => !link.startsWith('https://garage61.net/app/')))) {
     throw new Error(`scenarios: Garage61 citations are missing or invalid: ${JSON.stringify(state.sourceLinks)}`)
@@ -154,6 +163,39 @@ async function verifyScenarioParity(client) {
     if (editable.enabledHandles < 6 || !editable.text.includes('Custom scenario')) {
       throw new Error(`scenarios: duplicate did not enable trace editing: ${JSON.stringify(editable)}`)
     }
+    const metadata = {
+      car: `Verifier car ${Date.now()}`,
+      track: `Verifier track ${Date.now()}`,
+    }
+    await client.evaluate(`{
+      const input = document.querySelector('input[aria-label="Scenario car"]');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, ${JSON.stringify(metadata.car)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }`)
+    await sleep(150)
+    await client.evaluate(`{
+      const input = document.querySelector('input[aria-label="Scenario track"]');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, ${JSON.stringify(metadata.track)});
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }`)
+    await sleep(150)
+    const metadataEditor = await client.evaluate(`({
+      car: document.querySelector('input[aria-label="Scenario car"]')?.value ?? null,
+      track: document.querySelector('input[aria-label="Scenario track"]')?.value ?? null,
+      enabled: [...document.querySelectorAll('input[aria-label="Scenario car"], input[aria-label="Scenario track"]')]
+        .every(input => !input.disabled),
+    })`)
+    if (!metadataEditor.enabled || metadataEditor.car !== metadata.car || metadataEditor.track !== metadata.track) {
+      throw new Error(`scenarios: custom car and track are not editable: ${JSON.stringify(metadataEditor)}`)
+    }
+    await client.evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Save')?.click()`)
+    await sleep(500)
+    const persistedMetadata = await client.evaluate(`fetch('/api/brake-it/scenarios')
+      .then(response => response.json())
+      .then(rows => rows.some(row => row.carName === ${JSON.stringify(metadata.car)} && row.trackName === ${JSON.stringify(metadata.track)}))`)
+    if (!persistedMetadata) throw new Error('scenarios: edited car and track did not persist')
     const drag = await client.evaluate(`(() => {
       const handle = document.querySelector('.handle-brake-rise');
       const field = [...document.querySelectorAll('.brake-range')]
@@ -212,6 +254,79 @@ async function configureBrakingOnlyPractice(client) {
   console.log('  PASS target-free visual cues and braking-only practice controls')
 }
 
+async function verifyLinkedScenarioSelectors(client) {
+  const choices = await client.evaluate(`fetch('/api/brake-it/scenarios')
+    .then(response => response.json())
+    .then(rows => ({
+      catalog: rows.find(item => item.carName && item.trackName) ?? null,
+      general: rows.find(item => item.carName === null && item.trackName === null) ?? null,
+    }))`)
+  const selectorCount = await client.evaluate(`document.querySelectorAll(
+    'select[aria-label="Practice car"], select[aria-label="Practice track"], select[aria-label="Practice scenario"]'
+  ).length`)
+  if (selectorCount !== 3) throw new Error(`simulator: expected three linked selectors, got ${selectorCount}`)
+  if (!choices.catalog || !choices.general) {
+    console.log('  PASS linked scenario selectors present; combo exercise skipped without both catalog and general scenarios')
+    return
+  }
+  const choose = async (label, value) => {
+    await client.evaluate(`{
+      const select = document.querySelector('select[aria-label=${JSON.stringify(label)}]');
+      select.value = ${JSON.stringify(value)};
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+    }`)
+    await sleep(300)
+  }
+  await choose('Practice car', choices.catalog.carName)
+  await choose('Practice track', choices.catalog.trackName)
+  const validCatalog = await client.evaluate(`({
+    car: document.querySelector('select[aria-label="Practice car"]')?.value,
+    track: document.querySelector('select[aria-label="Practice track"]')?.value,
+    scenarioDisabled: document.querySelector('select[aria-label="Practice scenario"]')?.disabled,
+    startDisabled: [...document.querySelectorAll('button')].find(button => button.textContent === 'Start')?.disabled,
+  })`)
+  if (validCatalog.car !== choices.catalog.carName || validCatalog.track !== choices.catalog.trackName || validCatalog.scenarioDisabled || validCatalog.startDisabled) {
+    throw new Error(`simulator: valid catalog pair did not settle: ${JSON.stringify(validCatalog)}`)
+  }
+
+  // Make Car the active selector so its dependent Track list is constrained;
+  // choosing the current value still exercises the same change handler.
+  await choose('Practice car', choices.catalog.carName)
+  await choose('Practice car', '__lapdog_unassigned__')
+  const invalidCar = await client.evaluate(`({
+    track: document.querySelector('select[aria-label="Practice track"]')?.value,
+    trackText: document.querySelector('select[aria-label="Practice track"] option:checked')?.textContent,
+    scenarioText: document.querySelector('select[aria-label="Practice scenario"] option:checked')?.textContent,
+    startDisabled: [...document.querySelectorAll('button')].find(button => button.textContent === 'Start')?.disabled,
+  })`)
+  if (invalidCar.track !== choices.catalog.trackName || !invalidCar.trackText.includes('unavailable for General / custom') || invalidCar.scenarioText !== 'No scenarios for this car and track' || !invalidCar.startDisabled) {
+    throw new Error(`simulator: invalid car did not preserve and mark the track: ${JSON.stringify(invalidCar)}`)
+  }
+
+  await choose('Practice track', '__lapdog_unassigned__')
+  await choose('Practice track', choices.catalog.trackName)
+  const invalidTrack = await client.evaluate(`({
+    car: document.querySelector('select[aria-label="Practice car"]')?.value,
+    carText: document.querySelector('select[aria-label="Practice car"] option:checked')?.textContent,
+    scenarioText: document.querySelector('select[aria-label="Practice scenario"] option:checked')?.textContent,
+    startDisabled: [...document.querySelectorAll('button')].find(button => button.textContent === 'Start')?.disabled,
+  })`)
+  if (invalidTrack.car !== '__lapdog_unassigned__' || !invalidTrack.carText.includes(`unavailable at ${choices.catalog.trackName}`) || invalidTrack.scenarioText !== 'No scenarios for this car and track' || !invalidTrack.startDisabled) {
+    throw new Error(`simulator: invalid track did not preserve and mark the car: ${JSON.stringify(invalidTrack)}`)
+  }
+
+  await choose('Practice car', choices.catalog.carName)
+  const restored = await client.evaluate(`({
+    track: document.querySelector('select[aria-label="Practice track"]')?.value,
+    selectedScenario: document.querySelector('select[aria-label="Practice scenario"]')?.value,
+    startDisabled: [...document.querySelectorAll('button')].find(button => button.textContent === 'Start')?.disabled,
+  })`)
+  if (restored.track !== choices.catalog.trackName || !restored.selectedScenario || restored.startDisabled) {
+    throw new Error(`simulator: restoring a valid pair changed the track: ${JSON.stringify(restored)}`)
+  }
+  console.log('  PASS linked car and track selectors preserve valid pairs and expose invalid pairs')
+}
+
 async function main() {
   mkdirSync(OUT, { recursive: true })
   const chrome = await launch()
@@ -235,6 +350,7 @@ async function main() {
     console.log(`       ${await screenshot(client, 'scenarios-phone')}`)
 
     await inspectRoute(client, 'simulator', 1440, 1000)
+    await verifyLinkedScenarioSelectors(client)
     await configureBrakingOnlyPractice(client)
     console.log(`       ${await screenshot(client, 'simulator-braking-only')}`)
     const before = await client.evaluate(`fetch('/api/brake-it/results').then(r => r.json()).then(r => r.length)`)

@@ -122,7 +122,11 @@ selectable, and an optional large visual cue uses a stop sign for braking, a
 pedal-release symbol for trail braking, a pause symbol for coasting, and a green
 flag for acceleration. Braking-only practice ends after the trail-brake phase;
 its saved result records that acceleration was omitted instead of reporting a
-false zero accelerator-ramp error.
+false zero accelerator-ramp error. Linked car and track selectors narrow the
+practice-scenario list to real catalog combinations and explicitly mark an
+unavailable pairing rather than silently changing the other selection. Custom
+scenarios can assign or clear their car and track in the scenario editor, with
+suggestions drawn from the local catalog.
 
 The baseline scenario in a clean checkout is synthetic. An approved local
 Garage61 import also stages its privacy-screened catalog as a Go embed input,

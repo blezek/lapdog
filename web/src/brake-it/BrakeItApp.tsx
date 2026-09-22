@@ -9,7 +9,17 @@ import { applyTheme } from '../theme'
 import { evaluateRun } from './analysis'
 import { brakeApi } from './api'
 import { CuePlayer } from './audio'
-import { catalogCars, catalogTracks, filterScenarios } from './catalog'
+import {
+  carTrackCombinationExists,
+  carChoicesForTrack,
+  catalogCarChoices,
+  catalogCars,
+  catalogTrackChoices,
+  catalogTracks,
+  filterScenarios,
+  scenariosForCombination,
+  trackChoicesForCar,
+} from './catalog'
 import {
   buildTargetSamples,
   clamp,
@@ -287,7 +297,7 @@ export function BrakeItApp() {
       ) : (
         <Routes>
           <Route path="/brake-it" element={<Navigate to="/brake-it/simulator" replace />} />
-          <Route path="/brake-it/simulator" element={<Simulator scenario={selectedScenario} input={currentInput} deviceLabel={selectedDevice.label} onResult={storeResult} />} />
+          <Route path="/brake-it/simulator" element={<Simulator scenarios={scenarios} scenario={selectedScenario} input={currentInput} deviceLabel={selectedDevice.label} onSelectScenario={selectScenario} onResult={storeResult} />} />
           <Route path="/brake-it/scenarios" element={<ScenarioEditor scenarios={scenarios} scenario={selectedScenario} onSelect={selectScenario} onChange={updateScenarioLocal} onSave={saveScenario} onDuplicate={duplicateScenario} onDelete={deleteScenario} />} />
           <Route path="/brake-it/devices" element={<Devices devices={devices} selectedDeviceID={selectedDeviceID} settings={settings} onSelect={setSelectedDeviceID} onRequest={requestSerial} onRefresh={refreshDevices} onConnect={connectSerial} onDisconnect={disconnectSerial} onSettings={saveDeviceSettings} />} />
           <Route path="/brake-it/results" element={<Results results={results} scenarios={scenarios} />} />
@@ -298,7 +308,7 @@ export function BrakeItApp() {
   )
 }
 
-function Simulator({ scenario, input, deviceLabel, onResult }: { scenario: Scenario; input: PedalInput; deviceLabel: string; onResult: (result: RunResult) => void }) {
+export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectScenario, onResult }: { scenarios: Scenario[]; scenario: Scenario; input: PedalInput; deviceLabel: string; onSelectScenario: (id: string) => void; onResult: (result: RunResult) => void }) {
   const [running, setRunning] = useState(false)
   const [nowMS, setNowMS] = useState(0)
   const [samples, setSamples] = useState<PedalSample[]>([])
@@ -306,6 +316,7 @@ function Simulator({ scenario, input, deviceLabel, onResult }: { scenario: Scena
   const [targetTraceVisible, setTargetTraceVisible] = useState(true)
   const [visualCuesEnabled, setVisualCuesEnabled] = useState(false)
   const [accelerationIncluded, setAccelerationIncluded] = useState(true)
+  const [scenarioCombinationValid, setScenarioCombinationValid] = useState(true)
   const inputRef = useRef(input)
   const frame = useRef(0)
   const startAt = useRef(0)
@@ -326,6 +337,17 @@ function Simulator({ scenario, input, deviceLabel, onResult }: { scenario: Scena
   useEffect(() => { inputRef.current = input }, [input])
   useEffect(() => { cues.current.setEnabled(audioEnabled) }, [audioEnabled])
   useEffect(() => () => { cancelAnimationFrame(frame.current); void cues.current.close() }, [])
+  useEffect(() => {
+    setSamples([])
+    setNowMS(0)
+    saved.current = true
+  }, [scenario.id])
+  useEffect(() => {
+    if (scenarioCombinationValid) return
+    setSamples([])
+    setNowMS(0)
+    saved.current = true
+  }, [scenarioCombinationValid])
 
   useEffect(() => {
     if (!running) return
@@ -374,6 +396,7 @@ function Simulator({ scenario, input, deviceLabel, onResult }: { scenario: Scena
   }, [accelerationIncluded, deviceLabel, onResult, practiceFinishMS, running, samples, scenario])
 
   const start = async () => {
+    if (!scenarioCombinationValid) return
     saved.current = false
     lastPhase.current = 'approach'
     lastSample.current = -100
@@ -398,6 +421,7 @@ function Simulator({ scenario, input, deviceLabel, onResult }: { scenario: Scena
 
   return (
     <main className="brake-simulator">
+      <ScenarioPicker scenarios={scenarios} selectedID={scenario.id} disabled={running} onSelect={onSelectScenario} onValidityChange={setScenarioCombinationValid} />
       <div className={`brake-cue brake-cue-${phase.color}`}>
         <div><span>Phase</span><strong>{phase.label}</strong></div>
         <div><span>Time</span><strong>{formatMS(nowMS)} / {formatMS(practiceFinishMS)}</strong></div>
@@ -416,7 +440,7 @@ function Simulator({ scenario, input, deviceLabel, onResult }: { scenario: Scena
               <button type="button" aria-pressed={visualCuesEnabled} onClick={() => setVisualCuesEnabled((value) => !value)}>{visualCuesEnabled ? 'Visual cues on' : 'Visual cues off'}</button>
               <button type="button" aria-pressed={accelerationIncluded} disabled={running} onClick={toggleAcceleration}>{accelerationIncluded ? 'Acceleration on' : 'Braking only'}</button>
               <button type="button" onClick={() => { stop(); setSamples([]); setNowMS(0); saved.current = true }}>Reset</button>
-              <button className={running ? 'danger' : 'primary'} type="button" onClick={running ? stop : start}>{running ? 'Stop' : 'Start'}</button>
+              <button className={running ? 'danger' : 'primary'} type="button" disabled={!running && !scenarioCombinationValid} onClick={running ? stop : start}>{running ? 'Stop' : 'Start'}</button>
             </div>
           </div>
           {visualCuesEnabled && <PracticeCue phase={phase.id} />}
@@ -431,6 +455,86 @@ function Simulator({ scenario, input, deviceLabel, onResult }: { scenario: Scena
         </aside>
       </div>
     </main>
+  )
+}
+
+const unassignedChoice = '__lapdog_unassigned__'
+
+function encodeChoice(value: string | null): string {
+  return value ?? unassignedChoice
+}
+
+function decodeChoice(value: string): string | null {
+  return value === unassignedChoice ? null : value
+}
+
+function carChoiceLabel(value: string | null): string {
+  return value ?? 'General / custom'
+}
+
+function trackChoiceLabel(value: string | null): string {
+  return value ?? 'No assigned track'
+}
+
+export function ScenarioPicker({ scenarios, selectedID, disabled = false, onSelect, onValidityChange }: { scenarios: Scenario[]; selectedID: string; disabled?: boolean; onSelect: (id: string) => void; onValidityChange?: (valid: boolean) => void }) {
+  const selected = scenarios.find((item) => item.id === selectedID) ?? scenarios[0]
+  const [car, setCar] = useState<string | null>(selected?.carName ?? null)
+  const [track, setTrack] = useState<string | null>(selected?.trackName ?? null)
+  const [lastChanged, setLastChanged] = useState<'car' | 'track' | null>(null)
+  const carChoices = useMemo(() => catalogCarChoices(scenarios), [scenarios])
+  const trackChoices = useMemo(() => catalogTrackChoices(scenarios), [scenarios])
+  const visibleCarChoices = lastChanged === 'track'
+    ? carChoicesForTrack(scenarios, track, car)
+    : carChoices
+  const visibleTrackChoices = lastChanged === 'car'
+    ? trackChoicesForCar(scenarios, car, track)
+    : trackChoices
+  const matchingScenarios = useMemo(
+    () => scenariosForCombination(scenarios, car, track),
+    [car, scenarios, track],
+  )
+  const combinationValid = matchingScenarios.length > 0
+  const selectedMatches = matchingScenarios.some((item) => item.id === selectedID)
+
+  useEffect(() => {
+    if (!selected) return
+    setCar(selected.carName)
+    setTrack(selected.trackName)
+  }, [selected?.carName, selected?.trackName, selectedID])
+  useEffect(() => onValidityChange?.(combinationValid), [combinationValid, onValidityChange])
+
+  const selectCombination = (nextCar: string | null, nextTrack: string | null) => {
+    const matches = scenariosForCombination(scenarios, nextCar, nextTrack)
+    onValidityChange?.(matches.length > 0)
+    if (matches[0]) onSelect(matches[0].id)
+  }
+  const changeCar = (value: string) => {
+    const nextCar = decodeChoice(value)
+    setLastChanged('car')
+    setCar(nextCar)
+    selectCombination(nextCar, track)
+  }
+  const changeTrack = (value: string) => {
+    const nextTrack = decodeChoice(value)
+    setLastChanged('track')
+    setTrack(nextTrack)
+    selectCombination(car, nextTrack)
+  }
+
+  return (
+    <section className="brake-simulator-scenario" aria-label="Practice scenario selection">
+      <label><span>Car</span><select aria-label="Practice car" value={encodeChoice(car)} disabled={disabled} aria-invalid={!combinationValid} onChange={(event) => changeCar(event.target.value)}>{visibleCarChoices.map((choice) => {
+        const available = carTrackCombinationExists(scenarios, choice, track)
+        return <option key={encodeChoice(choice)} value={encodeChoice(choice)}>{carChoiceLabel(choice)}{available ? '' : ` · unavailable at ${trackChoiceLabel(track)}`}</option>
+      })}</select></label>
+      <label><span>Track</span><select aria-label="Practice track" value={encodeChoice(track)} disabled={disabled} aria-invalid={!combinationValid} onChange={(event) => changeTrack(event.target.value)}>{visibleTrackChoices.map((choice) => {
+        const available = carTrackCombinationExists(scenarios, car, choice)
+        return <option key={encodeChoice(choice)} value={encodeChoice(choice)}>{trackChoiceLabel(choice)}{available ? '' : ` · unavailable for ${carChoiceLabel(car)}`}</option>
+      })}</select></label>
+      <label><span>Practice scenario</span><select aria-label="Practice scenario" value={combinationValid && selectedMatches ? selectedID : ''} disabled={disabled || !combinationValid} aria-invalid={!combinationValid} onChange={(event) => onSelect(event.target.value)}>{!combinationValid && <option value="">No scenarios for this car and track</option>}{matchingScenarios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      {disabled && <small>Stop the current run to change scenarios.</small>}
+      {!disabled && !combinationValid && <small role="status">Choose a car and track marked as available before starting.</small>}
+    </section>
   )
 }
 
@@ -683,6 +787,17 @@ export function ScenarioTraceEditor({ scenario, editable, onChange }: { scenario
   return <section className="brake-trace-editor"><header><div><strong>Pedal shape</strong><span>{editable ? 'Drag the handles to tune the target' : 'Duplicate this scenario to edit the target'}</span></div><label><span>Zoom</span><input aria-label="Trace zoom" type="range" min="80" max="280" step="10" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><strong>{zoom}px/s</strong></label></header><div className="brake-chart-scroll" onPointerMove={(event) => updateDrag(event.clientX, event.clientY)} onPointerUp={() => setDragMode(null)} onPointerLeave={() => setDragMode(null)}><div className="brake-interactive-chart" ref={chartRef} style={{ width: `${chartWidth}px` }}><TraceChart scenario={scenario} samples={[]} nowMS={0} pixelsPerSecond={zoom} />{handle('approach', 'brake-time-handle handle-approach', 'Approach timing', timing.brakeStartMs)}{handle('brake-rise', 'brake-drag-handle handle-brake-rise', 'Brake rise and target', timing.brakeRiseEndMs, scenario.targetBrakePercent)}{handle('accel-fall', 'brake-drag-handle handle-accel-fall', 'Accelerator fall', timing.acceleratorFallEndMs, 0)}{handle('threshold-end', 'brake-time-handle handle-threshold', 'Threshold end', timing.thresholdEndMs)}{handle('trail-end', 'brake-time-handle handle-trail', 'Trail end', timing.trailEndMs)}{scenario.transitionEnabled && handle('transition-end', `brake-time-handle handle-${scenario.transitionMode === 'low-brake' ? 'low-brake' : 'coast'}`, 'Acceleration start', timing.accelerationStartMs)}{handle('finish', 'brake-time-handle handle-finish', 'Full throttle point', timing.acceleratorRampEndMs)}</div></div><div className="brake-zone-summary"><span>Full throttle hold</span><strong>2s</strong></div></section>
 }
 
+export function ScenarioMetadataFields({ scenarios, scenario, editable, onChange }: { scenarios: Scenario[]; scenario: Scenario; editable: boolean; onChange: (scenario: Scenario) => void }) {
+  const cars = useMemo(() => catalogCars(scenarios), [scenarios])
+  const tracks = useMemo(() => catalogTracks(scenarios, scenario.carName ?? ''), [scenarios, scenario.carName])
+  return <>
+    <label>Car<input aria-label="Scenario car" list="brake-scenario-car-options" disabled={!editable} placeholder="Unassigned" value={scenario.carName ?? ''} onChange={(event) => onChange({ ...scenario, carName: event.target.value || null })} /></label>
+    <datalist id="brake-scenario-car-options">{cars.map((car) => <option key={car} value={car} />)}</datalist>
+    <label>Track<input aria-label="Scenario track" list="brake-scenario-track-options" disabled={!editable} placeholder="Unassigned" value={scenario.trackName ?? ''} onChange={(event) => onChange({ ...scenario, trackName: event.target.value || null })} /></label>
+    <datalist id="brake-scenario-track-options">{tracks.map((track) => <option key={track} value={track} />)}</datalist>
+  </>
+}
+
 function ScenarioEditor({ scenarios, scenario, onSelect, onChange, onSave, onDuplicate, onDelete }: { scenarios: Scenario[]; scenario: Scenario; onSelect: (id: string) => void; onChange: (scenario: Scenario) => void; onSave: (scenario: Scenario) => void; onDuplicate: (scenario: Scenario) => void; onDelete: (scenario: Scenario) => void }) {
   const editable = scenario.origin === 'custom'
   const [carFilter, setCarFilter] = useState('')
@@ -707,7 +822,7 @@ function ScenarioEditor({ scenarios, scenario, onSelect, onChange, onSave, onDup
       ? (scenario.transitionBrakePercent ?? 5)
       : null,
   })
-  return <main className="brake-screen-grid"><aside className="brake-panel"><h2>Scenarios</h2><div className="brake-catalog-filters"><label>Car<select aria-label="Search scenarios by car" value={carFilter} onChange={(event) => selectCar(event.target.value)}><option value="">All cars</option>{cars.map((car) => <option key={car} value={car}>{car}</option>)}</select></label><label>Track<select aria-label="Search scenarios by track" value={trackFilter} onChange={(event) => setTrackFilter(event.target.value)}><option value="">All tracks</option>{tracks.map((track) => <option key={track} value={track}>{track}</option>)}</select></label></div><div className="brake-list">{filtered.map((item) => <button key={item.id} type="button" className={item.id === scenario.id ? 'active' : ''} onClick={() => onSelect(item.id)}><strong>{item.name}</strong><span>{item.carName && item.trackName ? `${item.carName} · ${item.trackName}` : item.origin === 'builtin' ? 'Built in' : 'Custom'}</span></button>)}{filtered.length === 0 && <p className="brake-list-empty">No scenarios match this car and track.</p>}</div><div className="brake-actions"><button type="button" onClick={() => onDuplicate(scenario)}>Duplicate</button>{editable && <button className="danger-text" type="button" onClick={() => onDelete(scenario)}>Delete</button>}</div></aside><section className="brake-panel"><div className="brake-panel-head"><div><h1>{scenario.name}</h1><span>{editable ? 'Custom scenario' : 'Built-in scenario · duplicate to edit'}{scenario.carName && scenario.trackName ? ` · ${scenario.carName} · ${scenario.trackName}` : ''}</span></div>{editable && <button className="primary" type="button" onClick={() => onSave(scenario)}>Save</button>}</div><ScenarioTraceEditor scenario={scenario} editable={editable} onChange={onChange} /><div className="brake-form"><label>Name<input disabled={!editable} value={scenario.name} onChange={(event) => onChange({ ...scenario, name: event.target.value })} /></label><label className="wide">Description<input disabled={!editable} value={scenario.description} onChange={(event) => onChange({ ...scenario, description: event.target.value })} /></label><Range label="Approach" value={scenario.approachMs} min={500} max={5000} step={50} unit="ms" disabled={!editable} onChange={(value) => number('approachMs', value)} /><Range label="Throttle fall" value={scenario.acceleratorFallTargetMs} min={100} max={2000} step={10} unit="ms" disabled={!editable} onChange={(value) => number('acceleratorFallTargetMs', value)} /><Range label="Brake rise" value={scenario.brakeRiseTargetMs} min={100} max={2200} step={10} unit="ms" disabled={!editable} onChange={(value) => number('brakeRiseTargetMs', value)} /><Range label="Target brake" value={scenario.targetBrakePercent} min={20} max={100} step={1} unit="%" disabled={!editable} onChange={(value) => number('targetBrakePercent', value)} /><Range label="Tolerance" value={scenario.brakeTolerancePercent} min={2} max={35} step={1} unit="%" disabled={!editable} onChange={(value) => number('brakeTolerancePercent', value)} /><Range label="Hold" value={scenario.brakeHoldMs} min={0} max={3500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('brakeHoldMs', value)} /><Range label="Trail release" value={scenario.trailBrakeReleaseMs} min={350} max={4500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('trailBrakeReleaseMs', value)} /><label className="brake-check wide"><input type="checkbox" checked={scenario.transitionEnabled} disabled={!editable} onChange={(event) => toggleTransition(event.target.checked)} /><span>Pause between trail braking and throttle</span></label>{scenario.transitionEnabled && <><label>Transition mode<select disabled={!editable} value={scenario.transitionMode ?? 'coast'} onChange={(event) => onChange({ ...scenario, transitionMode: event.target.value as 'coast' | 'low-brake', transitionBrakePercent: event.target.value === 'low-brake' ? (scenario.transitionBrakePercent ?? 5) : null })}><option value="coast">Coast</option><option value="low-brake">Hold low brake</option></select></label><Range label="Transition" value={scenario.transitionDurationMs ?? 600} min={150} max={2500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('transitionDurationMs', value)} />{scenario.transitionMode === 'low-brake' && <Range label="Low brake target" value={scenario.transitionBrakePercent ?? 5} min={1} max={25} step={1} unit="%" disabled={!editable} onChange={(value) => number('transitionBrakePercent', value)} />}</>}<Range label="Throttle ramp" value={scenario.acceleratorRampMs} min={300} max={4500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('acceleratorRampMs', value)} /></div><SourcePanel scenario={scenario} /></section></main>
+  return <main className="brake-screen-grid"><aside className="brake-panel"><h2>Scenarios</h2><div className="brake-catalog-filters"><label>Car<select aria-label="Search scenarios by car" value={carFilter} onChange={(event) => selectCar(event.target.value)}><option value="">All cars</option>{cars.map((car) => <option key={car} value={car}>{car}</option>)}</select></label><label>Track<select aria-label="Search scenarios by track" value={trackFilter} onChange={(event) => setTrackFilter(event.target.value)}><option value="">All tracks</option>{tracks.map((track) => <option key={track} value={track}>{track}</option>)}</select></label></div><div className="brake-list">{filtered.map((item) => <button key={item.id} type="button" className={item.id === scenario.id ? 'active' : ''} onClick={() => onSelect(item.id)}><strong>{item.name}</strong><span>{item.carName && item.trackName ? `${item.carName} · ${item.trackName}` : item.origin === 'builtin' ? 'Built in' : 'Custom'}</span></button>)}{filtered.length === 0 && <p className="brake-list-empty">No scenarios match this car and track.</p>}</div><div className="brake-actions"><button type="button" onClick={() => onDuplicate(scenario)}>Duplicate</button>{editable && <button className="danger-text" type="button" onClick={() => onDelete(scenario)}>Delete</button>}</div></aside><section className="brake-panel"><div className="brake-panel-head"><div><h1>{scenario.name}</h1><span>{editable ? 'Custom scenario' : 'Built-in scenario · duplicate to edit'}{scenario.carName && scenario.trackName ? ` · ${scenario.carName} · ${scenario.trackName}` : ''}</span></div>{editable && <button className="primary" type="button" onClick={() => onSave(scenario)}>Save</button>}</div><ScenarioTraceEditor scenario={scenario} editable={editable} onChange={onChange} /><div className="brake-form"><label>Name<input disabled={!editable} value={scenario.name} onChange={(event) => onChange({ ...scenario, name: event.target.value })} /></label><ScenarioMetadataFields scenarios={scenarios} scenario={scenario} editable={editable} onChange={onChange} /><label className="wide">Description<input disabled={!editable} value={scenario.description} onChange={(event) => onChange({ ...scenario, description: event.target.value })} /></label><Range label="Approach" value={scenario.approachMs} min={500} max={5000} step={50} unit="ms" disabled={!editable} onChange={(value) => number('approachMs', value)} /><Range label="Throttle fall" value={scenario.acceleratorFallTargetMs} min={100} max={2000} step={10} unit="ms" disabled={!editable} onChange={(value) => number('acceleratorFallTargetMs', value)} /><Range label="Brake rise" value={scenario.brakeRiseTargetMs} min={100} max={2200} step={10} unit="ms" disabled={!editable} onChange={(value) => number('brakeRiseTargetMs', value)} /><Range label="Target brake" value={scenario.targetBrakePercent} min={20} max={100} step={1} unit="%" disabled={!editable} onChange={(value) => number('targetBrakePercent', value)} /><Range label="Tolerance" value={scenario.brakeTolerancePercent} min={2} max={35} step={1} unit="%" disabled={!editable} onChange={(value) => number('brakeTolerancePercent', value)} /><Range label="Hold" value={scenario.brakeHoldMs} min={0} max={3500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('brakeHoldMs', value)} /><Range label="Trail release" value={scenario.trailBrakeReleaseMs} min={350} max={4500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('trailBrakeReleaseMs', value)} /><label className="brake-check wide"><input type="checkbox" checked={scenario.transitionEnabled} disabled={!editable} onChange={(event) => toggleTransition(event.target.checked)} /><span>Pause between trail braking and throttle</span></label>{scenario.transitionEnabled && <><label>Transition mode<select disabled={!editable} value={scenario.transitionMode ?? 'coast'} onChange={(event) => onChange({ ...scenario, transitionMode: event.target.value as 'coast' | 'low-brake', transitionBrakePercent: event.target.value === 'low-brake' ? (scenario.transitionBrakePercent ?? 5) : null })}><option value="coast">Coast</option><option value="low-brake">Hold low brake</option></select></label><Range label="Transition" value={scenario.transitionDurationMs ?? 600} min={150} max={2500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('transitionDurationMs', value)} />{scenario.transitionMode === 'low-brake' && <Range label="Low brake target" value={scenario.transitionBrakePercent ?? 5} min={1} max={25} step={1} unit="%" disabled={!editable} onChange={(value) => number('transitionBrakePercent', value)} />}</>}<Range label="Throttle ramp" value={scenario.acceleratorRampMs} min={300} max={4500} step={25} unit="ms" disabled={!editable} onChange={(value) => number('acceleratorRampMs', value)} /></div><SourcePanel scenario={scenario} /></section></main>
 }
 
 function Range({ label, value, min, max, step, unit, disabled, onChange }: { label: string; value: number; min: number; max: number; step: number; unit: string; disabled: boolean; onChange: (value: number) => void }) {

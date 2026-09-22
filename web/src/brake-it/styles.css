@@ -55,6 +55,12 @@
 .brake-error button { border: 0; background: transparent; color: inherit; font-weight: 650; }
 
 .brake-simulator, .brake-results, .brake-screen-grid { width: min(1500px, calc(100vw - 32px)); margin: 20px auto 32px; }
+.brake-simulator-scenario { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 12px; align-items: end; margin-bottom: 12px; border: 1px solid var(--brake-border); border-radius: 8px; padding: 12px 14px; background: var(--brake-surface); }
+.brake-simulator-scenario label { display: grid; min-width: 0; gap: 5px; }
+.brake-simulator-scenario label > span { color: var(--brake-muted); font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; }
+.brake-simulator-scenario select { width: 100%; min-width: 0; max-width: 100%; min-height: 38px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 0 10px; background: var(--brake-surface); color: var(--brake-text); font: inherit; }
+.brake-simulator-scenario select[aria-invalid="true"] { border-color: var(--brake-red); background: var(--brake-red-soft); }
+.brake-simulator-scenario small { grid-column: 1 / -1; color: var(--brake-muted); }
 .brake-screen-grid { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; }
 .brake-sim-grid { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 18px; }
 .brake-panel { min-width: 0; border: 1px solid var(--brake-border); border-radius: 8px; padding: 18px; background: var(--brake-surface); box-shadow: 0 12px 34px rgb(0 0 0 / 7%); }
@@ -62,7 +68,8 @@
 .brake-panel-head { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
 .brake-panel-head > div { display: grid; gap: 4px; }
 .brake-panel-head > .brake-scenario-heading { display: flex; align-items: center; gap: 14px; }
-.brake-scenario-heading > div { display: grid; gap: 4px; }
+.brake-scenario-heading > div { display: grid; min-width: 0; gap: 4px; }
+.brake-scenario-heading strong { overflow-wrap: anywhere; }
 .brake-scenario-art { display: block; width: 76px; height: 76px; flex: 0 0 76px; border: 1px solid var(--brake-border); border-radius: 10px; object-fit: cover; }
 .brake-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .brake-actions button, .brake-panel-head button, .brake-device > button:last-child { min-height: 38px; border: 1px solid var(--brake-border); border-radius: 7px; padding: 0 12px; background: var(--brake-surface); color: var(--brake-text); }
@@ -209,6 +216,8 @@
   .brake-simulator, .brake-results, .brake-screen-grid { width: calc(100vw - 20px); margin-top: 10px; }
   .brake-cue, .brake-form, .brake-device-settings, .brake-targets, .brake-metrics, .brake-device, .brake-source-meta, .brake-source-variation, .brake-source-lap { grid-template-columns: 1fr; }
   .brake-panel-head { align-items: stretch; flex-direction: column; }
+  .brake-simulator-scenario { grid-template-columns: 1fr; }
+  .brake-simulator-scenario small { grid-column: 1; }
   .brake-trace-editor > header { align-items: stretch; flex-direction: column; }
   .brake-trace-editor > header label { justify-content: flex-start; }
   .brake-source-head { align-items: stretch; flex-direction: column; }

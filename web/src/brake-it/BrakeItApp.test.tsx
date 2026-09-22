@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 
-import { PracticeCue, ScenarioTraceEditor, SourcePanel, TraceChart } from './BrakeItApp'
+import { PracticeCue, ScenarioMetadataFields, ScenarioPicker, ScenarioTraceEditor, Simulator, SourcePanel, TraceChart } from './BrakeItApp'
 import type { PedalSample, Scenario } from './types'
 
 const scenario: Scenario = {
@@ -54,6 +54,50 @@ const scenario: Scenario = {
 }
 
 describe('Brake-It parity', () => {
+  it('links car, track, and scenario choices in the simulator', () => {
+    const second = {
+      ...scenario,
+      id: 'garage61-test-zone-2',
+      name: 'Second braking zone',
+    }
+    const bmwSpa = {
+      ...scenario,
+      id: 'garage61-bmw-spa-zone-1',
+      name: 'BMW Spa braking zone',
+      carName: 'BMW M2 Racing (G87)',
+      trackName: 'Spa Grand Prix',
+    }
+    const html = renderToStaticMarkup(
+      <ScenarioPicker scenarios={[scenario, second, bmwSpa]} selectedID={second.id} disabled onSelect={() => undefined} />,
+    )
+
+    expect(html).toContain('aria-label="Practice car"')
+    expect(html).toContain('aria-label="Practice track"')
+    expect(html).toContain('aria-label="Practice scenario"')
+    expect(html).toContain('BMW M2 Racing (G87) · unavailable at Road Atlanta Full Course')
+    expect(html).toContain('Spa Grand Prix · unavailable for Global Mazda MX-5 Cup')
+    expect(html).toContain('Test braking zone')
+    expect(html).toContain('Second braking zone')
+    expect(html).not.toContain('BMW Spa braking zone')
+    expect(html).toContain('value="garage61-test-zone-2" selected=""')
+    expect(html).toContain('Stop the current run to change scenarios.')
+
+    const simulator = renderToStaticMarkup(
+      <Simulator
+        scenarios={[scenario, second, bmwSpa]}
+        scenario={second}
+        input={{ accelerator: 0, brake: 0, source: 'keyboard' }}
+        deviceLabel="Keyboard simulator"
+        onSelectScenario={() => undefined}
+        onResult={() => undefined}
+      />,
+    )
+    expect(simulator).toContain('aria-label="Practice car"')
+    expect(simulator).toContain('aria-label="Practice track"')
+    expect(simulator).toContain('aria-label="Practice scenario"')
+    expect(simulator).toContain('Second braking zone')
+  })
+
   it('renders the trace axes, phase markers, zones, and tolerance band', () => {
     const html = renderToStaticMarkup(<TraceChart scenario={scenario} samples={[]} nowMS={0} />)
 
@@ -116,5 +160,32 @@ describe('Brake-It parity', () => {
     expect(html).toContain('aria-label="Brake rise and target"')
     expect(html).toContain('aria-label="Trail end"')
     expect(html).toContain('duplicate to edit')
+  })
+
+  it('edits custom car and track metadata with catalog suggestions', () => {
+    const bmw = {
+      ...scenario,
+      id: 'garage61-bmw-spa-zone-1',
+      carName: 'BMW M2 Racing (G87)',
+      trackName: 'Spa Grand Prix',
+    }
+    const custom = { ...scenario, id: 'custom-zone', origin: 'custom' as const }
+    const html = renderToStaticMarkup(
+      <ScenarioMetadataFields scenarios={[scenario, bmw, custom]} scenario={custom} editable onChange={() => undefined} />,
+    )
+
+    expect(html).toContain('aria-label="Scenario car"')
+    expect(html).toContain('aria-label="Scenario track"')
+    expect(html).toContain('list="brake-scenario-car-options"')
+    expect(html).toContain('value="BMW M2 Racing (G87)"')
+    expect(html).toContain('value="Global Mazda MX-5 Cup"')
+    expect(html).toContain('value="Road Atlanta Full Course"')
+    expect(html).not.toContain('value="Spa Grand Prix"')
+    expect(html).not.toContain('disabled=""')
+
+    const readonly = renderToStaticMarkup(
+      <ScenarioMetadataFields scenarios={[scenario]} scenario={scenario} editable={false} onChange={() => undefined} />,
+    )
+    expect(readonly.match(/disabled=""/g)).toHaveLength(2)
   })
 })
