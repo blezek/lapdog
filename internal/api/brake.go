@@ -175,6 +175,72 @@ func (s *Server) handleBrakeSettings(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleBrakeDevices(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		devices, err := s.st.ListBrakeDevices()
+		if err != nil {
+			s.fail(w, http.StatusInternalServerError, err)
+			return
+		}
+		if devices == nil {
+			devices = []store.BrakeDevice{}
+		}
+		s.writeJSON(w, devices)
+	case http.MethodPost:
+		var device store.BrakeDevice
+		if !s.decodeBrakeRequest(w, r, &device) {
+			return
+		}
+		if err := validateBrakeDevice(device); err != nil {
+			s.fail(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.st.CreateBrakeDevice(&device); err != nil {
+			s.brakeStoreError(w, err)
+			return
+		}
+		s.writeJSONStatus(w, http.StatusCreated, device)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		s.fail(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+	}
+}
+
+func (s *Server) handleBrakeDevice(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		s.fail(w, http.StatusNotFound, errors.New("missing device id"))
+		return
+	}
+	switch r.Method {
+	case http.MethodPut:
+		var device store.BrakeDevice
+		if !s.decodeBrakeRequest(w, r, &device) {
+			return
+		}
+		device.ID = id
+		if err := validateBrakeDevice(device); err != nil {
+			s.fail(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := s.st.UpdateBrakeDevice(&device); err != nil {
+			s.brakeStoreError(w, err)
+			return
+		}
+		s.writeJSON(w, device)
+	case http.MethodDelete:
+		if err := s.st.DeleteBrakeDevice(id); err != nil {
+			s.brakeStoreError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		w.Header().Set("Allow", "PUT, DELETE")
+		s.fail(w, http.StatusMethodNotAllowed, errors.New("method not allowed"))
+	}
+}
+
 func decodeBrakeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, brakeRequestLimit)
 	dec := json.NewDecoder(r.Body)
@@ -302,6 +368,40 @@ func validateBrakeSettings(settings store.BrakeSettings) error {
 	} {
 		if value != nil && (len(*value) > 6 || !validHexID(*value)) {
 			return fmt.Errorf("%s must be a hexadecimal USB id", name)
+		}
+	}
+	return nil
+}
+
+func validateBrakeDevice(device store.BrakeDevice) error {
+	if _, err := uuid.Parse(device.ID); err != nil {
+		return errors.New("id must be a UUID")
+	}
+	if strings.TrimSpace(device.GamepadID) == "" || len(device.GamepadID) > 500 {
+		return errors.New("gamepadId must contain 1 to 500 characters")
+	}
+	if strings.TrimSpace(device.Label) == "" || len(device.Label) > 200 {
+		return errors.New("label must contain 1 to 200 characters")
+	}
+	for name, binding := range map[string]store.PedalBinding{
+		"accelerator": device.Accelerator,
+		"brake":       device.Brake,
+	} {
+		if binding.InputKind != "axis" && binding.InputKind != "button" {
+			return fmt.Errorf("%s inputKind must be axis or button", name)
+		}
+		if binding.InputIndex < 0 || binding.InputIndex > 255 {
+			return fmt.Errorf("%s inputIndex must be between 0 and 255", name)
+		}
+		min := -1.0
+		if binding.InputKind == "button" {
+			min = 0
+		}
+		if !finiteRange(binding.RestValue, min, 1) || !finiteRange(binding.PressedValue, min, 1) {
+			return fmt.Errorf("%s calibration is outside the %s input range", name, binding.InputKind)
+		}
+		if math.Abs(binding.PressedValue-binding.RestValue) < 0.1 {
+			return fmt.Errorf("%s pressed value is too close to its released value", name)
 		}
 	}
 	return nil

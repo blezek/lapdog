@@ -29,11 +29,13 @@ The resulting venues are:
 - Okayama International Circuit
 - Summit Point Motorsports Park
 
-The current testing configuration in `tools/brake-it/garage61_catalog.py` uses
-only Circuito de Navarra and selects its first eligible road layout. The full
-list above remains the reviewed expansion set. The `brake-it` target reads
-Garage61's track catalog so it can resolve IDs, and it drops layouts whose
-variant contains `oval`, `dirt`, or `rallycross`.
+The active configuration in `tools/brake-it/garage61_catalog.py` includes
+Circuito de Navarra's Speed Circuit from this list plus Road Atlanta's Full
+Course and Circuit de Spa-Francorchamps's Grand Prix Pits, two explicitly
+requested paid venues. The full list above remains the reviewed included-content
+expansion set. The `brake-it` target reads Garage61's track catalog so it can
+resolve IDs, and it drops layouts whose variant contains `oval`, `dirt`, or
+`rallycross`.
 
 Treat the list as dated source data. Re-scrape iRacing's archive and review any
 membership changes before editing the allowlist; do not infer that a newly

@@ -40,18 +40,26 @@ class CarTarget:
 class TrackTarget:
   label: str
   names: tuple[str, ...]
+  variants: tuple[str, ...] | None = None
 
 
 CAR_TARGETS = (
   CarTarget("Mazda MX-5", ("mazda", "mx", "5"), ("Global Mazda MX-5 Cup", "Mazda MX-5 Cup")),
+  CarTarget("BMW M4 GT3", ("bmw", "m4", "gt3"), ("BMW M4 GT3",)),
 )
 
-# Testing subset of the paved road-racing venues reviewed from iRacing's
-# Included with Membership list. See docs/brake-it-free-road-tracks.md.
-# Keep aliases exact: fuzzy matching could quietly turn a free venue into a paid
-# or legacy one after either catalog changes.
-FREE_ROAD_TRACK_TARGETS = (
-  TrackTarget("Circuito de Navarra", ("Circuito de Navarra",)),
+# Active extraction venues. Circuito de Navarra comes from the reviewed iRacing
+# Included with Membership list; Road Atlanta and Spa are explicitly requested
+# paid venues. Keep aliases exact so catalog changes cannot silently select
+# another venue or layout with a similar name.
+TRACK_TARGETS = (
+  TrackTarget("Circuito de Navarra", ("Circuito de Navarra",), ("Speed Circuit",)),
+  TrackTarget("Road Atlanta", ("Road Atlanta",), ("Full Course",)),
+  TrackTarget(
+    "Circuit de Spa-Francorchamps",
+    ("Circuit de Spa-Francorchamps", "Spa"),
+    ("Grand Prix Pits",),
+  ),
 )
 
 NON_ROAD_VARIANT_TERMS = frozenset(("dirt", "oval", "rallycross"))
@@ -129,13 +137,14 @@ def resolve_cars(cars: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def resolve_tracks(
   tracks: list[dict[str, Any]],
-  targets: tuple[TrackTarget, ...] = FREE_ROAD_TRACK_TARGETS,
+  targets: tuple[TrackTarget, ...] = TRACK_TARGETS,
 ) -> list[dict[str, Any]]:
-  """Select only current included road venues and their road layouts.
+  """Select only configured road venues and layouts.
 
-  Garage61 exposes every layout as a separate track record. Venue names must
-  match the reviewed iRacing list exactly, and plainly non-road variants at a
-  mixed venue (for example Charlotte's oval) are excluded.
+  Garage61 exposes every layout as a separate track record. Venue and optional
+  layout names must match the configured allowlist exactly, and plainly
+  non-road variants at a mixed venue (for example Charlotte's oval) are
+  excluded.
   """
   iracing = [
     track for track in tracks
@@ -145,10 +154,19 @@ def resolve_tracks(
   missing: list[str] = []
   for target in targets:
     exact_names = {normalized(name) for name in target.names}
+    exact_variants = (
+      {normalized(variant) for variant in target.variants}
+      if target.variants is not None
+      else None
+    )
     matches = [
       track
       for track in iracing
       if normalized(str(track.get("name", ""))) in exact_names
+      and (
+        exact_variants is None
+        or normalized(str(track.get("variant", ""))) in exact_variants
+      )
       and NON_ROAD_VARIANT_TERMS.isdisjoint(normalized(str(track.get("variant", ""))))
     ]
     if not matches:
@@ -165,23 +183,21 @@ def resolve_tracks(
     for track in matches:
       selected[int(track["id"])] = track
   if missing:
-    available = ", ".join(sorted({str(track.get("name")) for track in iracing}))
+    available = ", ".join(sorted(track_label(track) for track in iracing))
     raise RuntimeError(
-      "Garage 61 did not contain the included road venue(s): "
+      "Garage 61 did not contain the requested road venue/layout(s): "
       + ", ".join(missing)
       + f". Available iRacing tracks: {available}",
     )
   return sorted(selected.values(), key=track_sort_key)
 
 
-def single_car_track_combination(
+def car_track_combinations(
   cars: list[dict[str, Any]],
   tracks: list[dict[str, Any]],
 ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
-  """Select exactly one concrete track record and one car for this pass."""
-  if not cars or not tracks:
-    return []
-  return [(tracks[0], cars[0])]
+  """Build every configured pair; generate_combinations processes them serially."""
+  return [(track, car) for track in tracks for car in cars]
 
 
 def track_sort_key(track: dict[str, Any]) -> tuple[str, str, int]:
@@ -606,7 +622,7 @@ def main() -> int:
   cars = resolve_cars(items(generator.request(token, "/cars"), "/cars"))
   tracks = resolve_tracks(items(generator.request(token, "/tracks"), "/tracks"))
   generated_at = generator.now_iso()
-  combinations = single_car_track_combination(cars, tracks)
+  combinations = car_track_combinations(cars, tracks)
   output = Path(args.output)
   existing_scenarios = load_existing_scenarios(output)
   scenarios = generate_combinations(

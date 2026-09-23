@@ -109,12 +109,15 @@ can narrow the comparison before sorting.
 ### Brake-It
 
 Brake-It is a pedal-timing trainer inside LapDog at
-`http://127.0.0.1:47047/brake-it`. It provides a keyboard simulator in every
-supported browser and can read a permitted serial pedal controller through Web
-Serial in Chrome or Edge. The serial path is implemented but has not yet been
-verified with a physical controller on Windows. Scenarios, controller settings,
-completed runs, and their sampled pedal traces are stored in the local LapDog
-database.
+`http://127.0.0.1:47047/brake-it`. It provides a keyboard simulator and reads
+racing pedals exposed through the browser Gamepad API. The Devices screen detects
+the accelerator and brake by watching which axis or analog button moves during a
+guided full-press calibration; mappings can be removed or detected again and are
+stored in LapDog's SQLite database. Scenarios, completed runs, and their sampled
+pedal traces are stored there too. Brake-It is currently an experimental feature
+and is available only through its direct URL; it is not linked from LapDog's
+navigation. Its routes, APIs, and stored data remain available while development
+is unpublished.
 
 The Simulator can hide the target traces while keeping the driver's recorded
 brake and accelerator traces visible. Audio cues remain independently
@@ -143,12 +146,14 @@ make brake-it                         # imports into .dataset.db
 # or: make brake-it BRAKE_IT_DB=/path/to/lapdog.db
 ```
 
-For the current testing pass, the target resolves only the Mazda MX-5 and the
-first eligible Circuito de Navarra road layout from Garage61's catalog. It
-averages visible telemetry into braking scenarios and imports them through
-LapDog's SQLite store. The full reviewed [free iRacing road-track
+The active extraction resolves the Mazda MX-5 and BMW M4 GT3 (excluding the M4
+GT3 Evo) at Circuito de Navarra's Speed Circuit, Road Atlanta's Full Course, and
+Circuit de Spa-Francorchamps's Grand Prix Pits. It processes the six car/track
+combinations sequentially, checkpoints each completed combination, averages
+visible telemetry into braking scenarios, and imports them through LapDog's
+SQLite store. The full reviewed [free iRacing road-track
 list](docs/brake-it-free-road-tracks.md) remains documented for expanding the
-catalog after testing. LapDog
+included-content catalog after testing. LapDog
 checks each returned lap for visible telemetry before requesting its CSV; it
 does not use Garage61's Pro-only telemetry search filter. Lap searches use
 12-lap pages, verify fastest-first ordering across at least three pages when
@@ -188,7 +193,7 @@ scenario IDs are merged once, and SQLite imports update the existing rows.
 | **Laps** | A sortable, paged table of completed laps with lap time, delta, fuel, incidents, and position. |
 | **Top 10** | Filtered car and track rankings for completed laps, clean laps, and distance driven, split by session category. |
 | **Export** | CSV or JSON downloads of the currently filtered sessions, laps, or position changes. Empty values remain empty rather than being changed to zero. |
-| **Brake-It** | A separate pedal-timing trainer with editable scenarios, live target and input traces, scored results, keyboard simulation, and optional Web Serial controllers. |
+| **Brake-It** | An unpublished experimental pedal-timing trainer with live target and input traces, scored results, keyboard simulation, and calibrated Gamepad API racing pedals. |
 | **Settings** | Recording frequency, minimum session length, capture retention, units, theme, startup behavior, update checks, diagnostics, data paths, and collector status. |
 
 ## Tray menu

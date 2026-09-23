@@ -325,6 +325,128 @@ type BrakeSettings struct {
 	USBProductID       *string `json:"usbProductId"`
 }
 
+// PedalBinding identifies one Gamepad API input and its measured released and
+// fully pressed values. The direction is deliberately represented by the two
+// endpoints because racing pedals are reported both forwards and inverted by
+// different drivers and browsers.
+type PedalBinding struct {
+	InputKind    string  `json:"inputKind"`
+	InputIndex   int     `json:"inputIndex"`
+	RestValue    float64 `json:"restValue"`
+	PressedValue float64 `json:"pressedValue"`
+}
+
+// BrakeDevice is a durable Gamepad API pedal calibration. Browser permission
+// and the transient gamepad index remain browser-owned and are not persisted.
+type BrakeDevice struct {
+	ID          string       `json:"id"`
+	GamepadID   string       `json:"gamepadId"`
+	Label       string       `json:"label"`
+	Accelerator PedalBinding `json:"accelerator"`
+	Brake       PedalBinding `json:"brake"`
+	CreatedAt   string       `json:"createdAt"`
+	UpdatedAt   string       `json:"updatedAt"`
+}
+
+const brakeDeviceColumns = `
+	id, gamepad_id, label,
+	accelerator_input_kind, accelerator_input_index,
+	accelerator_rest_value, accelerator_pressed_value,
+	brake_input_kind, brake_input_index, brake_rest_value, brake_pressed_value,
+	created_at, updated_at`
+
+func scanBrakeDevice(scanner interface{ Scan(...any) error }) (BrakeDevice, error) {
+	var out BrakeDevice
+	err := scanner.Scan(
+		&out.ID, &out.GamepadID, &out.Label,
+		&out.Accelerator.InputKind, &out.Accelerator.InputIndex,
+		&out.Accelerator.RestValue, &out.Accelerator.PressedValue,
+		&out.Brake.InputKind, &out.Brake.InputIndex,
+		&out.Brake.RestValue, &out.Brake.PressedValue,
+		&out.CreatedAt, &out.UpdatedAt,
+	)
+	return out, err
+}
+
+// ListBrakeDevices returns every saved browser-gamepad pedal calibration.
+func (s *Store) ListBrakeDevices() ([]BrakeDevice, error) {
+	rows, err := s.reader.Query(`SELECT ` + brakeDeviceColumns + ` FROM brake_devices ORDER BY label, id`)
+	if err != nil {
+		return nil, fmt.Errorf("store: list brake devices: %w", err)
+	}
+	defer rows.Close()
+	var out []BrakeDevice
+	for rows.Next() {
+		device, scanErr := scanBrakeDevice(rows)
+		if scanErr != nil {
+			return nil, fmt.Errorf("store: scan brake device: %w", scanErr)
+		}
+		out = append(out, device)
+	}
+	return out, rows.Err()
+}
+
+// CreateBrakeDevice stores a new pedal calibration.
+func (s *Store) CreateBrakeDevice(device *BrakeDevice) error {
+	now := Now()
+	device.CreatedAt = now
+	device.UpdatedAt = now
+	_, err := s.writer.Exec(`INSERT INTO brake_devices (`+brakeDeviceColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		device.ID, device.GamepadID, device.Label,
+		device.Accelerator.InputKind, device.Accelerator.InputIndex,
+		device.Accelerator.RestValue, device.Accelerator.PressedValue,
+		device.Brake.InputKind, device.Brake.InputIndex,
+		device.Brake.RestValue, device.Brake.PressedValue,
+		device.CreatedAt, device.UpdatedAt)
+	if err != nil {
+		return fmt.Errorf("store: create brake device %q: %w", device.ID, err)
+	}
+	return nil
+}
+
+// UpdateBrakeDevice replaces an existing pedal calibration.
+func (s *Store) UpdateBrakeDevice(device *BrakeDevice) error {
+	var created string
+	if err := s.reader.QueryRow(`SELECT created_at FROM brake_devices WHERE id=?`, device.ID).Scan(&created); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("%w: brake device %q", ErrNotFound, device.ID)
+		}
+		return fmt.Errorf("store: read brake device %q: %w", device.ID, err)
+	}
+	device.CreatedAt = created
+	device.UpdatedAt = Now()
+	res, err := s.writer.Exec(`UPDATE brake_devices SET
+		gamepad_id=?, label=?, accelerator_input_kind=?, accelerator_input_index=?,
+		accelerator_rest_value=?, accelerator_pressed_value=?, brake_input_kind=?,
+		brake_input_index=?, brake_rest_value=?, brake_pressed_value=?, updated_at=?
+		WHERE id=?`, device.GamepadID, device.Label,
+		device.Accelerator.InputKind, device.Accelerator.InputIndex,
+		device.Accelerator.RestValue, device.Accelerator.PressedValue,
+		device.Brake.InputKind, device.Brake.InputIndex,
+		device.Brake.RestValue, device.Brake.PressedValue,
+		device.UpdatedAt, device.ID)
+	if err != nil {
+		return fmt.Errorf("store: update brake device %q: %w", device.ID, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: brake device %q", ErrNotFound, device.ID)
+	}
+	return nil
+}
+
+// DeleteBrakeDevice forgets a saved pedal calibration without affecting runs.
+func (s *Store) DeleteBrakeDevice(id string) error {
+	res, err := s.writer.Exec(`DELETE FROM brake_devices WHERE id=?`, id)
+	if err != nil {
+		return fmt.Errorf("store: delete brake device %q: %w", id, err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return fmt.Errorf("%w: brake device %q", ErrNotFound, id)
+	}
+	return nil
+}
+
 // GetBrakeSettings returns the singleton settings row.
 func (s *Store) GetBrakeSettings() (BrakeSettings, error) {
 	var out BrakeSettings

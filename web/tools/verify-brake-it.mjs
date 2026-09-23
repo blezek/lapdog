@@ -13,6 +13,8 @@ const BASE = process.env.LAPDOG_BASE ?? 'http://127.0.0.1:47047'
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
 const PROFILE = '/tmp/chrome-lapdog-brake-it'
 const PORT = 9335
+const VIRTUAL_GAMEPAD_ID = 'LapDog verifier virtual racing pedals'
+const verifierScenarioIDs = new Set()
 const ROUTES = ['simulator', 'scenarios', 'devices', 'results']
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -84,7 +86,7 @@ async function inspectRoute(client, route, width, height) {
     error: document.querySelector('[role="alert"]')?.textContent ?? null
   })`)
   if (state.title !== 'Brake-It · LapDog') throw new Error(`${route}: wrong title ${state.title}`)
-  if (!state.text.includes('Brake-It') || state.back !== '/dashboard' || state.tabs !== 4) {
+  if (!state.text.includes('Brake-It') || state.back !== '/dashboard' || state.tabs !== 3) {
     throw new Error(`${route}: shared navigation is incomplete`)
   }
   if (!state.imagesReady) throw new Error(`${route}: a Brake-It image did not load`)
@@ -154,8 +156,16 @@ async function verifyScenarioParity(client) {
     throw new Error(`scenarios: Garage61 citations are missing or invalid: ${JSON.stringify(state.sourceLinks)}`)
   }
   if (catalog) {
+    const scenarioIDsBeforeDuplicate = await client.evaluate(`fetch('/api/brake-it/scenarios')
+      .then(response => response.json())
+      .then(rows => rows.map(row => row.id))`)
     await client.evaluate(`[...document.querySelectorAll('button')].find(button => button.textContent === 'Duplicate')?.click()`)
     await sleep(500)
+    const duplicatedID = await client.evaluate(`fetch('/api/brake-it/scenarios')
+      .then(response => response.json())
+      .then(rows => rows.find(row => !${JSON.stringify(scenarioIDsBeforeDuplicate)}.includes(row.id))?.id ?? null)`)
+    if (!duplicatedID) throw new Error('scenarios: duplicate was not persisted')
+    verifierScenarioIDs.add(duplicatedID)
     const editable = await client.evaluate(`({
       enabledHandles: [...document.querySelectorAll('.brake-interactive-chart button')].filter(button => !button.disabled).length,
       text: document.querySelector('.brake-panel-head')?.textContent ?? '',
@@ -265,6 +275,19 @@ async function verifyLinkedScenarioSelectors(client) {
     'select[aria-label="Practice car"], select[aria-label="Practice track"], select[aria-label="Practice scenario"]'
   ).length`)
   if (selectorCount !== 3) throw new Error(`simulator: expected three linked selectors, got ${selectorCount}`)
+  const placeholders = await client.evaluate(`({
+    car: (() => {
+      const option = document.querySelector('select[aria-label="Practice car"] option[value="__lapdog_unassigned__"]');
+      return option ? { text: option.textContent, disabled: option.disabled } : null;
+    })(),
+    track: (() => {
+      const option = document.querySelector('select[aria-label="Practice track"] option[value="__lapdog_unassigned__"]');
+      return option ? { text: option.textContent, disabled: option.disabled } : null;
+    })(),
+  })`)
+  if (placeholders.car?.text !== 'Choose Car' || !placeholders.car.disabled || placeholders.track?.text !== 'Choose Track' || !placeholders.track.disabled) {
+    throw new Error(`simulator: car and track placeholders are wrong: ${JSON.stringify(placeholders)}`)
+  }
   if (!choices.catalog || !choices.general) {
     console.log('  PASS linked scenario selectors present; combo exercise skipped without both catalog and general scenarios')
     return
@@ -299,7 +322,7 @@ async function verifyLinkedScenarioSelectors(client) {
     scenarioText: document.querySelector('select[aria-label="Practice scenario"] option:checked')?.textContent,
     startDisabled: [...document.querySelectorAll('button')].find(button => button.textContent === 'Start')?.disabled,
   })`)
-  if (invalidCar.track !== choices.catalog.trackName || !invalidCar.trackText.includes('unavailable for General / custom') || invalidCar.scenarioText !== 'No scenarios for this car and track' || !invalidCar.startDisabled) {
+  if (invalidCar.track !== choices.catalog.trackName || !invalidCar.trackText.includes('unavailable for Choose Car') || invalidCar.scenarioText !== 'No scenarios for this car and track' || !invalidCar.startDisabled) {
     throw new Error(`simulator: invalid car did not preserve and mark the track: ${JSON.stringify(invalidCar)}`)
   }
 
@@ -311,7 +334,7 @@ async function verifyLinkedScenarioSelectors(client) {
     scenarioText: document.querySelector('select[aria-label="Practice scenario"] option:checked')?.textContent,
     startDisabled: [...document.querySelectorAll('button')].find(button => button.textContent === 'Start')?.disabled,
   })`)
-  if (invalidTrack.car !== '__lapdog_unassigned__' || !invalidTrack.carText.includes(`unavailable at ${choices.catalog.trackName}`) || invalidTrack.scenarioText !== 'No scenarios for this car and track' || !invalidTrack.startDisabled) {
+  if (invalidTrack.car !== '__lapdog_unassigned__' || invalidTrack.carText !== 'Choose Car' || invalidTrack.scenarioText !== 'No scenarios for this car and track' || !invalidTrack.startDisabled) {
     throw new Error(`simulator: invalid track did not preserve and mark the car: ${JSON.stringify(invalidTrack)}`)
   }
 
@@ -327,6 +350,89 @@ async function verifyLinkedScenarioSelectors(client) {
   console.log('  PASS linked car and track selectors preserve valid pairs and expose invalid pairs')
 }
 
+async function cleanupVerifierScenarios(client) {
+  for (const id of verifierScenarioIDs) {
+    const status = await client.evaluate(`fetch('/api/brake-it/scenarios/${encodeURIComponent(id)}', {
+      method: 'DELETE',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: '{}',
+    }).then(response => response.status)`)
+    if (status !== 204) throw new Error(`cleanup: deleting verifier scenario ${id} returned ${status}`)
+  }
+  verifierScenarioIDs.clear()
+}
+
+async function cleanupVerifierDevice(client) {
+  await client.evaluate(`fetch('/api/brake-it/devices')
+    .then(response => response.json())
+    .then(rows => Promise.all(rows
+      .filter(device => device.gamepadId === ${JSON.stringify(VIRTUAL_GAMEPAD_ID)})
+      .map(device => fetch('/api/brake-it/devices/' + encodeURIComponent(device.id), {
+        method: 'DELETE',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: '{}',
+      }))))`)
+}
+
+async function verifyHIDPedalCalibration(client) {
+  await client.send('Page.navigate', { url: `${BASE}/brake-it/devices` })
+  await sleep(1400)
+  const click = async (label) => client.evaluate(`{
+    const button = [...document.querySelectorAll('button')].find(item => item.textContent === ${JSON.stringify(label)});
+    if (!button || button.disabled) throw new Error(${JSON.stringify(label)} + ' is not available');
+    button.click();
+  }`)
+  await click('Detect pedals')
+  await click('Capture released pedals')
+  await client.evaluate(`globalThis.__lapdogVerifierAxes[0] = -1`)
+  await sleep(500)
+  await click('Use this accelerator')
+  await client.evaluate(`globalThis.__lapdogVerifierAxes[0] = 1`)
+  await sleep(300)
+  await click('Detect brake')
+  await client.evaluate(`globalThis.__lapdogVerifierAxes[1] = -1`)
+  await sleep(500)
+  await click('Save pedal mapping')
+  await sleep(700)
+  const configured = await client.evaluate(`Promise.all([
+    fetch('/api/brake-it/devices').then(response => response.json()),
+    Promise.resolve(document.body.innerText),
+  ]).then(([devices, text]) => ({
+    count: devices.filter(device => device.gamepadId === ${JSON.stringify(VIRTUAL_GAMEPAD_ID)}).length,
+    configured: text.includes('Pedals configured'),
+    reconfigure: text.includes('Reconfigure'),
+    remove: text.includes('Remove'),
+  }))`)
+  if (configured.count !== 1 || !configured.configured || !configured.reconfigure || !configured.remove) {
+    throw new Error(`devices: calibration did not persist: ${JSON.stringify(configured)}`)
+  }
+  console.log('  PASS HID axes detected, calibrated, and persisted')
+  console.log(`       ${await screenshot(client, 'devices-configured')}`)
+  await click('Remove')
+  await sleep(500)
+  const remaining = await client.evaluate(`fetch('/api/brake-it/devices')
+    .then(response => response.json())
+    .then(rows => rows.filter(device => device.gamepadId === ${JSON.stringify(VIRTUAL_GAMEPAD_ID)}).length)`)
+  if (remaining !== 0) throw new Error('devices: removed calibration remains in the database')
+  console.log('  PASS HID pedal mapping can be removed and detected again')
+}
+
+async function verifyBrakeItIsUndiscoverable(client) {
+  await client.send('Page.navigate', { url: `${BASE}/settings` })
+  await sleep(1600)
+  const state = await client.evaluate(`(async () => ({
+    setting: document.body.textContent.includes('Enable Brake-It link'),
+    link: Boolean(document.querySelector('a[href="/brake-it/simulator"]')),
+    configField: await fetch('/api/settings').then(response => response.json()).then(config => Object.hasOwn(config, 'brakeItEnabled')),
+  }))()`)
+  if (state.setting || state.link || state.configField) {
+    throw new Error(`settings: experimental Brake-It is discoverable: ${JSON.stringify(state)}`)
+  }
+  console.log('  PASS LapDog does not expose the experimental Brake-It module')
+  await inspectRoute(client, 'simulator', 1440, 1000)
+  console.log('  PASS direct Brake-It URL remains available')
+}
+
 async function main() {
   mkdirSync(OUT, { recursive: true })
   const chrome = await launch()
@@ -334,14 +440,35 @@ async function main() {
   try {
     await client.send('Page.enable')
     await client.send('Runtime.enable')
+    await client.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+      globalThis.__lapdogVerifierAxes = [1, 1, 0];
+      Object.defineProperty(navigator, 'getGamepads', {
+        configurable: true,
+        value: () => [{
+          id: ${JSON.stringify(VIRTUAL_GAMEPAD_ID)}, index: 0, connected: true,
+          mapping: '', axes: [...globalThis.__lapdogVerifierAxes], buttons: [],
+          timestamp: performance.now(), vibrationActuator: null,
+        }],
+      });
+    ` })
+    await verifyBrakeItIsUndiscoverable(client)
+    await cleanupVerifierDevice(client)
     for (const route of ROUTES) {
       await inspectRoute(client, route, 1440, 1000)
       console.log(`  PASS desktop /brake-it/${route}`)
+      if (route === 'devices') {
+        const deviceCopy = await client.evaluate(`document.body.innerText`)
+        if (!deviceCopy.includes('HID pedal support') || deviceCopy.includes('Web Serial')) {
+          throw new Error('devices: HID calibration replaced by unsupported serial setup')
+        }
+        console.log(`       ${await screenshot(client, 'devices-desktop')}`)
+      }
       if (route === 'simulator' || route === 'scenarios') {
         if (route === 'scenarios') await verifyScenarioParity(client)
         console.log(`       ${await screenshot(client, `${route}-desktop`)}`)
       }
     }
+    await verifyHIDPedalCalibration(client)
     await inspectRoute(client, 'simulator', 390, 844)
     console.log('  PASS phone /brake-it/simulator')
     console.log(`       ${await screenshot(client, 'simulator-phone')}`)
@@ -357,8 +484,12 @@ async function main() {
     await client.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Audio on')?.click()`)
     await sleep(100)
     await client.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Start')?.click()`)
-    await sleep(12000)
-    const after = await client.evaluate(`fetch('/api/brake-it/results').then(r => r.json()).then(r => r.length)`)
+    let after = before
+    const deadline = Date.now() + 30000
+    while (after === before && Date.now() < deadline) {
+      await sleep(500)
+      after = await client.evaluate(`fetch('/api/brake-it/results').then(r => r.json()).then(r => r.length)`)
+    }
     if (after !== before + 1) throw new Error(`completed run count changed from ${before} to ${after}`)
     const completed = await client.evaluate(`fetch('/api/brake-it/results').then(r => r.json()).then(rows => ({
       accelerationIncluded: rows[0]?.accelerationIncluded,
@@ -383,29 +514,24 @@ async function main() {
     if (!await client.evaluate(`location.pathname === '/dashboard'`)) {
       throw new Error('Back to LapDog did not reach /dashboard')
     }
-    const sidebarIconReady = await client.evaluate(`{
-      const image = document.querySelector('a[href="/brake-it/simulator"] img.nav-module-icon');
-      Boolean(image && image.complete && image.naturalWidth > 0);
-    }`)
-    if (!sidebarIconReady) throw new Error('LapDog Brake-It sidebar icon did not load')
-    console.log(`       ${await screenshot(client, 'lapdog-sidebar-icon')}`)
     const lapdogLink = await client.evaluate(`{
       const link = [...document.querySelectorAll('a')].find(a => a.textContent.includes('Brake-It'));
-      if (link) link.click();
       Boolean(link);
     }`)
-    if (!lapdogLink) throw new Error('LapDog does not contain a Brake-It link')
-    await sleep(1200)
-    if (!await client.evaluate(`location.pathname === '/brake-it/simulator'`)) {
-      throw new Error('LapDog Brake-It link did not return to the simulator')
-    }
-    console.log('  PASS navigation works in both directions')
+    if (lapdogLink) throw new Error('LapDog unexpectedly contains a Brake-It link')
+    console.log('  PASS Brake-It returns to LapDog without advertising a return link')
 
+    await inspectRoute(client, 'simulator', 1440, 1000)
     await client.evaluate(`document.documentElement.dataset.theme = 'dark'`)
     console.log(`       ${await screenshot(client, 'simulator-dark')}`)
   } finally {
-    client.close()
-    chrome.kill('SIGKILL')
+    try {
+      await cleanupVerifierDevice(client)
+      await cleanupVerifierScenarios(client)
+    } finally {
+      client.close()
+      chrome.kill('SIGKILL')
+    }
   }
 }
 

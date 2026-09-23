@@ -9,6 +9,8 @@ import { applyTheme } from '../theme'
 import { evaluateRun } from './analysis'
 import { brakeApi } from './api'
 import { CuePlayer } from './audio'
+import { GamepadDevices } from './GamepadDevices'
+import { useGamepadDevices, useGamepadInput } from './gamepad'
 import {
   carTrackCombinationExists,
   carChoicesForTrack,
@@ -29,14 +31,8 @@ import {
   phaseForTime,
   targetAt,
 } from './scenario'
-import {
-  getAuthorizedSerialDevices,
-  hasWebSerial,
-  openSerialController,
-  requestSerialDevice,
-  type SerialConnection,
-} from './serial'
 import type {
+  BrakeDevice,
   BrakeSettings,
   ControllerDevice,
   PedalInput,
@@ -64,9 +60,11 @@ const defaultSettings: BrakeSettings = {
   usbProductId: null,
 }
 
-const tabs = [
+export const brakeItTabs = [
   ['/brake-it/simulator', 'Simulator', 'steering'],
-  ['/brake-it/scenarios', 'Scenarios', 'speedometer'],
+  // Keep the editor route implemented but undiscoverable until custom scenario
+  // editing is useful enough to expose as a supported workflow.
+  // ['/brake-it/scenarios', 'Scenarios', 'speedometer'],
   ['/brake-it/devices', 'Devices', 'cog'],
   ['/brake-it/results', 'Results', 'chart-line'],
 ] as const
@@ -76,16 +74,20 @@ export function BrakeItApp() {
   const [results, setResults] = useState<RunResult[]>([])
   const [settings, setSettings] = useState<BrakeSettings>(defaultSettings)
   const [selectedScenarioID, setSelectedScenarioID] = useState('')
-  const [devices, setDevices] = useState<ControllerDevice[]>([keyboardDevice])
+  const [deviceConfigurations, setDeviceConfigurations] = useState<BrakeDevice[]>([])
   const [selectedDeviceID, setSelectedDeviceID] = useState('keyboard')
-  const [serialInput, setSerialInput] = useState<PedalInput>({ accelerator: 0, brake: 0, source: 'serial' })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const serialConnection = useRef<SerialConnection | null>(null)
+  const { devices: gamepadDevices, refresh: refreshGamepads } = useGamepadDevices()
+  const devices = useMemo(() => [keyboardDevice, ...gamepadDevices], [gamepadDevices])
   const keyboardInput = useKeyboardController(selectedDeviceID === 'keyboard')
   const selectedScenario = scenarios.find((scenario) => scenario.id === selectedScenarioID) ?? scenarios[0]
   const selectedDevice = devices.find((device) => device.id === selectedDeviceID) ?? keyboardDevice
-  const currentInput = selectedDevice.kind === 'keyboard' ? keyboardInput : serialInput
+  const selectedCalibration = selectedDevice.gamepadId
+    ? deviceConfigurations.find((device) => device.gamepadId === selectedDevice.gamepadId) ?? null
+    : null
+  const gamepadInput = useGamepadInput(selectedDevice.kind === 'gamepad' ? selectedDevice : null, selectedCalibration)
+  const currentInput = selectedDevice.kind === 'keyboard' ? keyboardInput : gamepadInput
 
   useEffect(() => {
     const before = document.title
@@ -93,32 +95,16 @@ export function BrakeItApp() {
     return () => { document.title = before }
   }, [])
 
-  const refreshDevices = useCallback(async () => {
-    if (!hasWebSerial()) {
-      setDevices([keyboardDevice])
-      return
-    }
-    try {
-      const serial = await getAuthorizedSerialDevices()
-      setDevices((current) => {
-        const connected = current.filter((device) => device.kind === 'serial' && device.status === 'connected')
-        const connectedIDs = new Set(connected.map((device) => device.id))
-        return [keyboardDevice, ...connected, ...serial.filter((device) => !connectedIDs.has(device.id))]
-      })
-    } catch (caught) {
-      setError(message(caught))
-    }
-  }, [])
-
   useEffect(() => {
     let active = true
-    void Promise.all([brakeApi.scenarios(), brakeApi.results(), brakeApi.settings(), api.settings()])
-      .then(([scenarioRows, resultRows, savedSettings, lapdogSettings]) => {
+    void Promise.all([brakeApi.scenarios(), brakeApi.results(), brakeApi.settings(), brakeApi.devices(), api.settings()])
+      .then(([scenarioRows, resultRows, savedSettings, savedDevices, lapdogSettings]) => {
         if (!active) return
         applyTheme(lapdogSettings.theme)
         setScenarios(scenarioRows)
         setResults(resultRows)
         setSettings(savedSettings)
+        setDeviceConfigurations(savedDevices)
         const preferred = savedSettings.selectedScenarioId
         setSelectedScenarioID(
           preferred && scenarioRows.some((scenario) => scenario.id === preferred)
@@ -128,24 +114,10 @@ export function BrakeItApp() {
       })
       .catch((caught: unknown) => active && setError(message(caught)))
       .finally(() => active && setLoading(false))
-    void refreshDevices()
     return () => {
       active = false
-      void serialConnection.current?.close()
-      serialConnection.current = null
     }
-  }, [refreshDevices])
-
-  useEffect(() => {
-    if (!navigator.serial) return
-    const changed = () => void refreshDevices()
-    navigator.serial.addEventListener('connect', changed)
-    navigator.serial.addEventListener('disconnect', changed)
-    return () => {
-      navigator.serial?.removeEventListener('connect', changed)
-      navigator.serial?.removeEventListener('disconnect', changed)
-    }
-  }, [refreshDevices])
+  }, [])
 
   const selectScenario = async (id: string) => {
     setSelectedScenarioID(id)
@@ -215,56 +187,24 @@ export function BrakeItApp() {
     }
   }, [])
 
-  const requestSerial = async () => {
+  const saveDevice = async (device: BrakeDevice, exists: boolean) => {
     try {
-      const vendor = parseHex(settings.usbVendorId)
-      const product = parseHex(settings.usbProductId)
-      const filters = vendor === undefined ? [] : [{ usbVendorId: vendor, ...(product === undefined ? {} : { usbProductId: product }) }]
-      const device = await requestSerialDevice(filters)
-      setDevices((current) => [...current.filter((item) => item.id !== device.id), device])
-      setSelectedDeviceID(device.id)
+      const saved = exists ? await brakeApi.updateDevice(device) : await brakeApi.createDevice(device)
+      setDeviceConfigurations((current) => [...current.filter((item) => item.id !== saved.id), saved])
+      const visible = gamepadDevices.find((item) => item.gamepadId === saved.gamepadId)
+      if (visible) setSelectedDeviceID(visible.id)
       setError(null)
     } catch (caught) {
       setError(message(caught))
     }
   }
 
-  const connectSerial = async (device: ControllerDevice) => {
-    if (!device.port) return
+  const removeDevice = async (device: BrakeDevice) => {
     try {
-      await serialConnection.current?.close()
-      serialConnection.current = await openSerialController(
-        device.port,
-        settings.baudRate,
-        setSerialInput,
-        (detail, supported) => {
-          setDevices((current) =>
-            current.map((item) =>
-              item.id === device.id
-                ? { ...item, status: supported === false ? 'unsupported' : 'connected', detail }
-                : item,
-            ),
-          )
-        },
-      )
-      setSelectedDeviceID(device.id)
-      setError(null)
-    } catch (caught) {
-      setError(message(caught))
-    }
-  }
-
-  const disconnectSerial = async () => {
-    await serialConnection.current?.close()
-    serialConnection.current = null
-    setSelectedDeviceID('keyboard')
-    await refreshDevices()
-  }
-
-  const saveDeviceSettings = async (next: BrakeSettings) => {
-    try {
-      const saved = await brakeApi.saveSettings(next)
-      setSettings(saved)
+      await brakeApi.deleteDevice(device.id)
+      setDeviceConfigurations((current) => current.filter((item) => item.id !== device.id))
+      const selected = devices.find((item) => item.id === selectedDeviceID)
+      if (selected?.gamepadId === device.gamepadId) setSelectedDeviceID('keyboard')
       setError(null)
     } catch (caught) {
       setError(message(caught))
@@ -281,7 +221,7 @@ export function BrakeItApp() {
           <div><strong>Brake-It</strong><span>Pedal timing lab</span></div>
         </div>
         <nav className="brake-tabs" aria-label="Brake-it">
-          {tabs.map(([to, label, icon]) => (
+          {brakeItTabs.map(([to, label, icon]) => (
             <NavLink key={to} to={to} aria-label={label} title={label} className={({ isActive }) => (isActive ? 'active' : '')}>
               <Icon name={icon} /><span>{label}</span>
             </NavLink>
@@ -299,7 +239,7 @@ export function BrakeItApp() {
           <Route path="/brake-it" element={<Navigate to="/brake-it/simulator" replace />} />
           <Route path="/brake-it/simulator" element={<Simulator scenarios={scenarios} scenario={selectedScenario} input={currentInput} deviceLabel={selectedDevice.label} onSelectScenario={selectScenario} onResult={storeResult} />} />
           <Route path="/brake-it/scenarios" element={<ScenarioEditor scenarios={scenarios} scenario={selectedScenario} onSelect={selectScenario} onChange={updateScenarioLocal} onSave={saveScenario} onDuplicate={duplicateScenario} onDelete={deleteScenario} />} />
-          <Route path="/brake-it/devices" element={<Devices devices={devices} selectedDeviceID={selectedDeviceID} settings={settings} onSelect={setSelectedDeviceID} onRequest={requestSerial} onRefresh={refreshDevices} onConnect={connectSerial} onDisconnect={disconnectSerial} onSettings={saveDeviceSettings} />} />
+          <Route path="/brake-it/devices" element={<GamepadDevices devices={gamepadDevices} configurations={deviceConfigurations} selectedDeviceID={selectedDeviceID} onSelect={setSelectedDeviceID} onRefresh={refreshGamepads} onSave={saveDevice} onRemove={removeDevice} />} />
           <Route path="/brake-it/results" element={<Results results={results} scenarios={scenarios} />} />
           <Route path="*" element={<Navigate to="/brake-it/simulator" replace />} />
         </Routes>
@@ -469,11 +409,11 @@ function decodeChoice(value: string): string | null {
 }
 
 function carChoiceLabel(value: string | null): string {
-  return value ?? 'General / custom'
+  return value ?? 'Choose Car'
 }
 
 function trackChoiceLabel(value: string | null): string {
-  return value ?? 'No assigned track'
+  return value ?? 'Choose Track'
 }
 
 export function ScenarioPicker({ scenarios, selectedID, disabled = false, onSelect, onValidityChange }: { scenarios: Scenario[]; selectedID: string; disabled?: boolean; onSelect: (id: string) => void; onValidityChange?: (valid: boolean) => void }) {
@@ -523,13 +463,13 @@ export function ScenarioPicker({ scenarios, selectedID, disabled = false, onSele
 
   return (
     <section className="brake-simulator-scenario" aria-label="Practice scenario selection">
-      <label><span>Car</span><select aria-label="Practice car" value={encodeChoice(car)} disabled={disabled} aria-invalid={!combinationValid} onChange={(event) => changeCar(event.target.value)}>{visibleCarChoices.map((choice) => {
+      <label><span>Car</span><select className={car === null ? 'placeholder' : undefined} aria-label="Practice car" value={encodeChoice(car)} disabled={disabled} aria-invalid={!combinationValid} onChange={(event) => changeCar(event.target.value)}>{visibleCarChoices.map((choice) => {
         const available = carTrackCombinationExists(scenarios, choice, track)
-        return <option key={encodeChoice(choice)} value={encodeChoice(choice)}>{carChoiceLabel(choice)}{available ? '' : ` · unavailable at ${trackChoiceLabel(track)}`}</option>
+        return <option key={encodeChoice(choice)} value={encodeChoice(choice)} disabled={choice === null}>{carChoiceLabel(choice)}{choice === null || available ? '' : ` · unavailable at ${trackChoiceLabel(track)}`}</option>
       })}</select></label>
-      <label><span>Track</span><select aria-label="Practice track" value={encodeChoice(track)} disabled={disabled} aria-invalid={!combinationValid} onChange={(event) => changeTrack(event.target.value)}>{visibleTrackChoices.map((choice) => {
+      <label><span>Track</span><select className={track === null ? 'placeholder' : undefined} aria-label="Practice track" value={encodeChoice(track)} disabled={disabled} aria-invalid={!combinationValid} onChange={(event) => changeTrack(event.target.value)}>{visibleTrackChoices.map((choice) => {
         const available = carTrackCombinationExists(scenarios, car, choice)
-        return <option key={encodeChoice(choice)} value={encodeChoice(choice)}>{trackChoiceLabel(choice)}{available ? '' : ` · unavailable for ${carChoiceLabel(car)}`}</option>
+        return <option key={encodeChoice(choice)} value={encodeChoice(choice)} disabled={choice === null}>{trackChoiceLabel(choice)}{choice === null || available ? '' : ` · unavailable for ${carChoiceLabel(car)}`}</option>
       })}</select></label>
       <label><span>Practice scenario</span><select aria-label="Practice scenario" value={combinationValid && selectedMatches ? selectedID : ''} disabled={disabled || !combinationValid} aria-invalid={!combinationValid} onChange={(event) => onSelect(event.target.value)}>{!combinationValid && <option value="">No scenarios for this car and track</option>}{matchingScenarios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
       {disabled && <small>Stop the current run to change scenarios.</small>}
@@ -829,13 +769,6 @@ function Range({ label, value, min, max, step, unit, disabled, onChange }: { lab
   return <label className="brake-range"><span>{label}<strong>{value}{unit}</strong></span><input type="range" min={min} max={max} step={step} value={value} disabled={disabled} onChange={(event) => onChange(Number(event.target.value))} /></label>
 }
 
-function Devices({ devices, selectedDeviceID, settings, onSelect, onRequest, onRefresh, onConnect, onDisconnect, onSettings }: { devices: ControllerDevice[]; selectedDeviceID: string; settings: BrakeSettings; onSelect: (id: string) => void; onRequest: () => void; onRefresh: () => void; onConnect: (device: ControllerDevice) => void; onDisconnect: () => void; onSettings: (settings: BrakeSettings) => void }) {
-  const supported = hasWebSerial()
-  const [draft, setDraft] = useState(settings)
-  useEffect(() => setDraft(settings), [settings])
-  return <main className="brake-screen-grid"><aside className="brake-panel"><h2>Controller support</h2><p><strong>{supported ? 'Web Serial available' : 'Keyboard only'}</strong></p><p>{supported ? 'Chrome or Edge can connect to a permitted serial pedal controller.' : 'This browser does not expose Web Serial. The keyboard simulator remains available.'}</p><div className="brake-actions"><button type="button" onClick={onRefresh}>Refresh</button><button type="button" disabled={!supported} onClick={onRequest}>Add controller</button></div></aside><section className="brake-panel"><div className="brake-panel-head"><h1>Devices</h1><button className="primary" type="button" onClick={() => onSettings(draft)}>Save device settings</button></div><div className="brake-device-settings"><label>Baud rate<input type="number" min="1200" max="3000000" value={draft.baudRate} onChange={(event) => setDraft({ ...draft, baudRate: Number(event.target.value) })} /></label><label>USB vendor ID<input placeholder="0x2341" value={draft.usbVendorId ?? ''} onChange={(event) => setDraft({ ...draft, usbVendorId: event.target.value || null })} /></label><label>USB product ID<input placeholder="0x0043" value={draft.usbProductId ?? ''} onChange={(event) => setDraft({ ...draft, usbProductId: event.target.value || null })} /></label></div><div className="brake-list">{devices.map((device) => <div className={`brake-device${device.id === selectedDeviceID ? ' active' : ''}`} key={device.id}><button type="button" onClick={() => onSelect(device.id)}><strong>{device.label}</strong><span>{device.detail}</span></button>{device.kind === 'serial' && (device.status === 'connected' ? <button type="button" onClick={onDisconnect}>Disconnect</button> : <button type="button" onClick={() => onConnect(device)}>Connect</button>)}</div>)}</div></section></main>
-}
-
 function Results({ results, scenarios }: { results: RunResult[]; scenarios: Scenario[] }) {
   const byID = new Map(scenarios.map((scenario) => [scenario.id, scenario]))
   return <main className="brake-results"><div className="brake-panel-head"><div><h1>Results</h1><span>{results.length} completed run{results.length === 1 ? '' : 's'} stored in LapDog</span></div></div>{results.length === 0 ? <div className="brake-empty">No completed runs yet.</div> : results.map((result) => <article className="brake-panel brake-result" key={result.id}><div className="brake-panel-head"><div><strong>{result.scenarioName}</strong><span>{new Date(result.createdAt).toLocaleString()} · {result.deviceLabel}{result.accelerationIncluded ? '' : ' · Braking only'}</span></div><b>{Math.round(result.metrics.score)}</b></div><MetricTiles metrics={result.metrics} />{byID.get(result.scenarioId) && <TraceChart scenario={byID.get(result.scenarioId)!} samples={result.samples} nowMS={result.samples.at(-1)?.timeMs ?? 0} compact durationMS={result.accelerationIncluded ? undefined : getPracticeFinishMS(byID.get(result.scenarioId)!, false)} />}</article>)}</main>
@@ -848,12 +781,6 @@ function cueFor(id: string): 'brake' | 'threshold' | 'trail' | 'transition' | 'a
   if (id === 'coast' || id === 'low-brake') return 'transition'
   if (id === 'accelerate') return 'accelerate'
   return null
-}
-
-function parseHex(value: string | null): number | undefined {
-  if (!value?.trim()) return undefined
-  const parsed = Number(value.toLowerCase().startsWith('0x') ? value : `0x${value}`)
-  return Number.isFinite(parsed) ? parsed : undefined
 }
 
 function message(error: unknown): string {

@@ -22,7 +22,6 @@ import { Top10 } from './pages/Top10'
 import { Export } from './pages/Export'
 import { Settings } from './pages/Settings'
 import { BrakeItApp } from './brake-it/BrakeItApp'
-import brakeItIcon from './assets/brake-it-icon.png'
 
 /**
  * nav is the historical and live pages, with settings pinned to the bottom separately.
@@ -102,13 +101,6 @@ function LapDogApp() {
           ))}
 
           <div className="nav-spacer" />
-          <NavLink
-            to="/brake-it/simulator"
-            className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-          >
-            <img className="nav-module-icon" src={brakeItIcon} alt="" />
-            Brake-It
-          </NavLink>
           {update.data?.availableRelease && (
             <button type="button" className="nav-item update-nav" onClick={() => setUpdateOpen(true)}>
               <Icon name="download" /> Update{' '}

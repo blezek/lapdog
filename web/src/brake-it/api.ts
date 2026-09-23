@@ -1,4 +1,4 @@
-import type { BrakeSettings, RunResult, Scenario } from './types'
+import type { BrakeDevice, BrakeSettings, RunResult, Scenario } from './types'
 
 async function response<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -44,4 +44,17 @@ export const brakeApi = {
   settings: () => fetch('/api/brake-it/settings').then(response<BrakeSettings>),
   saveSettings: (settings: BrakeSettings) =>
     mutate<BrakeSettings>('/api/brake-it/settings', 'PUT', settings),
+  devices: () => fetch('/api/brake-it/devices').then(response<BrakeDevice[]>),
+  createDevice: (device: BrakeDevice) =>
+    mutate<BrakeDevice>('/api/brake-it/devices', 'POST', device),
+  updateDevice: (device: BrakeDevice) =>
+    mutate<BrakeDevice>(`/api/brake-it/devices/${encodeURIComponent(device.id)}`, 'PUT', device),
+  deleteDevice: async (id: string): Promise<void> => {
+    const res = await fetch(`/api/brake-it/devices/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    if (!res.ok) await response<never>(res)
+  },
 }

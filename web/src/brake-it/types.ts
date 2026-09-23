@@ -116,11 +116,30 @@ export type BrakeSettings = {
   usbProductId: string | null
 }
 
+export type PedalBinding = {
+  inputKind: 'axis' | 'button'
+  inputIndex: number
+  restValue: number
+  pressedValue: number
+}
+
+export type BrakeDevice = {
+  id: string
+  gamepadId: string
+  label: string
+  accelerator: PedalBinding
+  brake: PedalBinding
+  createdAt: string
+  updatedAt: string
+}
+
 export type ControllerDevice = {
   id: string
   label: string
-  kind: 'keyboard' | 'serial'
+  kind: 'keyboard' | 'gamepad' | 'serial'
   status: 'available' | 'connected' | 'unsupported' | 'error'
   detail: string
   port?: SerialPort
+  gamepadIndex?: number
+  gamepadId?: string
 }

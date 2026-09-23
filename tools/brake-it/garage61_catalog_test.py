@@ -8,13 +8,17 @@ import garage61_catalog as catalog
 
 
 class Garage61CatalogTest(unittest.TestCase):
-  def test_testing_pass_requests_only_circuito_de_navarra(self):
+  def test_active_pass_requests_navarra_road_atlanta_and_spa(self):
     self.assertEqual(
-      ["Circuito de Navarra"],
-      [target.label for target in catalog.FREE_ROAD_TRACK_TARGETS],
+      [
+        ("Circuito de Navarra", ("Speed Circuit",)),
+        ("Road Atlanta", ("Full Course",)),
+        ("Circuit de Spa-Francorchamps", ("Grand Prix Pits",)),
+      ],
+      [(target.label, target.variants) for target in catalog.TRACK_TARGETS],
     )
 
-  def test_resolves_only_requested_mx5(self):
+  def test_resolves_requested_mx5_and_bmw_m4_gt3(self):
     cars = [
       {"id": 1, "name": "Global Mazda MX-5 Cup", "platform": "iracing"},
       {"id": 200, "name": "BMW M2 Racing (G87)", "platform": "iracing"},
@@ -26,7 +30,7 @@ class Garage61CatalogTest(unittest.TestCase):
       {"id": 6, "name": "Global Mazda MX-5 Cup", "platform": "acc"},
     ]
 
-    self.assertEqual([1], [car["id"] for car in catalog.resolve_cars(cars)])
+    self.assertEqual([4, 1], [car["id"] for car in catalog.resolve_cars(cars)])
 
   def test_resolves_only_road_layouts_at_requested_free_venues(self):
     targets = (
@@ -48,18 +52,33 @@ class Garage61CatalogTest(unittest.TestCase):
 
     self.assertEqual([10, 13], [track["id"] for track in catalog.resolve_tracks(tracks, targets)])
 
-  def test_testing_pass_selects_one_concrete_track_and_one_car(self):
+  def test_active_pass_resolves_only_configured_layouts(self):
+    tracks = [
+      {"id": 10, "name": "Circuito de Navarra", "variant": "Speed Circuit", "platform": "iracing"},
+      {"id": 11, "name": "Circuito de Navarra", "variant": "Full Course", "platform": "iracing"},
+      {"id": 20, "name": "Road Atlanta", "variant": "Full Course", "platform": "iracing"},
+      {"id": 21, "name": "Road Atlanta", "variant": "Club Course", "platform": "iracing"},
+      {"id": 30, "name": "Circuit de Spa-Francorchamps", "variant": "Grand Prix Pits", "platform": "iracing"},
+      {"id": 31, "name": "Circuit de Spa-Francorchamps", "variant": "Endurance Pits", "platform": "iracing"},
+    ]
+
+    self.assertEqual([30, 10, 20], [track["id"] for track in catalog.resolve_tracks(tracks)])
+
+  def test_builds_every_configured_car_and_track_pair(self):
     cars = [{"id": 1}, {"id": 2}]
-    tracks = [{"id": 10}, {"id": 20}]
+    tracks = [{"id": 10}, {"id": 20}, {"id": 30}]
 
-    combinations = catalog.single_car_track_combination(cars, tracks)
+    combinations = catalog.car_track_combinations(cars, tracks)
 
-    self.assertEqual([(10, 1)], [(track["id"], car["id"]) for track, car in combinations])
+    self.assertEqual(
+      [(10, 1), (10, 2), (20, 1), (20, 2), (30, 1), (30, 2)],
+      [(track["id"], car["id"]) for track, car in combinations],
+    )
 
   def test_track_resolution_fails_if_a_reviewed_venue_disappears(self):
     targets = (catalog.TrackTarget("Lime Rock Park", ("Lime Rock Park",)),)
 
-    with self.assertRaisesRegex(RuntimeError, "included road venue.*Lime Rock Park"):
+    with self.assertRaisesRegex(RuntimeError, "requested road venue/layout.*Lime Rock Park"):
       catalog.resolve_tracks(
         [{"id": 15, "name": "Road America", "variant": "Full Course", "platform": "iracing"}],
         targets,

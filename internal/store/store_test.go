@@ -55,7 +55,7 @@ func TestOpenAppliesMigrationsAndCreatesTables(t *testing.T) {
 	}
 	for _, table := range []string{
 		"schema_version", "sessions", "laps", "position_events",
-		"brake_scenarios", "brake_runs", "brake_samples", "brake_settings",
+		"brake_scenarios", "brake_runs", "brake_samples", "brake_settings", "brake_devices",
 	} {
 		var name string
 		if err := s.Reader().QueryRow(

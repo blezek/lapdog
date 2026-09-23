@@ -1,4 +1,10 @@
-VERSION ?= 0.1.0
+# A release tag is `vMAJOR.MINOR.PATCH`, while GoReleaser, NSIS version fields,
+# and artifact filenames use the numeric part. Use the nearest reachable release
+# tag so a release build from a branch descended from that tag does not silently
+# fall back to the obsolete development version. Callers can still set VERSION
+# explicitly for snapshots, a forthcoming release, and GoReleaser hooks.
+GIT_TAG ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
+VERSION ?= $(if $(GIT_TAG),$(patsubst v%,%,$(GIT_TAG)),0.1.0)
 REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 MODULE  := github.com/blezek/lapdog
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -X $(MODULE)/internal/version.Revision=$(REVISION) -s -w
@@ -71,7 +77,7 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 .PHONY: help build ci test run ui-dev dataset dataset-db ingest brake-it release tools clean \
         lint ui verify-embed build-windows build-ctl build-gen \
         fixtures validate portable installer sign goreleaser-check \
-        release-snapshot
+        release-snapshot print-version
 
 # Only the targets worth typing. The rest are prerequisites of these — real
 # targets, still invocable, just not things anyone reaches for directly.
@@ -103,6 +109,11 @@ test: $(BUNDLE)
 	LAPDOG_REQUIRE_BUNDLE=1 go test -p=$(GO_TEST_PARALLEL) -parallel=$(GO_TEST_PARALLEL) ./...
 	cd web && npm run test
 	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/brake-it -p '*_test.py'
+	PYTHONDONTWRITEBYTECODE=1 python3 tools/release_version_test.py
+
+# Used by the release-version test and useful when auditing an artifact build.
+print-version:
+	@echo "$(VERSION)"
 
 # gofmt -l lists unformatted files and exits 0 regardless, so the failure has to
 # come from the output being non-empty rather than from the exit code. This is
@@ -219,10 +230,11 @@ ingest: build-ctl
 	./dist/lapdogctl ingest $(CAPTURES) $(DEV_DB)
 	./dist/lapdogctl summary $(DEV_DB)
 
-# Build aggregate Brake-It targets for the reviewed list of iRacing road tracks
-# included with membership. See docs/brake-it-free-road-tracks.md. The dedicated
-# token remains in this process environment. Raw CSV and lap-level metadata are
-# reduced in memory and are never written to the repository or DB.
+# Build aggregate Brake-It targets for the configured iRacing cars and road
+# tracks. The active tracks include both reviewed membership content and
+# explicitly requested paid venues. The dedicated token remains in this process
+# environment. Raw CSV and lap-level metadata are reduced in memory and are
+# never written to the repository or DB.
 brake-it:
 	@test -n "$${GARAGE61_TOKEN:-}" || { \
 	  echo "brake-it: GARAGE61_TOKEN is required"; \

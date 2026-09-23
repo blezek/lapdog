@@ -60,6 +60,45 @@ func TestBrakeScenarioAPIAndBuiltinProtection(t *testing.T) {
 	}
 }
 
+func TestBrakeDeviceAPILifecycle(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	body := `{"id":"37f08032-2a60-42ae-9d76-60852f8bd110","gamepadId":"Sim Pedals (Vendor: 1234 Product: abcd)","label":"Sim Pedals","accelerator":{"inputKind":"axis","inputIndex":1,"restValue":1,"pressedValue":-1},"brake":{"inputKind":"axis","inputIndex":2,"restValue":1,"pressedValue":-1}}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonRequest(http.MethodPost, "/api/brake-it/devices", strings.NewReader(body)))
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create device status=%d: %s", rec.Code, rec.Body.String())
+	}
+
+	var devices []store.BrakeDevice
+	rec = get(t, h, "/api/brake-it/devices", &devices)
+	if rec.Code != http.StatusOK || len(devices) != 1 || devices[0].Brake.InputIndex != 2 {
+		t.Fatalf("GET devices status=%d rows=%+v", rec.Code, devices)
+	}
+
+	updated := strings.Replace(body, `"inputIndex":2`, `"inputIndex":3`, 1)
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonRequest(http.MethodPut, "/api/brake-it/devices/37f08032-2a60-42ae-9d76-60852f8bd110", strings.NewReader(updated)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update device status=%d: %s", rec.Code, rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonRequest(http.MethodDelete, "/api/brake-it/devices/37f08032-2a60-42ae-9d76-60852f8bd110", strings.NewReader(`{}`)))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("delete device status=%d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestBrakeDeviceAPIRejectsUnusableCalibration(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	body := `{"id":"37f08032-2a60-42ae-9d76-60852f8bd110","gamepadId":"Sim Pedals","label":"Sim Pedals","accelerator":{"inputKind":"axis","inputIndex":1,"restValue":0,"pressedValue":0.01},"brake":{"inputKind":"axis","inputIndex":2,"restValue":1,"pressedValue":-1}}`
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, jsonRequest(http.MethodPost, "/api/brake-it/devices", strings.NewReader(body)))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "too close") {
+		t.Fatalf("invalid calibration status=%d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestBrakeScenarioAPIExposesCatalogCarAndTrack(t *testing.T) {
 	h, st, _ := newTestServer(t)
 	car, track, provider := "Global Mazda MX-5 Cup", "Road Atlanta Full Course", "garage61"
@@ -101,6 +140,23 @@ func TestBrakeScenarioAPIExposesCatalogCarAndTrack(t *testing.T) {
 	}
 	if !strings.Contains(string(got.Source), "https://garage61.net/app/analyze;t=lap-one") {
 		t.Fatalf("catalog lap citation through API = %s", got.Source)
+	}
+	var source struct {
+		Provider   string `json:"provider"`
+		SourceLaps []struct {
+			LapID       string  `json:"lapId"`
+			Garage61URL string  `json:"garage61Url"`
+			LapTimeSec  float64 `json:"lapTimeSec"`
+		} `json:"sourceLaps"`
+	}
+	if err := json.Unmarshal(got.Source, &source); err != nil {
+		t.Fatalf("catalog provenance through API is not an object: %v\n%s", err, got.Source)
+	}
+	if source.Provider != provider || len(source.SourceLaps) != 1 ||
+		source.SourceLaps[0].LapID != "lap-one" ||
+		source.SourceLaps[0].Garage61URL != "https://garage61.net/app/analyze;t=lap-one" ||
+		source.SourceLaps[0].LapTimeSec != 87.123 {
+		t.Fatalf("catalog provenance through API = %+v", source)
 	}
 }
 

@@ -114,6 +114,8 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("/api/brake-it/scenarios/{id}", s.protectMutations(s.handleBrakeScenario))
 	mux.HandleFunc("/api/brake-it/results", s.protectMutations(s.handleBrakeResults))
 	mux.HandleFunc("/api/brake-it/settings", s.protectMutations(s.handleBrakeSettings))
+	mux.HandleFunc("/api/brake-it/devices", s.protectMutations(s.handleBrakeDevices))
+	mux.HandleFunc("/api/brake-it/devices/{id}", s.protectMutations(s.handleBrakeDevice))
 
 	// Any other /api path is a 404 rather than falling through to the interface,
 	// so a typo in an endpoint reads as a missing endpoint and not as a page of

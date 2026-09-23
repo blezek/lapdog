@@ -35,6 +35,44 @@ func TestBrakeMigrationSeedsBuiltinScenarioAndSettings(t *testing.T) {
 	}
 }
 
+func TestBrakeDeviceCalibrationRoundTrip(t *testing.T) {
+	s := openTemp(t)
+	device := BrakeDevice{
+		ID: "37f08032-2a60-42ae-9d76-60852f8bd110", GamepadID: "Sim Pedals (Vendor: 1234 Product: abcd)", Label: "Sim Pedals",
+		Accelerator: PedalBinding{InputKind: "axis", InputIndex: 1, RestValue: 1, PressedValue: -1},
+		Brake:       PedalBinding{InputKind: "button", InputIndex: 2, RestValue: 0, PressedValue: 1},
+	}
+	if err := s.CreateBrakeDevice(&device); err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ListBrakeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Accelerator.InputIndex != 1 || rows[0].Brake.InputKind != "button" {
+		t.Fatalf("saved devices = %+v", rows)
+	}
+
+	device.Brake.InputIndex = 3
+	if err := s.UpdateBrakeDevice(&device); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.ListBrakeDevices()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].Brake.InputIndex != 3 || rows[0].CreatedAt == "" || rows[0].UpdatedAt == "" {
+		t.Fatalf("updated devices = %+v", rows)
+	}
+	if err := s.DeleteBrakeDevice(device.ID); err != nil {
+		t.Fatal(err)
+	}
+	rows, err = s.ListBrakeDevices()
+	if err != nil || len(rows) != 0 {
+		t.Fatalf("devices after delete = %+v, %v", rows, err)
+	}
+}
+
 func TestBuiltinBrakeScenarioIsReadOnly(t *testing.T) {
 	s := openTemp(t)
 	rec, err := s.BrakeScenarioByID("builtin-threshold-to-trail-baseline")

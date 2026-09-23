@@ -1,7 +1,9 @@
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { PracticeCue, ScenarioMetadataFields, ScenarioPicker, ScenarioTraceEditor, Simulator, SourcePanel, TraceChart } from './BrakeItApp'
+import { brakeItTabs, PracticeCue, ScenarioMetadataFields, ScenarioPicker, ScenarioTraceEditor, Simulator, SourcePanel, TraceChart } from './BrakeItApp'
+import { brakeApi } from './api'
+import { GamepadDevices } from './GamepadDevices'
 import type { PedalSample, Scenario } from './types'
 
 const scenario: Scenario = {
@@ -53,7 +55,13 @@ const scenario: Scenario = {
   updatedAt: '2026-09-18T12:00:00Z',
 }
 
+afterEach(() => vi.unstubAllGlobals())
+
 describe('Brake-It parity', () => {
+  it('keeps the scenario editor out of the visible navigation', () => {
+    expect(brakeItTabs.map(([, label]) => label)).toEqual(['Simulator', 'Devices', 'Results'])
+  })
+
   it('links car, track, and scenario choices in the simulator', () => {
     const second = {
       ...scenario,
@@ -96,6 +104,20 @@ describe('Brake-It parity', () => {
     expect(simulator).toContain('aria-label="Practice track"')
     expect(simulator).toContain('aria-label="Practice scenario"')
     expect(simulator).toContain('Second braking zone')
+
+    const general = {
+      ...scenario,
+      id: 'custom-general',
+      carName: null,
+      trackName: null,
+      origin: 'custom' as const,
+    }
+    const placeholders = renderToStaticMarkup(
+      <ScenarioPicker scenarios={[scenario, general]} selectedID={general.id} onSelect={() => undefined} />,
+    )
+    expect(placeholders.match(/class="placeholder"/g)).toHaveLength(2)
+    expect(placeholders).toContain('value="__lapdog_unassigned__" disabled="" selected="">Choose Car</option>')
+    expect(placeholders).toContain('value="__lapdog_unassigned__" disabled="" selected="">Choose Track</option>')
   })
 
   it('renders the trace axes, phase markers, zones, and tolerance band', () => {
@@ -151,6 +173,43 @@ describe('Brake-It parity', () => {
     expect(html).toContain('Export citations')
   })
 
+  it('loads an imported Garage61 scenario into the practice UI', async () => {
+    const fetchScenarios = vi.fn(async () => new Response(JSON.stringify([scenario]), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    }))
+    vi.stubGlobal('fetch', fetchScenarios)
+
+    const imported = await brakeApi.scenarios()
+
+    expect(fetchScenarios).toHaveBeenCalledExactlyOnceWith('/api/brake-it/scenarios')
+    expect(imported).toHaveLength(1)
+    expect(imported[0]).toMatchObject({
+      id: 'garage61-test-zone-1',
+      origin: 'builtin',
+      catalogVersion: 1,
+      carName: 'Global Mazda MX-5 Cup',
+      trackName: 'Road Atlanta Full Course',
+      sourceProvider: 'garage61',
+    })
+
+    const picker = renderToStaticMarkup(
+      <ScenarioPicker
+        scenarios={imported}
+        selectedID={imported[0]?.id ?? ''}
+        onSelect={() => undefined}
+      />,
+    )
+    expect(picker).toContain('Global Mazda MX-5 Cup')
+    expect(picker).toContain('Road Atlanta Full Course')
+    expect(picker).toContain('Test braking zone')
+    expect(picker).toContain('value="garage61-test-zone-1" selected=""')
+
+    const provenance = renderToStaticMarkup(<SourcePanel scenario={imported[0]!} />)
+    expect(provenance).toContain('Garage61 citations')
+    expect(provenance).toContain('href="https://garage61.net/app/analyze;t=lap-one"')
+  })
+
   it('keeps the original zoom and trace handles in the scenario editor', () => {
     const html = renderToStaticMarkup(
       <ScenarioTraceEditor scenario={scenario} editable={false} onChange={() => undefined} />,
@@ -187,5 +246,44 @@ describe('Brake-It parity', () => {
       <ScenarioMetadataFields scenarios={[scenario]} scenario={scenario} editable={false} onChange={() => undefined} />,
     )
     expect(readonly.match(/disabled=""/g)).toHaveLength(2)
+  })
+})
+
+describe('Brake-It HID pedal devices', () => {
+  it('offers configured gamepads for use, removal, and pedal re-detection', () => {
+    vi.stubGlobal('navigator', { getGamepads: () => [] })
+    const html = renderToStaticMarkup(
+      <GamepadDevices
+        devices={[{
+          id: 'gamepad-0',
+          label: 'Sim Pedals (Vendor: 1234 Product: abcd)',
+          kind: 'gamepad',
+          status: 'available',
+          detail: '3 axes · 0 buttons · browser index 0',
+          gamepadIndex: 0,
+          gamepadId: 'Sim Pedals (Vendor: 1234 Product: abcd)',
+        }]}
+        configurations={[{
+          id: '37f08032-2a60-42ae-9d76-60852f8bd110',
+          gamepadId: 'Sim Pedals (Vendor: 1234 Product: abcd)',
+          label: 'Sim Pedals',
+          accelerator: { inputKind: 'axis', inputIndex: 1, restValue: 1, pressedValue: -1 },
+          brake: { inputKind: 'axis', inputIndex: 2, restValue: 1, pressedValue: -1 },
+          createdAt: '2026-09-23T12:00:00Z',
+          updatedAt: '2026-09-23T12:00:00Z',
+        }]}
+        selectedDeviceID="gamepad-0"
+        onSelect={() => undefined}
+        onRefresh={() => undefined}
+        onSave={() => undefined}
+        onRemove={() => undefined}
+      />,
+    )
+
+    expect(html).toContain('Sim Pedals (Vendor: 1234 Product: abcd)')
+    expect(html).toContain('Pedals configured')
+    expect(html).toContain('Reconfigure')
+    expect(html).toContain('Remove')
+    expect(html).not.toContain('Web Serial')
   })
 })
