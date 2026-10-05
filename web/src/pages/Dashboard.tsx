@@ -747,12 +747,13 @@ function DailyTable({ rows }: { rows: DailyRow[] }) {
  * sequential because the value is a magnitude, so the eight-slot categorical
  * ceiling does not apply here and every category keeps its own column.
  */
-function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Theme }) {
+export function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Theme }) {
   const option = useMemo(() => {
-    // Rows keep the order the store chose, which is by pairing total descending.
-    // Re-sorting here would risk the axis disagreeing with the ranking.
+    // Reverse the store's descending ranking once: category axes start at the
+    // bottom. Labels, cell coordinates and tooltips share this display order.
     const rows: string[] = []
     for (const c of cells) if (!rows.includes(c.combo)) rows.push(c.combo)
+    rows.reverse()
 
     // Columns are ordered by total hours so the categories that matter sit left.
     const colTotals = new Map<string, number>()
@@ -803,9 +804,7 @@ function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Theme }) {
       },
       yAxis: {
         type: 'category',
-        // Reversed so the busiest pairing is the top row, the conventional
-        // direction for a ranking on a category axis.
-        data: [...rows].reverse(),
+        data: rows,
         axisLabel: { color: theme.textSecondary, fontSize: 10 },
         axisLine: { lineStyle: { color: theme.baseline } },
         axisTick: { show: false },
@@ -813,7 +812,7 @@ function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Theme }) {
       series: [
         {
           type: 'heatmap',
-          data: data.map(([x, y, v]) => [x, rows.length - 1 - y, v]),
+          data,
           itemStyle: { borderColor: theme.surface, borderWidth: 2 },
         },
       ],
