@@ -1,8 +1,13 @@
 package main
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/blezek/lapdog/internal/store"
 )
 
 func TestTimeFromName(t *testing.T) {
@@ -26,5 +31,51 @@ func TestTimeFromName(t *testing.T) {
 				t.Errorf("timeFromName(%q) = %s, want %s", tc.name, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestImportBrakeCatalogCommandWritesServerDatabase(t *testing.T) {
+	car, track := "BMW M2 Racing (G87)", "Road Atlanta Full Course"
+	catalog := store.BrakeCatalog{
+		CatalogVersion: 1, GeneratedAt: "2026-09-16T18:00:00Z", SourceProvider: "garage61",
+		Scenarios: []store.BrakeCatalogScenario{{
+			BrakeScenario: store.BrakeScenario{
+				ID: "garage61-test-command-bmw-zone-1", Name: "BMW M2 zone 1",
+				ApproachMS: 2200, AcceleratorFallTargetMS: 280, BrakeRiseTargetMS: 420,
+				TargetBrakePercent: 76, BrakeTolerancePercent: 6, BrakeHoldMS: 1050,
+				TrailBrakeReleaseMS: 1850, AcceleratorRampMS: 1700,
+				CarName: &car, TrackName: &track,
+			},
+			Source: json.RawMessage(`{"provider":"garage61","model":{"sourceLapCount":12}}`),
+		}},
+	}
+	body, err := json.Marshal(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	catalogPath := filepath.Join(dir, "catalog.json")
+	dbPath := filepath.Join(dir, "lapdog.db")
+	if err := os.WriteFile(catalogPath, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := run("import-brake-catalog", []string{catalogPath, dbPath}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	rows, err := st.ListBrakeScenarios()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := st.BrakeScenarioByID("garage61-test-command-bmw-zone-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.CarName == nil || *got.CarName != car {
+		t.Fatalf("imported scenarios = %+v", rows)
 	}
 }

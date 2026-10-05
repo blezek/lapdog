@@ -10,7 +10,8 @@
     "typecheck": "tsc -b --noEmit",
     "test": "TZ=America/Chicago vitest run",
     "verify-animation": "node tools/verify-animation.mjs",
-    "verify-layout": "node tools/shoot.mjs"
+    "verify-layout": "node tools/shoot.mjs",
+    "verify-brake-it": "node tools/verify-brake-it.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",

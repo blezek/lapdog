@@ -6,5 +6,6 @@
   "port": 47047,
   "startWithWindows": true,
   "units": "metric",
-  "theme": "system"
+  "theme": "system",
+  "debug": true
 }

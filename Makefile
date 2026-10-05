@@ -1,4 +1,20 @@
-VERSION ?= 0.1.0
+# A release tag is `vMAJOR.MINOR.PATCH`, while GoReleaser, NSIS version fields,
+# and artifact filenames use the numeric part. Use the nearest reachable release
+# tag so a release build from a branch descended from that tag does not silently
+# fall back to the obsolete development version. Callers can still set VERSION
+# explicitly for snapshots, a forthcoming release, and GoReleaser hooks.
+GIT_TAG ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
+VERSION ?= $(if $(GIT_TAG),$(patsubst v%,%,$(GIT_TAG)),0.1.0)
+# Local packages carry enough Git identity to distinguish untagged builds. Keep
+# their descriptive version separate from Windows' four-number resource version:
+# NSIS can display `0.4.0-3-gabc1234-dirty`, but VIProductVersion cannot encode
+# that text. The commit distance is a useful, monotonic fourth component until
+# the next release tag resets it to zero.
+GIT_LONG ?= $(shell git describe --tags --long --dirty --always --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
+LOCAL_VERSION ?= $(if $(filter v%,$(GIT_LONG)),$(patsubst v%,%,$(GIT_LONG)),0.0.0-0-g$(GIT_LONG))
+LOCAL_VERSION_PARTS := $(subst -, ,$(LOCAL_VERSION))
+LOCAL_WINDOWS_VERSION ?= $(word 1,$(LOCAL_VERSION_PARTS)).$(word 2,$(LOCAL_VERSION_PARTS))
+WINDOWS_VERSION ?= $(VERSION).0
 REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 MODULE  := github.com/blezek/lapdog
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -X $(MODULE)/internal/version.Revision=$(REVISION) -s -w
@@ -36,6 +52,18 @@ SETUP    := $(DIST)/lapdog-$(VERSION)-setup.exe
 DEV_DB   ?= .dataset.db
 DEV_PORT ?= 47047
 
+# `make brake-it` writes aggregate Garage61 scenarios into the same SQLite file
+# served by `make run`. The JSON is a local, screened staging artifact under the
+# already-gitignored ignore/ tree. It keeps Garage61 lap citations for the local
+# UI, but contains no token, driver identity, API URL, or raw telemetry.
+BRAKE_IT_DB          ?= $(DEV_DB)
+BRAKE_IT_CATALOG     ?= ignore/brake-it/catalog.json
+BRAKE_IT_EMBEDDED_CATALOG := internal/store/brake_catalog_data/catalog.json
+BRAKE_IT_CSV_LIMIT   ?= 12
+BRAKE_IT_MAX_LAPS    ?= 100
+BRAKE_IT_REQUEST_INTERVAL ?= 1.0
+BRAKE_IT_RETRY_JITTER ?= 1.0
+
 # Where `make ingest` reads captures from. Overridable so any directory of .lpd
 # files can be replayed: make ingest CAPTURES=path/to/captures
 CAPTURES ?= ignore/captures
@@ -56,15 +84,16 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 # target arguments only from 4.4.
 .NOTPARALLEL:
 
-.PHONY: help build ci test run ui-dev dataset dataset-db ingest release tools clean \
+.PHONY: help build local-packages ci test run ui-dev dataset dataset-db ingest brake-it release tools clean \
         lint ui verify-embed build-windows build-ctl build-gen \
         fixtures validate portable installer sign goreleaser-check \
-        release-snapshot
+		release-snapshot print-version print-local-version
 
 # Only the targets worth typing. The rest are prerequisites of these — real
 # targets, still invocable, just not things anyone reaches for directly.
 help:
 	@echo "build       every check, then every artefact: binaries, zip, installer"
+	@echo "local-packages  build zip and installer with a descriptive Git version"
 	@echo "ci          every check, and nothing else: what CI runs"
 	@echo "test        the Go and web test suites"
 	@echo "run         serve $(DEV_DB) on http://127.0.0.1:$(DEV_PORT)"
@@ -72,6 +101,7 @@ help:
 	@echo "dataset     generate the synthetic capture files (~250 MB, gitignored)"
 	@echo "dataset-db  replay those captures into $(DEV_DB)"
 	@echo "ingest      replay existing captures from $(CAPTURES) into $(DEV_DB)"
+	@echo "brake-it    import free-road Garage61 brake scenarios into $(BRAKE_IT_DB)"
 	@echo "release     build, then Authenticode-sign and write SHA256SUMS"
 	@echo "release-snapshot  local GoReleaser release without publishing"
 	@echo "goreleaser-check  validate .goreleaser.yaml"
@@ -89,6 +119,15 @@ help:
 test: $(BUNDLE)
 	LAPDOG_REQUIRE_BUNDLE=1 go test -p=$(GO_TEST_PARALLEL) -parallel=$(GO_TEST_PARALLEL) ./...
 	cd web && npm run test
+	PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tools/brake-it -p '*_test.py'
+	PYTHONDONTWRITEBYTECODE=1 python3 tools/release_version_test.py
+
+# Used by the release-version test and useful when auditing an artifact build.
+print-version:
+	@echo "$(VERSION)"
+
+print-local-version:
+	@echo "$(LOCAL_VERSION) $(LOCAL_WINDOWS_VERSION)"
 
 # gofmt -l lists unformatted files and exits 0 regardless, so the failure has to
 # come from the output being non-empty rather than from the exit code. This is
@@ -205,6 +244,27 @@ ingest: build-ctl
 	./dist/lapdogctl ingest $(CAPTURES) $(DEV_DB)
 	./dist/lapdogctl summary $(DEV_DB)
 
+# Build aggregate Brake-It targets for the configured iRacing cars and road
+# tracks. The active tracks include both reviewed membership content and
+# explicitly requested paid venues. The dedicated token remains in this process
+# environment. Raw CSV and lap-level metadata are reduced in memory and are
+# never written to the repository or DB.
+brake-it:
+	@test -n "$${GARAGE61_TOKEN:-}" || { \
+	  echo "brake-it: GARAGE61_TOKEN is required"; \
+	  echo "          export GARAGE61_TOKEN=... and retry"; exit 2; }
+	mkdir -p $(dir $(BRAKE_IT_CATALOG))
+	GARAGE61_REQUEST_INTERVAL_SECONDS=$(BRAKE_IT_REQUEST_INTERVAL) \
+	GARAGE61_RETRY_JITTER_SECONDS=$(BRAKE_IT_RETRY_JITTER) \
+	python3 tools/brake-it/garage61_catalog.py \
+	  --output $(BRAKE_IT_CATALOG) \
+	  --csv-limit $(BRAKE_IT_CSV_LIMIT) \
+	  --max-laps $(BRAKE_IT_MAX_LAPS)
+	mkdir -p $(dir $(BRAKE_IT_EMBEDDED_CATALOG))
+	cp $(BRAKE_IT_CATALOG) $(BRAKE_IT_EMBEDDED_CATALOG)
+	$(MAKE) build-ctl
+	./dist/lapdogctl import-brake-catalog $(BRAKE_IT_CATALOG) $(BRAKE_IT_DB)
+
 # Serve a database locally, for looking at the interface with real data in it.
 #
 # This is the quickest way to see the UI: the synthetic dataset covers two years of
@@ -241,6 +301,7 @@ installer: build-windows
 	@command -v makensis >/dev/null || { echo "makensis not found; run 'make tools'"; exit 1; }
 	makensis -NOCD -V2 \
 	  -DVERSION=$(VERSION) \
+	  -DNUMERIC_VERSION=$(WINDOWS_VERSION) \
 	  -DSRCEXE="$(CURDIR)/$(EXE)" \
 	  -DOUTFILE="$(CURDIR)/$(SETUP)" \
 	  packaging/windows/lapdog.nsi
@@ -288,6 +349,21 @@ build: ci build-ctl build-gen portable installer
 	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe lapdogctl lapdog-gen \
 	  $(notdir $(PORTABLE)) $(notdir $(SETUP))
 
+# Development packages are deliberately opt-in and local. Verify first under the
+# normal release-version rules: command-line make variables propagate through
+# MAKEFLAGS, so passing the descriptive VERSION to `make build` would contaminate
+# the release-version tests. Only the artifact sub-make receives the local values.
+# VERSION remains visible in the UI and filenames; WINDOWS_VERSION satisfies the
+# numeric version resource embedded by NSIS.
+local-packages: ci
+	$(MAKE) build-ctl build-gen portable installer \
+	  VERSION="$(LOCAL_VERSION)" WINDOWS_VERSION="$(LOCAL_WINDOWS_VERSION)"
+	@echo
+	@echo "Local packages in $(DIST):"
+	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe lapdogctl lapdog-gen \
+	  "lapdog-$(LOCAL_VERSION)-portable.zip" "lapdog-$(LOCAL_VERSION)-setup.exe"
+	-rsync -av $(DIST)/*setup* "$${HOME}/Dropbox/Lapdog/"
+
 release: build sign
 	cd $(DIST) && shasum -a 256 lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) > SHA256SUMS
 	@echo
@@ -315,7 +391,7 @@ verify-embed: build-windows
 	    echo "verify-embed: $$f was not built for Windows:"; go version -m $$f | grep GOOS; exit 1; }; \
 	  go version -m $$f | grep -q "GOARCH=amd64" || { \
 	    echo "verify-embed: $$f is not amd64, the shipped target:"; go version -m $$f | grep GOARCH; exit 1; }; \
-	  for n in LapDog mdi-racing-helmet; do \
+	  for n in LapDog Brake-It mdi-racing-helmet; do \
 	    grep -qa "$$n" $$f || { echo "verify-embed: $$n is missing from $$f"; exit 1; }; \
 	  done; \
 	  echo "verify-embed: $$f is windows/amd64 with the interface and icons inside"; \

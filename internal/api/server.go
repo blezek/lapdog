@@ -110,6 +110,12 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/update/check", s.protectMutations(s.handleUpdateCheck))
 	mux.HandleFunc("POST /api/update/action", s.protectMutations(s.handleUpdateAction))
+	mux.HandleFunc("/api/brake-it/scenarios", s.protectMutations(s.handleBrakeScenarios))
+	mux.HandleFunc("/api/brake-it/scenarios/{id}", s.protectMutations(s.handleBrakeScenario))
+	mux.HandleFunc("/api/brake-it/results", s.protectMutations(s.handleBrakeResults))
+	mux.HandleFunc("/api/brake-it/settings", s.protectMutations(s.handleBrakeSettings))
+	mux.HandleFunc("/api/brake-it/devices", s.protectMutations(s.handleBrakeDevices))
+	mux.HandleFunc("/api/brake-it/devices/{id}", s.protectMutations(s.handleBrakeDevice))
 
 	// Any other /api path is a 404 rather than falling through to the interface,
 	// so a typo in an endpoint reads as a missing endpoint and not as a page of
@@ -131,7 +137,8 @@ func (s *Server) Handler() (http.Handler, error) {
 // loopback API, and requires an explicit JSON request for every state change.
 func (s *Server) protectMutations(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut && r.Method != http.MethodPost && r.Method != http.MethodPatch {
+		if r.Method != http.MethodPut && r.Method != http.MethodPost &&
+			r.Method != http.MethodPatch && r.Method != http.MethodDelete {
 			next(w, r)
 			return
 		}

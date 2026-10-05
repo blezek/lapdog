@@ -21,6 +21,7 @@ import { Laps } from './pages/Laps'
 import { Top10 } from './pages/Top10'
 import { Export } from './pages/Export'
 import { Settings } from './pages/Settings'
+import { BrakeItApp } from './brake-it/BrakeItApp'
 
 /**
  * nav is the historical and live pages, with settings pinned to the bottom separately.
@@ -42,6 +43,14 @@ const nav = [
 ]
 
 export function App() {
+  const location = useLocation()
+  if (location.pathname === '/brake-it' || location.pathname.startsWith('/brake-it/')) {
+    return <BrakeItApp />
+  }
+  return <LapDogApp />
+}
+
+function LapDogApp() {
   const location = useLocation()
   const sharedSearch = filterParams(new URLSearchParams(location.search)).toString()
   const routeTo = (pathname: string) => ({ pathname, search: sharedSearch ? `?${sharedSearch}` : '' })

@@ -33,6 +33,97 @@ Deliberately excluded, and recorded as such in the specs: `.ibt` file import, se
 
 ---
 
+## 2026-09-16 — Garage61 catalog import uses LapDog SQLite
+
+`make brake-it` now resolves the Mazda MX-5, BMW M2 Racing (G87, id 200),
+Porsche 911 Cup (992.2, id 194), and BMW M4 GT3 cars from Garage61. It queries
+only the 14 road-racing venues in iRacing's current Included with Membership
+list, rejects oval, dirt, and rallycross layouts at mixed venues, and reduces
+authorized telemetry to aggregate braking scenarios before importing them into
+`BRAKE_IT_DB` through `lapdogctl import-brake-catalog`. The token is read only
+from `GARAGE61_TOKEN`; raw CSV and lap-level metadata remain in memory. A Python
+privacy check and an independent Go import check reject driver/lap identity,
+lap URLs, authorization fields, and tokens before SQLite is changed.
+
+Garage61's live API returned HTTP 403 for `seeTelemetry=true` with the dedicated
+non-Pro token, so the importer deliberately omits that search filter. It
+instead checks `canViewTelemetry` on each returned lap before downloading a
+CSV. A live seven-lap sample arrived in ascending lap-time order, including
+across three paginated requests, but the API does not document that ordering;
+LapDog therefore validates every returned lap. It queries each car and track
+in 12-lap pages, checks at least three pages when available, continues until it
+has the fastest 12 telemetry-visible laps, and aborts if lap time ever
+decreases within or across pages.
+
+All Garage61 operations now share a sequential request throttle. Request starts
+are one second apart by default, configurable through
+`BRAKE_IT_REQUEST_INTERVAL`. Successful and 429 responses can defer the next
+request through `Retry-After`; 429 bodies provide a second delay source through
+`retryAfterSeconds`, and the longer server value wins. A configurable random
+jitter (up to one second by default) prevents synchronized retries. This
+replaces the old CSV-only 200-millisecond pause, which left catalog and lap-page
+requests unthrottled.
+
+Importer progress now uses Python's standard logging API with RichHandler for
+color-coded terminal output and a structured standard-handler fallback. Every
+Garage61 attempt logs its method, endpoint, HTTP status, and elapsed network
+time rounded to a tenth of a second; throttle waits are deliberately excluded
+from that request duration.
+
+Schema version 5 adds car, track, and provider fields to Brake-It scenarios.
+Generated catalog entries use the existing read-only built-in behavior, while
+custom scenarios remain editable. The Scenarios screen now offers car and
+track filters populated from API data, and all scenarios, settings, results,
+and samples continue to use the Go server and its SQLite database rather than
+browser storage.
+
+The catalog generator and privacy/import tests run under `make test`. The live
+Garage61 traversal remains unverified because this development environment has
+no `GARAGE61_TOKEN`; that external verification is recorded in `ToDo.md`.
+
+---
+
+## 2026-09-16 — Brake-It integrated under LapDog
+
+Brake-It now ships inside LapDog's existing React bundle and Go executable at
+`/brake-it/*`, with simulator, scenario editor, device setup, and results
+routes. LapDog links into the trainer without carrying historical filters, and
+the Brake-It header returns to the dashboard. Its styles and design tokens are
+scoped so the wide training layout does not alter LapDog pages.
+
+Schema version 4 adds scenarios, completed runs, sampled pedal traces, and
+settings. The server seeds one synthetic baseline scenario, keeps built-ins
+read-only, writes complete runs transactionally with a scenario snapshot and
+scoring version, and preserves absent measurements as null. Namespaced API
+routes validate body size, durations, percentages, transition modes, sample
+ordering, references, and same-origin JSON mutations.
+
+Keyboard simulation, Web Audio cues, and Web Serial support were ported into
+the shared frontend. Serial permission and open-port objects remain transient;
+the database stores only durable baud and optional USB filters. Reader and
+audio resources close on route-away. Garage61-derived generated data was not
+imported: the shipped scenario is synthetic while written permission remains
+unresolved, and the physical Windows serial path is documented as unverified.
+
+The new browser verifier loaded all four routes directly, found no horizontal
+overflow at desktop or phone widths, persisted a completed timed run through
+the API and route reload, exercised both cross-application links, and captured
+light and dark screenshots that were inspected. Deliberate mutations proved
+the migration provenance, built-in guard, server-owned scenario facts, sample
+ordering, phase timing, and serial parsing assertions could fail before each
+behavior was restored. `make ci` passed with 103 frontend tests, all Go
+packages, typecheck, Windows cross-builds, and Brake-It markers embedded in
+both binaries. The final collector race suite passed in 112.608 seconds.
+
+Two supplied companion illustrations now provide Brake-It's visual identity.
+The pedal close-up is the compact product mark in LapDog's sidebar and the
+Brake-It header; the full kart appears beside the active simulator scenario.
+Both were resized and stripped for embedding while the supplied 1254-pixel
+files remain as source masters. Chrome verified that every image loaded and the
+marks remained legible in desktop, phone, light, and dark layouts.
+
+---
+
 ## 2026-09-05 — visible update progress and clearer choices
 
 The update popdown now presents **Upgrade now**, **Ask me later**, and **Skip

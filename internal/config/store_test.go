@@ -1,7 +1,9 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -31,6 +33,28 @@ func TestStoreRoundTripsThroughDisk(t *testing.T) {
 	}
 	if got := s2.Get(); got.PollIntervalSeconds != 2.5 || got.Theme != "dark" {
 		t.Errorf("reopened store = %+v", got)
+	}
+}
+
+func TestLoadIgnoresRemovedBrakeItSetting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"brakeItEnabled":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load legacy config: %v", err)
+	}
+	if err := Save(path, got); err != nil {
+		t.Fatalf("Save config: %v", err)
+	}
+	saved, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(saved), "brakeItEnabled") {
+		t.Errorf("saved config retained removed brakeItEnabled setting:\n%s", saved)
 	}
 }
 

@@ -750,7 +750,7 @@ func TestPutSettingsRejectsInvalid(t *testing.T) {
 func TestSettingsRejectsWrongMethod(t *testing.T) {
 	h, _, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/settings", nil))
+	h.ServeHTTP(rec, jsonRequest(http.MethodDelete, "/api/settings", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Errorf("status = %d, want 405", rec.Code)
 	}

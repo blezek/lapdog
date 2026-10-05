@@ -27,6 +27,7 @@ Usage:
   lapdogctl ingest <captures-dir> <lapdog.db>   replay captures into a database
   lapdogctl inspect [flags] <file.lpd>          read a capture: session YAML, or frames
   lapdogctl summary <lapdog.db>                 print what a database contains
+  lapdogctl import-brake-catalog <json> <db>    import aggregate Brake-It scenarios
   lapdogctl reclassify <lapdog.db>              re-derive classification from stored provenance
   lapdogctl serve <lapdog.db> [port]            serve the API and interface over a database
   lapdogctl version
@@ -56,6 +57,12 @@ func run(cmd string, args []string) error {
 			return fmt.Errorf("summary takes a database path")
 		}
 		return summary(args[0])
+
+	case "import-brake-catalog":
+		if len(args) != 2 {
+			return fmt.Errorf("import-brake-catalog takes a catalog path and a database path")
+		}
+		return importBrakeCatalog(args[0], args[1])
 
 	case "inspect":
 		return inspectCapture(args)
@@ -98,6 +105,29 @@ func run(cmd string, args []string) error {
 		fmt.Fprint(os.Stderr, usage)
 		return fmt.Errorf("unknown command %q", cmd)
 	}
+}
+
+func importBrakeCatalog(catalogPath, dbPath string) error {
+	file, err := os.Open(catalogPath)
+	if err != nil {
+		return fmt.Errorf("open brake catalog: %w", err)
+	}
+	defer file.Close()
+	catalog, err := store.DecodeBrakeCatalog(file)
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(dbPath)
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	count, err := st.ImportBrakeCatalog(catalog)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("Reconciled %d Brake-It scenarios into %s\n", count, dbPath)
+	return nil
 }
 
 // ingest replays every capture in dir through a real collector into dbPath.

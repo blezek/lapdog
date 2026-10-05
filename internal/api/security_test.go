@@ -29,3 +29,14 @@ func TestMutationsRequireJSONAndRejectCrossSite(t *testing.T) {
 		t.Fatalf("wrong-scheme origin status=%d, want 403", rec.Code)
 	}
 }
+
+func TestBrakeMutationsUseTheSameOriginGuard(t *testing.T) {
+	h, _, _ := newTestServer(t)
+	r := jsonRequest(http.MethodPost, "/api/brake-it/scenarios", strings.NewReader(`{}`))
+	r.Header.Set("Sec-Fetch-Site", "cross-site")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site Brake-it mutation status=%d, want 403", rec.Code)
+	}
+}

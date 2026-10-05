@@ -1,5 +1,32 @@
 # ToDo: install the telemetry repair and rebuild the database
 
+## Brake-It Windows hardware verification
+
+In Windows Chrome or Edge, open `/brake-it/devices`, grant access to a physical
+serial pedal controller, and verify identification, accelerator/brake streaming,
+disconnect, and route-away cleanup. Complete a run with audio enabled, restart
+LapDog, and confirm the result remains under `/brake-it/results`. The keyboard
+path, SQLite persistence, direct routes, cross-application navigation, and
+responsive light/dark layouts have been verified on macOS; the physical serial
+path has not.
+
+## Brake-It Garage61 import verification
+
+After Garage61 permission is received, run `GARAGE61_TOKEN=... make brake-it`
+against a disposable `BRAKE_IT_DB`. Confirm the live car catalog resolves only
+the Mazda MX-5 and the first eligible Circuito de Navarra road layout used for
+the current testing pass. Before removing that limit, confirm all 14 venues in
+`docs/brake-it-free-road-tracks.md` resolve without querying paid, oval, dirt,
+or rallycross tracks. Inspect the reported car and track variants before using
+the catalog. Then verify every imported row has car/track labels and aggregate
+source data but no driver, lap, raw CSV, token, or lap URL. This live API path
+cannot be exercised without the dedicated token. Confirm the default one-second
+request interval completes without repeated 429 responses and that a successful
+response carrying `Retry-After` delays the next request. Increase
+`BRAKE_IT_REQUEST_INTERVAL` if this application's allowance is lower. Interrupt
+a future multi-combination test after its first checkpoint and confirm the
+completed combination remains as valid JSON in the staging catalog.
+
 ## Automatic update Windows verification
 
 Before calling automatic update production-verified, run a local fake release endpoint

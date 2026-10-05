@@ -4,8 +4,33 @@ import { MemoryRouter } from 'react-router-dom'
 import { describe, expect, it } from 'vitest'
 
 import { App } from './App'
+import type { Config } from './api'
 import { Brand } from './components/Brand'
 import { SplashScreen } from './components/SplashScreen'
+
+const config: Config = {
+  pollIntervalSeconds: 1,
+  minSessionSeconds: 30,
+  captureEnabled: true,
+  captureMaxBytes: 2 * 1024 * 1024 * 1024,
+  port: 47047,
+  startWithWindows: true,
+  units: 'metric',
+  theme: 'system',
+  debug: true,
+}
+
+function renderApp(initialEntry = '/settings'): string {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+  client.setQueryData(['settings'], config)
+  return renderToStaticMarkup(
+    <QueryClientProvider client={client}>
+      <MemoryRouter initialEntries={[initialEntry]}>
+        <App />
+      </MemoryRouter>
+    </QueryClientProvider>,
+  )
+}
 
 describe('Brand', () => {
   it('uses the bundled LapDog artwork without repeating the adjacent name', () => {
@@ -47,5 +72,18 @@ describe('SplashScreen', () => {
 
     expect(html).toContain('class="splash-screen splash-hidden"')
     expect(html).toContain('aria-hidden="true"')
+  })
+})
+
+describe('Brake-It discovery', () => {
+  it('does not expose its experimental setting or LapDog navigation link', () => {
+    const html = renderApp()
+
+    expect(html).not.toContain('Enable Brake-It link')
+    expect(html).not.toContain('href="/brake-it/simulator"')
+  })
+
+  it('keeps the direct Brake-It route available', () => {
+    expect(renderApp('/brake-it/simulator')).toContain('Loading Brake-it…')
   })
 })

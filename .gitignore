@@ -1,5 +1,8 @@
 .superpowers/
 
+# macOS Finder metadata at any directory depth.
+.DS_Store
+
 # Generated datasets: the full two-year set is ~250 MB, regenerate with
 #   go run ./cmd/lapdog-gen -dir .dataset
 .dataset/
@@ -42,3 +45,8 @@ internal/web/dist/*
 # on any other machine this directory would have been committable — and the contents
 # are other people's personal data, not only the user's own.
 /ignore/
+
+# `make brake-it` copies its privacy-minimized catalog here so Go can embed it.
+# The generated catalog remains local; a clean checkout builds with only the
+# tracked synthetic scenario.
+/internal/store/brake_catalog_data/catalog.json

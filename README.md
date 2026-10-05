@@ -106,6 +106,80 @@ can narrow the comparison before sorting.
 
 ![LapDog lap table using generated replay data](docs/images/laps.png)
 
+### Brake-It
+
+Brake-It is a pedal-timing trainer inside LapDog at
+`http://127.0.0.1:47047/brake-it`. It provides a keyboard simulator and reads
+racing pedals exposed through the browser Gamepad API. The Devices screen detects
+the accelerator and brake by watching which axis or analog button moves during a
+guided full-press calibration; mappings can be removed or detected again and are
+stored in LapDog's SQLite database. Scenarios, completed runs, and their sampled
+pedal traces are stored there too. Brake-It is currently an experimental feature
+and is available only through its direct URL; it is not linked from LapDog's
+navigation. Its routes, APIs, and stored data remain available while development
+is unpublished.
+
+The Simulator can hide the target traces while keeping the driver's recorded
+brake and accelerator traces visible. Audio cues remain independently
+selectable, and an optional large visual cue uses a stop sign for braking, a
+pedal-release symbol for trail braking, a pause symbol for coasting, and a green
+flag for acceleration. Braking-only practice ends after the trail-brake phase;
+its saved result records that acceleration was omitted instead of reporting a
+false zero accelerator-ramp error. Linked car and track selectors narrow the
+practice-scenario list to real catalog combinations and explicitly mark an
+unavailable pairing rather than silently changing the other selection. Custom
+scenarios can assign or clear their car and track in the scenario editor, with
+suggestions drawn from the local catalog.
+
+The baseline scenario in a clean checkout is synthetic. An approved local
+Garage61 import also stages its privacy-screened catalog as a Go embed input,
+so subsequent LapDog builds include those read-only scenarios and reconcile
+them into each database when it opens. The generated catalog remains ignored
+by Git.
+
+For an approved local Garage61 import, set the dedicated token and run:
+
+```bash
+python3 -m pip install -r tools/brake-it/requirements.txt  # once, for colored logs
+export GARAGE61_TOKEN=...
+make brake-it                         # imports into .dataset.db
+# or: make brake-it BRAKE_IT_DB=/path/to/lapdog.db
+```
+
+The active extraction resolves the Mazda MX-5 and BMW M4 GT3 (excluding the M4
+GT3 Evo) at Circuito de Navarra's Speed Circuit, Road Atlanta's Full Course, and
+Circuit de Spa-Francorchamps's Grand Prix Pits. It processes the six car/track
+combinations sequentially, checkpoints each completed combination, averages
+visible telemetry into braking scenarios, and imports them through LapDog's
+SQLite store. The full reviewed [free iRacing road-track
+list](docs/brake-it-free-road-tracks.md) remains documented for expanding the
+included-content catalog after testing. LapDog
+checks each returned lap for visible telemetry before requesting its CSV; it
+does not use Garage61's Pro-only telemetry search filter. Lap searches use
+12-lap pages, verify fastest-first ordering across at least three pages when
+available, and stop after finding the fastest 12 telemetry-visible laps. All
+Garage61 requests are sequential and start at least one second apart by
+default; set `BRAKE_IT_REQUEST_INTERVAL=2` to use a more conservative interval.
+The importer honors Garage61's `Retry-After` header on successful responses and
+429s, also reads `retryAfterSeconds` from 429 bodies, and adds up to one second
+of random jitter before the next request. Set `BRAKE_IT_RETRY_JITTER` to change
+the jitter bound. It writes only a screened local staging catalog under
+`ignore/brake-it/` and an ignored copy used as Go build input. The catalog keeps
+each cited lap's Garage61 link, lap time, and braking-window contribution so the
+Scenarios screen can show its provenance; tokens, raw CSV, Garage61 API URLs,
+and driver identity are not stored. Each request reports
+its HTTP status and elapsed time rounded to a
+tenth of a second. Rich supplies colored output through Python's standard
+logging API; the importer falls back to plain structured logs when Rich is not
+installed. The Scenarios screen can filter the imported catalog by car and
+track. As soon as a car/track combination has been analyzed, its screened
+scenarios are fsynced to the staging catalog and installed with an atomic
+rename. A later failure therefore cannot discard completed combinations. On a
+subsequent run, the importer validates the checkpoint and skips lap and CSV
+downloads when that car/track combination already has scenarios with retained
+citations. Older link-free checkpoints are regenerated. Stable
+scenario IDs are merged once, and SQLite imports update the existing rows.
+
 ### Every screen
 
 | Screen | What it shows |
@@ -119,6 +193,7 @@ can narrow the comparison before sorting.
 | **Laps** | A sortable, paged table of completed laps with lap time, delta, fuel, incidents, and position. |
 | **Top 10** | Filtered car and track rankings for completed laps, clean laps, and distance driven, split by session category. |
 | **Export** | CSV or JSON downloads of the currently filtered sessions, laps, or position changes. Empty values remain empty rather than being changed to zero. |
+| **Brake-It** | An unpublished experimental pedal-timing trainer with live target and input traces, scored results, keyboard simulation, and calibrated Gamepad API racing pedals. |
 | **Settings** | Recording frequency, minimum session length, capture retention, units, theme, startup behavior, update checks, diagnostics, data paths, and collector status. |
 
 ## Tray menu
@@ -141,7 +216,7 @@ Choose metric or imperial units, light/dark/system theme, telemetry poll
 interval, minimum session length, capture retention, interface port, and
 whether LapDog starts with Windows.
 
-All data stays on the local machine. The interface binds only to `127.0.0.1`,
+All LapDog and Brake-It data stays on the local machine. The interface binds only to `127.0.0.1`,
 so it is not reachable from another computer. Files are stored in:
 
 ```text

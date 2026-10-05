@@ -103,6 +103,7 @@ automation dependency. Start `make run`, then:
 cd web
 npm run verify-animation
 npm run verify-layout
+npm run verify-brake-it
 ```
 
 The animation verifier accepts a page and chart title:
@@ -117,6 +118,55 @@ node tools/verify-animation.mjs \
 Visual changes must be inspected in a real browser. Unit tests cannot prove
 that a chart is centered, unclipped, readable, or animating.
 
+Brake-It lives under `/brake-it/*` but uses the same Vite bundle and Go server.
+Its scenarios, settings, results, and sampled traces are SQLite records served
+through `/api/brake-it/*`; Web Serial permission and an open port remain
+browser-owned transient state. The committed built-in exercise is synthetic.
+`make brake-it` also copies its privacy-screened output to the ignored Go embed input
+at `internal/store/brake_catalog_data/catalog.json`; builds made afterward
+carry that catalog and reconcile it into every database they open. Do not
+commit or publish a Garage61-derived catalog or a binary containing one unless
+the permission and privacy conditions in `Garage61-Permission.md` and the
+integration plan are satisfied.
+
+The developer-only Garage61 importer uses `GARAGE61_TOKEN` and writes into the
+same server database selected by `BRAKE_IT_DB` (default: `.dataset.db`):
+
+```bash
+python3 -m pip install -r tools/brake-it/requirements.txt
+GARAGE61_TOKEN=... make brake-it
+make brake-it BRAKE_IT_DB=/path/to/lapdog.db BRAKE_IT_CSV_LIMIT=10
+make brake-it BRAKE_IT_REQUEST_INTERVAL=2
+make brake-it BRAKE_IT_RETRY_JITTER=2
+```
+
+Stop a running LapDog process before importing into its database. For the
+current testing pass, the target reads `/cars` and `/tracks`, then queries only
+the Mazda MX-5 on the first eligible Circuito de Navarra road layout. For every
+configured car/track combination, the lap query avoids Garage61's Pro-only
+telemetry filter and reads 12-lap pages. It validates
+ascending lap-time order, checks at least three pages when available, and
+continues only until it has the fastest 12 telemetry-visible laps or exhausts
+the results. Any ordering change
+aborts the import. Every request, including retries and CSV downloads, starts
+at least `BRAKE_IT_REQUEST_INTERVAL` seconds after the previous request
+(default `1.0`). The target honors `Retry-After` on successful and rate-limited
+responses, as well as `retryAfterSeconds` in documented 429 bodies, and adds up
+to `BRAKE_IT_RETRY_JITTER` seconds of random delay (default `1.0`). It reduces
+authorized CSV telemetry in memory. Progress uses Python's standard logging
+API with Rich color when installed, and every request logs its status and
+elapsed time to the nearest tenth of a second. Each completed car/track pair is
+immediately privacy-checked and atomically checkpointed to the intermediate
+`ignore/brake-it/catalog.json`. The catalog and SQLite rows contain aggregate
+scenario parameters, car/track labels, and screened Garage61 lap citations for
+the local UI. The generator and Go importer retain lap IDs, lap times, braking
+window contributions, and Garage61 app links, while rejecting driver identity,
+raw telemetry, Garage61 API URLs, authorization fields, and bearer tokens.
+Reruns validate and resume that checkpoint, skip completed car/track
+combinations only when citations are present, regenerate older link-free
+checkpoints, merge stable scenario IDs once, and rely on SQLite upserts rather
+than inserting duplicate rows.
+
 ## Make targets
 
 | Target | What it does |
@@ -129,6 +179,7 @@ that a chart is centered, unclipped, readable, or animating.
 | `dataset` | Generate the full synthetic capture dataset into `.dataset` |
 | `dataset-db` | Replay `.dataset` into `.dataset.db` |
 | `ingest` | Replay captures from `CAPTURES` into the development database |
+| `brake-it` | Generate free-road Garage61 aggregates and import them into `BRAKE_IT_DB` |
 | `release` | Build, optionally Authenticode-sign, and write checksums |
 | `release-snapshot` | Exercise the GoReleaser pipeline without publishing |
 | `goreleaser-check` | Validate `.goreleaser.yaml` |
