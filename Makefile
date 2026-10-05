@@ -5,6 +5,16 @@
 # explicitly for snapshots, a forthcoming release, and GoReleaser hooks.
 GIT_TAG ?= $(shell git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
 VERSION ?= $(if $(GIT_TAG),$(patsubst v%,%,$(GIT_TAG)),0.1.0)
+# Local packages carry enough Git identity to distinguish untagged builds. Keep
+# their descriptive version separate from Windows' four-number resource version:
+# NSIS can display `0.4.0-3-gabc1234-dirty`, but VIProductVersion cannot encode
+# that text. The commit distance is a useful, monotonic fourth component until
+# the next release tag resets it to zero.
+GIT_LONG ?= $(shell git describe --tags --long --dirty --always --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null)
+LOCAL_VERSION ?= $(if $(filter v%,$(GIT_LONG)),$(patsubst v%,%,$(GIT_LONG)),0.0.0-0-g$(GIT_LONG))
+LOCAL_VERSION_PARTS := $(subst -, ,$(LOCAL_VERSION))
+LOCAL_WINDOWS_VERSION ?= $(word 1,$(LOCAL_VERSION_PARTS)).$(word 2,$(LOCAL_VERSION_PARTS))
+WINDOWS_VERSION ?= $(VERSION).0
 REVISION ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
 MODULE  := github.com/blezek/lapdog
 LDFLAGS := -X $(MODULE)/internal/version.Version=$(VERSION) -X $(MODULE)/internal/version.Revision=$(REVISION) -s -w
@@ -74,15 +84,16 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 # target arguments only from 4.4.
 .NOTPARALLEL:
 
-.PHONY: help build ci test run ui-dev dataset dataset-db ingest brake-it release tools clean \
+.PHONY: help build local-packages ci test run ui-dev dataset dataset-db ingest brake-it release tools clean \
         lint ui verify-embed build-windows build-ctl build-gen \
         fixtures validate portable installer sign goreleaser-check \
-        release-snapshot print-version
+		release-snapshot print-version print-local-version
 
 # Only the targets worth typing. The rest are prerequisites of these — real
 # targets, still invocable, just not things anyone reaches for directly.
 help:
 	@echo "build       every check, then every artefact: binaries, zip, installer"
+	@echo "local-packages  build zip and installer with a descriptive Git version"
 	@echo "ci          every check, and nothing else: what CI runs"
 	@echo "test        the Go and web test suites"
 	@echo "run         serve $(DEV_DB) on http://127.0.0.1:$(DEV_PORT)"
@@ -114,6 +125,9 @@ test: $(BUNDLE)
 # Used by the release-version test and useful when auditing an artifact build.
 print-version:
 	@echo "$(VERSION)"
+
+print-local-version:
+	@echo "$(LOCAL_VERSION) $(LOCAL_WINDOWS_VERSION)"
 
 # gofmt -l lists unformatted files and exits 0 regardless, so the failure has to
 # come from the output being non-empty rather than from the exit code. This is
@@ -287,6 +301,7 @@ installer: build-windows
 	@command -v makensis >/dev/null || { echo "makensis not found; run 'make tools'"; exit 1; }
 	makensis -NOCD -V2 \
 	  -DVERSION=$(VERSION) \
+	  -DNUMERIC_VERSION=$(WINDOWS_VERSION) \
 	  -DSRCEXE="$(CURDIR)/$(EXE)" \
 	  -DOUTFILE="$(CURDIR)/$(SETUP)" \
 	  packaging/windows/lapdog.nsi
@@ -333,6 +348,21 @@ build: ci build-ctl build-gen portable installer
 	@echo "Artefacts in $(DIST):"
 	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe lapdogctl lapdog-gen \
 	  $(notdir $(PORTABLE)) $(notdir $(SETUP))
+
+# Development packages are deliberately opt-in and local. Verify first under the
+# normal release-version rules: command-line make variables propagate through
+# MAKEFLAGS, so passing the descriptive VERSION to `make build` would contaminate
+# the release-version tests. Only the artifact sub-make receives the local values.
+# VERSION remains visible in the UI and filenames; WINDOWS_VERSION satisfies the
+# numeric version resource embedded by NSIS.
+local-packages: ci
+	$(MAKE) build-ctl build-gen portable installer \
+	  VERSION="$(LOCAL_VERSION)" WINDOWS_VERSION="$(LOCAL_WINDOWS_VERSION)"
+	@echo
+	@echo "Local packages in $(DIST):"
+	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe lapdogctl lapdog-gen \
+	  "lapdog-$(LOCAL_VERSION)-portable.zip" "lapdog-$(LOCAL_VERSION)-setup.exe"
+	-rsync -av $(DIST)/*setup* "$${HOME}/Dropbox/Lapdog/"
 
 release: build sign
 	cd $(DIST) && shasum -a 256 lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) > SHA256SUMS

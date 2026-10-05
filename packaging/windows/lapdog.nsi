@@ -16,6 +16,9 @@ ManifestDPIAware true
 !ifndef VERSION
   !define VERSION "0.0.0"
 !endif
+!ifndef NUMERIC_VERSION
+  !define NUMERIC_VERSION "${VERSION}.0"
+!endif
 !ifndef SRCEXE
   !define SRCEXE "..\..\dist\lapdog.exe"
 !endif
@@ -112,7 +115,7 @@ FunctionEnd
 !insertmacro StopRunningFunction ""
 !insertmacro StopRunningFunction "un."
 
-VIProductVersion "${VERSION}.0"
+VIProductVersion "${NUMERIC_VERSION}"
 VIAddVersionKey "ProductName" "${APPNAME}"
 VIAddVersionKey "FileDescription" "${DESCRIPTION}"
 VIAddVersionKey "FileVersion" "${VERSION}"

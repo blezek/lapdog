@@ -68,6 +68,46 @@ This keeps the installed open-source program a public client, keeps the website
 secret on the server, and avoids copying either side's refresh token to the
 other side.
 
+### Repository and deployment boundary
+
+Build the hosted application in a **new repository**, separate from this LapDog
+repository.  The two systems have different trust and deployment boundaries:
+LapDog is a local, single-user Windows executable with an embedded interface and
+SQLite database, while the hosted service accepts untrusted Internet traffic,
+holds confidential OAuth credentials, stores multiple users' data and requires
+independent deployment, monitoring, retention and incident response.  Keeping
+them together would also make it easier to accidentally include server secrets
+or server-only behavior in the distributed client.
+
+This repository continues to own everything shipped in `lapdog.exe`:
+
+- the desktop Garage61 OAuth flow and Windows credential storage;
+- local Garage61 API access, lap matching and cached metadata;
+- the device-pairing and upload clients; and
+- the existing embedded React interface.
+
+The new hosted-service repository owns:
+
+- the public website and confidential Garage61 OAuth flow;
+- accounts, browser sessions and paired-device management;
+- the upload API, verification queue/workers and leaderboards; and
+- hosted database migrations, operational configuration and public policy
+  pages.
+
+Start the hosted system as one repository and one coherently deployable
+application, with internal boundaries between its web interface, API and
+verification worker.  Do not split those parts into separate repositories
+until their deployment or ownership needs actually diverge.
+
+The repository boundary is a versioned network contract, not shared database
+models or source packages.  Define a canonical OpenAPI specification (or an
+equivalently precise schema) in the hosted-service repository, version the
+upload and pairing endpoints, and keep a generated client or checked-in schema
+snapshot here.  Both repositories must run contract tests against the same
+sanitized fixtures.  Protocol changes must remain backward compatible for a
+documented desktop support window because installed clients will not all update
+at once.
+
 | Component | OAuth client | Redirect | Token owner | Purpose |
 |---|---|---|---|---|
 | Windows LapDog | public/localhost client, no client secret | loopback HTTP | Windows credential store | local lap matching and future local analysis |
@@ -356,6 +396,7 @@ or undocumented ID equivalence, and the time statistic's meaning is known.
 
 ### Phase 1: local connection and matching
 
+- Implement this phase in the existing LapDog repository.
 - Add the desktop public-client flow, credential storage, status/disconnect UI,
   API client, rate-limit handling and additive match tables.
 - Add conservative matching and an inspectable matched/ambiguous/unmatched UI.
@@ -369,6 +410,11 @@ check and confirm its test fails before restoring it.
 
 ### Phase 2: hosted identity and device pairing
 
+- Create the hosted-service repository and implement the website, server-side
+  OAuth and persistence there; keep the desktop pairing client in this
+  repository.
+- Establish the versioned pairing/upload contract and cross-repository contract
+  fixtures before either side depends on it.
 - Build the confidential web flow, account model, encrypted credential store,
   session/CSRF controls, recovery rules and device pairing/revocation.
 - Threat-model login CSRF, account pre-hijacking, OAuth subject collision,
@@ -381,7 +427,8 @@ upload into each other's account, including under concurrent/replayed requests.
 
 ### Phase 3: upload and independent verification
 
-- Add the minimized/versioned upload contract and idempotent ingestion.
+- Add the desktop upload client here and idempotent ingestion in the hosted
+  repository, both conforming to the minimized/versioned upload contract.
 - Implement server-side statistics and lap verification with explicit evidence
   states; publish no badge until verification succeeds.
 - Reconcile edits/deletes, quota failures and revoked provider access.
