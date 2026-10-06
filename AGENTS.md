@@ -94,7 +94,10 @@ These are not stylistic. Each exists because its absence caused a real problem.
 
 # 1. `commit-staged` — commit what is already staged
 
-**Optional argument:** `yes` means pre-approved; skip the approval prompt and commit directly. Any other argument, or none, requires explicit approval.
+**Optional argument:** a boolean, `true` or `false`. `true` means the generated
+commit message is pre-approved; present it, then commit without asking or
+waiting. `false`, or no argument, keeps the approval prompt. Reject any other
+argument and explain that the accepted values are `true` and `false`.
 
 ## Steps
 
@@ -120,7 +123,7 @@ Files:
 
 **Present it** in a code block.
 
-**Ask for approval** — "Shall I commit these changes? You can also suggest edits to the message." — unless the argument was `yes`. If the user requests edits, revise and show the message again before committing.
+**Ask for approval** — "Shall I commit these changes? You can also suggest edits to the message." — unless the argument was `true`. If the user requests edits, revise and show the message again before committing.
 
 **Commit** using a heredoc, so the body's newlines and any special characters survive:
 
