@@ -389,11 +389,13 @@ release: build sign
 	@echo "Release artefacts in $(DIST):"
 	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) SHA256SUMS
 
+# Keep the local token separate from gh's authentication. Map it only for
+# GoReleaser, retaining GITHUB_TOKEN as a fallback for CI and existing setups.
 goreleaser-check:
-	goreleaser check
+	GITHUB_TOKEN="$${_GITHUB_TOKEN:-$${GITHUB_TOKEN:-}}" goreleaser check
 
 release-snapshot:
-	goreleaser release --snapshot --clean --skip=publish
+	GITHUB_TOKEN="$${_GITHUB_TOKEN:-$${GITHUB_TOKEN:-}}" goreleaser release --snapshot --clean --skip=publish
 
 # Proves the interface really is inside a Windows executable rather than read from
 # disk at runtime, by finding strings that only exist in the bundle and icon set.
