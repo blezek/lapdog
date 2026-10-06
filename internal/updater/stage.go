@@ -44,6 +44,12 @@ func newer(candidate, current string) bool {
 	}
 	return a.GreaterThan(b)
 }
+
+func releaseBuild(version string) bool {
+	v, err := semver.StrictNewVersion(strings.TrimPrefix(version, "v"))
+	return err == nil && v.Prerelease() == "" && v.Metadata() == ""
+}
+
 func equalVersion(a, b string) bool {
 	av, e := semver.NewVersion(a)
 	if e != nil {

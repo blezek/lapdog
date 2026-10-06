@@ -143,7 +143,7 @@ func New(opts Options) (*Coordinator, error) {
 	}
 	u := &Coordinator{opts: opts, updateDir: filepath.Join(opts.DataDir, "update")}
 	u.statePath = filepath.Join(u.updateDir, "state.json")
-	u.enabled = opts.Version != "dev" && opts.GOOS == "windows" && opts.GOARCH == "amd64"
+	u.enabled = releaseBuild(opts.Version) && opts.GOOS == "windows" && opts.GOARCH == "amd64"
 	u.state = Disabled
 	if u.enabled {
 		if err := u.load(); err != nil {
@@ -152,12 +152,25 @@ func New(opts Options) (*Coordinator, error) {
 		} else {
 			u.lastError = u.p.Error
 			u.state = Current
+			// An accepted release older than this executable can be left behind
+			// when another installer advances LapDog before the handoff runs.
+			// Discard it here so startup cannot resume a downgrade.
+			if u.p.Accepted != "" && !equalVersion(u.p.Accepted, opts.Version) && !newer(u.p.Accepted, opts.Version) {
+				_ = os.Remove(u.p.Staged)
+				_ = os.Remove(filepath.Join(u.updateDir, "lapdog.backup.exe"))
+				u.p = persisted{LastCheck: u.p.LastCheck}
+				u.lastError = ""
+				if err := u.saveLocked(); err != nil {
+					u.lastError = err.Error()
+					u.state = Failed
+				}
+			}
 			// Pending only describes the previous process. If the old version reached
 			// normal startup again, retry the durable acceptance.
-			if u.p.Pending && !equalVersion(u.p.Accepted, opts.Version) {
+			if u.state != Failed && u.p.Pending && !equalVersion(u.p.Accepted, opts.Version) {
 				u.p.Pending = false
 			}
-			if u.p.Release != nil && newer(u.p.Release.Version, opts.Version) {
+			if u.state != Failed && u.p.Release != nil && newer(u.p.Release.Version, opts.Version) {
 				u.state = u.releaseStateLocked(opts.Now())
 			}
 		}
@@ -396,7 +409,8 @@ func (u *Coordinator) resume(ctx context.Context) {
 	u.op.Lock()
 	defer u.op.Unlock()
 	u.mu.Lock()
-	if u.p.Accepted == "" || u.p.Release == nil || u.p.Pending {
+	if u.p.Accepted == "" || u.p.Release == nil || u.p.Pending ||
+		!newer(u.p.Accepted, u.opts.Version) || !equalVersion(u.p.Accepted, u.p.Release.Version) {
 		u.mu.Unlock()
 		return
 	}

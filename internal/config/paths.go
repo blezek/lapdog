@@ -46,6 +46,11 @@ func CapturesDir(dir string) string { return filepath.Join(dir, "captures") }
 // LogPath returns the log file path within dir.
 func LogPath(dir string) string { return filepath.Join(dir, "lapdog.log") }
 
+// CrashPath returns the append-only runtime crash report path. It is separate
+// from the structured application log because the Go runtime writes panic and
+// fatal-error output directly to a file descriptor.
+func CrashPath(dir string) string { return filepath.Join(dir, "lapdog-crash.log") }
+
 // UpdateDir holds updater state, verified staging and the rollback executable.
 func UpdateDir(dir string) string { return filepath.Join(dir, "update") }
 

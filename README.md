@@ -265,3 +265,40 @@ extract the new portable archive manually.
 
 Building, testing, architecture, capture replay, packaging, and release
 instructions are in [DEVELOPMENT.md](DEVELOPMENT.md).
+
+### Windows startup diagnostics
+
+For a startup failure, build the dedicated diagnostic executable on the Mac and
+copy `dist/lapdog-debug.exe` to Windows:
+
+```bash
+make build-windows-diagnostic
+```
+
+Then launch it directly from Command Prompt:
+
+```bat
+lapdog-debug.exe --debug
+```
+
+This build uses the Windows console subsystem, so Command Prompt waits for it and
+panic output remains visible. It retains Go symbols, disables automatic updates,
+and cannot embed or import a developer's ignored Garage61 catalog. The tray,
+collector, database, and HTTP interface otherwise use the normal application
+path. Use the tray's Quit command or Ctrl+C to stop it.
+
+The regular GUI-subsystem executable also supports console diagnostics:
+
+```bat
+start "" /wait lapdog.exe --console --debug
+```
+
+`--console` attaches to the launching console, or opens one when launched without
+an existing console. `start /wait` keeps Command Prompt waiting for the GUI
+executable to finish. `--debug` enables detailed logging for this run without
+changing saved settings. Structured logs go to
+`%LOCALAPPDATA%\lapdog\lapdog.log`, including ordinary startup errors after the
+log opens. Unhandled panics and runtime fatal errors also append to
+`%LOCALAPPDATA%\lapdog\lapdog-crash.log`. Errors before the logs open print to
+the attached console. These flags require a build containing the console
+diagnostics change; older releases do not implement them.

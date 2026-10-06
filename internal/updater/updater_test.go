@@ -68,7 +68,12 @@ func TestDailyScheduling(t *testing.T) {
 }
 
 func TestDisabledBuilds(t *testing.T) {
-	for _, tc := range []Options{{Version: "dev", GOOS: "windows", GOARCH: "amd64"}, {Version: "v1.0.0", GOOS: "darwin", GOARCH: "amd64"}, {Version: "v1.0.0", GOOS: "windows", GOARCH: "arm64"}} {
+	for _, tc := range []Options{
+		{Version: "dev", GOOS: "windows", GOARCH: "amd64"},
+		{Version: "0.3.2-4-g73b2f20-dirty", GOOS: "windows", GOARCH: "amd64"},
+		{Version: "v1.0.0", GOOS: "darwin", GOARCH: "amd64"},
+		{Version: "v1.0.0", GOOS: "windows", GOARCH: "arm64"},
+	} {
 		t.Run(tc.Version+tc.GOOS+tc.GOARCH, func(t *testing.T) {
 			tc.DataDir = t.TempDir()
 			u, err := New(tc)
@@ -79,6 +84,64 @@ func TestDisabledBuilds(t *testing.T) {
 				t.Fatalf("state=%q, want disabled", got)
 			}
 		})
+	}
+}
+
+func TestNewerInstalledVersionDiscardsAcceptedDowngrade(t *testing.T) {
+	dir := t.TempDir()
+	updateDir := filepath.Join(dir, "update")
+	if err := os.MkdirAll(updateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	staged := filepath.Join(updateDir, "staged-lapdog.exe")
+	backup := filepath.Join(updateDir, "lapdog.backup.exe")
+	for _, path := range []string{staged, backup} {
+		if err := os.WriteFile(path, []byte("executable"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	p := persisted{Accepted: "v1.1.0", Staged: staged, Pending: true, Release: &Release{Version: "v1.1.0"}}
+	if err := atomicJSON(filepath.Join(updateDir, "state.json"), p); err != nil {
+		t.Fatal(err)
+	}
+
+	u, err := New(Options{Version: "1.2.0", GOOS: "windows", GOARCH: "amd64", DataDir: dir, Detector: fakeDetector{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := u.Snapshot()
+	if s.State != Current || s.AcceptedVersion != nil || s.Available != nil || s.PendingRestart {
+		t.Fatalf("snapshot=%+v, want stale acceptance discarded", s)
+	}
+	for _, path := range []string{staged, backup} {
+		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s still exists: %v", path, err)
+		}
+	}
+}
+
+func TestResumeDoesNotLaunchAcceptedDowngrade(t *testing.T) {
+	launched := false
+	u := &Coordinator{
+		enabled:   true,
+		state:     Current,
+		updateDir: t.TempDir(),
+		p: persisted{
+			Accepted: "v1.1.0",
+			Staged:   "staged-lapdog.exe",
+			Release:  &Release{Version: "v1.1.0"},
+		},
+		opts: Options{
+			Version: "v1.2.0",
+			Launch: func(string, ...string) error {
+				launched = true
+				return nil
+			},
+		},
+	}
+	u.resume(context.Background())
+	if launched {
+		t.Fatal("accepted release older than the running version was launched")
 	}
 }
 
