@@ -15,7 +15,7 @@ const PROFILE = '/tmp/chrome-lapdog-brake-it'
 const PORT = 9335
 const VIRTUAL_GAMEPAD_ID = 'LapDog verifier virtual racing pedals'
 const verifierScenarioIDs = new Set()
-const ROUTES = ['simulator', 'scenarios', 'devices', 'results']
+const ROUTES = ['simulator', 'scenarios', 'garage61', 'devices', 'results']
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 async function launch() {
@@ -86,7 +86,7 @@ async function inspectRoute(client, route, width, height) {
     error: document.querySelector('[role="alert"]')?.textContent ?? null
   })`)
   if (state.title !== 'Brake-It · LapDog') throw new Error(`${route}: wrong title ${state.title}`)
-  if (!state.text.includes('Brake-It') || state.back !== '/dashboard' || state.tabs !== 3) {
+  if (!state.text.includes('Brake-It') || state.back !== '/dashboard' || state.tabs !== 4) {
     throw new Error(`${route}: shared navigation is incomplete`)
   }
   if (!state.imagesReady) throw new Error(`${route}: a Brake-It image did not load`)
@@ -433,6 +433,147 @@ async function verifyBrakeItIsUndiscoverable(client) {
   console.log('  PASS direct Brake-It URL remains available')
 }
 
+async function verifyGarage61Flow(client) {
+  // Synthetic responses exercise the UI deterministically without consuming
+  // Garage61 API capacity or storing verifier scenarios in the server database.
+  const { identifier } = await client.send('Page.addScriptToEvaluateOnNewDocument', { source: `
+    const originalFetch = window.fetch.bind(window);
+    const garageJob = { runId: 0, state: 'idle', message: '', carId: 0, trackId: 0, count: 0 };
+    const garageQueue = [];
+    const garageRefresh = { combinations: [{ carName: 'Fixture MX-5', trackName: 'Fixture circuit Full Course', preparedAt: '2026-01-01T00:00:00Z', carId: 101, trackId: 202, reviewNeeded: true }], dueCount: 1, reminderDue: true, snoozeUntil: null };
+    window.__garageJob = garageJob;
+    window.__garageQueue = garageQueue;
+    window.__garageSaved = false;
+    window.__garageScenarioFetches = 0;
+    window.__garagePolls = 0;
+    window.confirm = () => true;
+    window.fetch = async (url, options = {}) => {
+      const json = value => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url === '/api/brake-it/garage61/catalog') return json({ configured: true, cars: [{ id: 101, name: 'Fixture MX-5', platform: 'iracing', platform_id: '67' }, { id: 102, name: 'Fixture GT4', platform: 'iracing', platform_id: '68' }], tracks: [{ id: 202, name: 'Fixture circuit', variant: 'Full Course', platform: 'iracing', platform_id: '523' }, { id: 203, name: 'Fixture short circuit', variant: 'Club', platform: 'iracing', platform_id: '524' }] });
+      if (url === '/api/brake-it/garage61/my-combinations') return json([{ carPlatformId: 67, trackPlatformId: 523, carName: 'Fixture MX-5', trackName: 'Fixture circuit', trackConfig: 'Full Course', drivingHours: 1.5 }]);
+      if (url === '/api/brake-it/garage61/refresh') return json(garageRefresh);
+      if (url === '/api/brake-it/garage61/snooze') {
+        garageRefresh.snoozeUntil = JSON.parse(options.body).until;
+        garageRefresh.reminderDue = false;
+        return json(garageRefresh);
+      }
+      if (url === '/api/brake-it/garage61/queue') {
+        if (options.method === 'POST') {
+          const body = JSON.parse(options.body);
+          if (body.carId !== 101 || body.trackId !== 202) throw new Error('wrong queued Garage61 combination');
+          if (garageQueue.length === 0) garageQueue.push({ id: 1, carPlatformId: 67, trackPlatformId: 523, carName: 'Fixture MX-5', trackName: 'Fixture circuit Full Course', queuedAt: '2026-10-06T12:00:00Z', attemptCount: 0 });
+          Object.assign(garageQueue[0], { garageCarId: 101, garageTrackId: 202, source: 'manual', state: 'running', attemptCount: garageQueue[0].attemptCount + 1 });
+          Object.assign(garageJob, { runId: garageJob.runId + 1, queueItemId: 1, state: 'running', message: 'Processing telemetry 1 of 12', carId: 101, trackId: 202, count: 0 });
+        }
+        return json(garageQueue);
+      }
+      if (url === '/api/brake-it/garage61/job') {
+        if (!options.method) window.__garagePolls += 1;
+        if (options.method === 'DELETE') {
+          Object.assign(garageJob, { state: 'cancelled', message: 'Processing stopped. Existing scenarios are unchanged.' });
+          garageQueue[0].state = 'cancelled';
+        }
+        return json(garageJob);
+      }
+      if (url === '/api/brake-it/garage61/combinations/101/202' && options.method === 'DELETE') {
+        window.__garageSaved = false;
+        garageQueue[0].state = 'deleted';
+        garageRefresh.combinations = [];
+        return json({ deleted: 1 });
+      }
+      if (url === '/api/brake-it/garage61/combinations/delete' && options.method === 'POST') {
+        const pairs = JSON.parse(options.body).combinations;
+        if (pairs.length !== 2 || !pairs.some(pair => pair.carId === 101 && pair.trackId === 202) || !pairs.some(pair => pair.carId === 102 && pair.trackId === 203)) throw new Error('wrong bulk deletion selection');
+        window.__garageSaved = false;
+        garageQueue[0].state = 'deleted';
+        garageRefresh.combinations = [];
+        return json({ deleted: 2 });
+      }
+      const response = await originalFetch(url, options);
+      if (url === '/api/brake-it/scenarios' && !options.method && window.__garageSaved) {
+        window.__garageScenarioFetches += 1;
+        const rows = await response.json();
+        rows.push({ ...rows[0], id: 'garage61-iracing-track-202-car-101-zone-1', name: 'Fixture braking zone 1', carName: 'Fixture MX-5', trackName: 'Fixture circuit Full Course', sourceProvider: 'garage61' });
+        rows.push({ ...rows[0], id: 'garage61-iracing-track-203-car-102-zone-1', name: 'Fixture braking zone 2', carName: 'Fixture GT4', trackName: 'Fixture short circuit Club', sourceProvider: 'garage61' });
+        return json(rows);
+      }
+      return response;
+    };
+  ` })
+  try {
+    await inspectRoute(client, 'garage61', 1440, 1000)
+    const click = (text) => client.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(text)})?.click()`)
+    if (!await client.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Queue scenarios')?.disabled`)) throw new Error('Garage61 accepts an empty combination')
+    if (!await client.evaluate(`document.body.innerText.includes('Processing queue') && document.body.innerText.includes('No combinations have been queued yet.')`)) throw new Error('Recorded combination queued before a click')
+    if (!await client.evaluate(`document.body.innerText.includes('Needs review') && document.body.innerText.includes('due for refresh')`)) throw new Error('Garage61 weekly review status is missing')
+    await client.evaluate(`{ const input = document.querySelector('input[aria-label="Search Garage61 cars"]'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, 'GT4'); input.dispatchEvent(new Event('input', { bubbles: true })); }`)
+    await sleep(100)
+    if (!await client.evaluate(`document.querySelectorAll('select[aria-label="Garage61 car"] option').length === 2 && document.querySelector('select[aria-label="Garage61 car"]')?.textContent.includes('Fixture GT4')`)) throw new Error('Garage61 car search did not narrow the picker')
+    await client.evaluate(`{ const input = document.querySelector('input[aria-label="Search Garage61 track layouts"]'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, 'short'); input.dispatchEvent(new Event('input', { bubbles: true })); }`)
+    await sleep(100)
+    if (!await client.evaluate(`document.querySelectorAll('select[aria-label="Garage61 track layout"] option').length === 2 && document.querySelector('select[aria-label="Garage61 track layout"]')?.textContent.includes('Fixture short circuit')`)) throw new Error('Garage61 track search did not narrow the picker')
+    await client.evaluate(`for (const name of ['Search Garage61 cars', 'Search Garage61 track layouts']) { const input = document.querySelector('input[aria-label="'+name+'"]'); const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set; setter.call(input, ''); input.dispatchEvent(new Event('input', { bubbles: true })); }`)
+    await client.evaluate(`document.querySelector('.brake-garage-mine summary')?.click()`)
+    await client.evaluate(`document.querySelector('.brake-garage-mine .brake-list button')?.click()`)
+    if (!await client.evaluate(`document.querySelector('select[aria-label="Garage61 car"]')?.value === '101' && document.querySelector('select[aria-label="Garage61 track layout"]')?.value === '202'`)) throw new Error('Recorded combination did not fill Garage61 selectors')
+    if (!await client.evaluate(`window.__garageQueue.length === 0`)) throw new Error('Selecting recorded combination queued it without a click on Queue scenarios')
+    await click('Remind me in one week')
+    await sleep(100)
+    if (!await client.evaluate(`!document.body.innerText.includes('Weekly refresh') && document.body.innerText.includes('Queue refresh of all saved combinations')`)) throw new Error('Garage61 weekly reminder did not hide after delay')
+    await client.evaluate(`document.querySelector('.brake-back')?.click()`)
+    await sleep(250)
+    if (!await client.evaluate(`location.pathname === '/dashboard' && !document.querySelector('.garage-reminder')`)) throw new Error('Delayed Garage61 reminder remained on Dashboard')
+    await client.evaluate(`history.back()`)
+    await sleep(300)
+    if (!await client.evaluate(`location.pathname === '/brake-it/garage61'`)) throw new Error('Could not return to Garage61 after checking Dashboard reminder')
+    await client.evaluate(`for (const [name, value] of [['Garage61 car', '101'], ['Garage61 track layout', '202']]) { const select = document.querySelector('select[aria-label="'+name+'"]'); select.value = value; select.dispatchEvent(new Event('change', { bubbles: true })); }`)
+    await click('Queue scenarios')
+    let running
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      await sleep(500)
+      running = await client.evaluate(`({ progress: document.querySelector('progress') !== null, queue: document.body.innerText.includes('Processing queue'), text: document.body.innerText })`)
+      if (running.progress) break
+    }
+    if (!running.progress || !running.queue || !running.text.includes('Processing telemetry 1 of 12')) throw new Error('Garage61 running state is incomplete')
+    console.log(`       ${await screenshot(client, 'garage61-processing-desktop')}`)
+    await click('Cancel processing')
+    await sleep(1700)
+    if (!await client.evaluate(`document.body.innerText.includes('Processing stopped.') && !document.querySelector('progress')`)) throw new Error('Garage61 cancellation did not settle')
+    await click('Queue scenarios')
+    await sleep(200)
+    await client.evaluate(`window.__garageSaved = true; window.__garageQueue[0].state = 'done'; Object.assign(window.__garageJob, { state: 'complete', message: 'Scenarios are ready to practice', count: 1, scenarioId: 'garage61-iracing-track-202-car-101-zone-1' });`)
+    let prepared = false
+    for (let attempt = 0; attempt < 10 && !prepared; attempt += 1) {
+      await sleep(500)
+      prepared = await client.evaluate(`[...document.querySelectorAll('.brake-garage > section:last-of-type .brake-list button')].some(b => b.textContent.includes('Fixture MX-5'))`)
+    }
+    if (!prepared) {
+      const details = await client.evaluate(`({ fetches: window.__garageScenarioFetches, polls: window.__garagePolls, job: window.__garageJob, handled: document.querySelector('.brake-garage')?.dataset.handledRun, alert: document.querySelector('[role="alert"]')?.textContent, buttons: [...document.querySelectorAll('.brake-garage > section:last-of-type .brake-list button')].map(b => b.textContent) })`)
+      throw new Error(`Garage61 completion did not refresh prepared combinations: ${JSON.stringify(details)}`)
+    }
+    console.log(`       ${await screenshot(client, 'garage61-complete-desktop')}`)
+    await client.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
+    if (await client.evaluate(`document.documentElement.scrollWidth - document.documentElement.clientWidth > 1`)) throw new Error('Garage61 phone layout overflows')
+    console.log(`       ${await screenshot(client, 'garage61-complete-phone')}`)
+    await client.evaluate(`[...document.querySelectorAll('.brake-garage > section:last-of-type .brake-list button')].find(b => b.textContent.includes('Fixture MX-5')).click()`)
+    await sleep(300)
+    if (!await client.evaluate(`location.pathname === '/brake-it/simulator' && document.querySelector('select[aria-label="Practice scenario"]')?.value === 'garage61-iracing-track-202-car-101-zone-1'`)) throw new Error('Prepared combination did not select its practice scenario')
+    await client.evaluate(`document.querySelector('.brake-tabs a[href="/brake-it/garage61"]')?.click()`)
+    await sleep(700)
+    if (!await client.evaluate(`location.pathname === '/brake-it/garage61'`)) throw new Error('Practice could not return to Garage61 scenarios')
+    await client.evaluate(`for (const name of ['Fixture MX-5', 'Fixture GT4']) [...document.querySelectorAll('.brake-ready-combo')].find(row => row.textContent.includes(name))?.querySelector('input[type="checkbox"]')?.click()`)
+    if (!await client.evaluate(`[...document.querySelectorAll('.brake-ready-combo input[type="checkbox"]')].filter(input => input.checked).length === 2 && [...document.querySelectorAll('button')].some(button => button.textContent === 'Delete selected (2)' && !button.disabled)`)) throw new Error('Multiple prepared combinations could not be selected')
+    await click('Delete selected (2)')
+    await sleep(300)
+    if (!await client.evaluate(`document.body.innerText.includes('Deleted locally') && ![...document.querySelectorAll('.brake-ready-combo')].some(row => row.textContent.includes('Fixture MX-5') || row.textContent.includes('Fixture GT4'))`)) throw new Error('Bulk deletion did not clear both prepared combinations')
+    console.log('  PASS Garage61 searches, snooze, queue, practice selection, and bulk deletion')
+  } finally {
+    await client.send('Page.removeScriptToEvaluateOnNewDocument', { identifier })
+    await client.send('Page.navigate', { url: BASE + '/brake-it/simulator' })
+    await sleep(1000)
+  }
+}
+
 async function main() {
   mkdirSync(OUT, { recursive: true })
   const chrome = await launch()
@@ -440,6 +581,10 @@ async function main() {
   try {
     await client.send('Page.enable')
     await client.send('Runtime.enable')
+    if (process.argv.includes('--garage61-only')) {
+      await verifyGarage61Flow(client)
+      return
+    }
     await client.send('Page.addScriptToEvaluateOnNewDocument', { source: `
       globalThis.__lapdogVerifierAxes = [1, 1, 0];
       Object.defineProperty(navigator, 'getGamepads', {
@@ -463,7 +608,7 @@ async function main() {
         }
         console.log(`       ${await screenshot(client, 'devices-desktop')}`)
       }
-      if (route === 'simulator' || route === 'scenarios') {
+      if (route === 'simulator' || route === 'scenarios' || route === 'garage61') {
         if (route === 'scenarios') await verifyScenarioParity(client)
         console.log(`       ${await screenshot(client, `${route}-desktop`)}`)
       }
@@ -472,6 +617,9 @@ async function main() {
     await inspectRoute(client, 'simulator', 390, 844)
     console.log('  PASS phone /brake-it/simulator')
     console.log(`       ${await screenshot(client, 'simulator-phone')}`)
+    await inspectRoute(client, 'garage61', 390, 844)
+    console.log('  PASS phone /brake-it/garage61')
+    console.log(`       ${await screenshot(client, 'garage61-phone')}`)
     await inspectRoute(client, 'scenarios', 390, 844)
     console.log('  PASS phone /brake-it/scenarios')
     console.log(`       ${await screenshot(client, 'scenarios-phone')}`)
@@ -521,6 +669,7 @@ async function main() {
     if (lapdogLink) throw new Error('LapDog unexpectedly contains a Brake-It link')
     console.log('  PASS Brake-It returns to LapDog without advertising a return link')
 
+    await verifyGarage61Flow(client)
     await inspectRoute(client, 'simulator', 1440, 1000)
     await client.evaluate(`document.documentElement.dataset.theme = 'dark'`)
     console.log(`       ${await screenshot(client, 'simulator-dark')}`)

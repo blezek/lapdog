@@ -1,4 +1,5 @@
 import { useMemo } from 'react'
+import { Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 
 import {
@@ -38,6 +39,7 @@ import {
 } from '../components/Chart'
 import { Card, Empty, ErrorNote, Legend, Loading, Stat } from '../components/ui'
 import { Filters } from '../components/Filters'
+import { brakeApi } from '../brake-it/api'
 import { StackedByCategory } from '../components/StackedByCategory'
 import { isEmptyArray, keepPrevious, viewState } from '../query'
 
@@ -77,6 +79,11 @@ export function Dashboard() {
     queryFn: () => api.combos(filter, 10),
     ...keepPrevious,
   })
+  const garageRefresh = useQuery({
+    queryKey: ['brake-it', 'garage61', 'refresh'],
+    queryFn: brakeApi.garageRefresh,
+    refetchInterval: 60 * 60 * 1000,
+  })
 
   return (
     <>
@@ -87,6 +94,8 @@ export function Dashboard() {
         Time in the simulator, and how it was spent. Driving time excludes the garage,
         the pit box and replay playback.
       </p>
+
+      {garageRefresh.data?.reminderDue && <div className="garage-reminder" role="status"><strong>{garageRefresh.data.dueCount} Garage61 combination{garageRefresh.data.dueCount === 1 ? '' : 's'} due for weekly review.</strong><Link to="/brake-it/garage61">Refresh scenarios or delay the reminder</Link></div>}
 
       {allTimeTotals.isError && <ErrorNote error={allTimeTotals.error} />}
       {allTimeTotals.data && <AllTimeStats totals={allTimeTotals.data} />}
@@ -140,6 +149,7 @@ export function Dashboard() {
       <div className="grid" style={{ marginBottom: 14 }}>
         <Card
           title="Where the time goes: top car and track pairings"
+          actions={<Link to="/brake-it/garage61">Prepare a combination</Link>}
           table={<ComboTable cells={combos.data ?? []} />}
         >
           {viewState(combos, isEmptyArray) === 'loading' ? (
@@ -831,11 +841,12 @@ export function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Them
 function ComboTable({ cells }: { cells: ComboCell[] }) {
   // One row per pairing, with its categories listed, so nothing the heatmap encodes
   // only as colour is unavailable as a number.
-  const byCombo = new Map<string, { total: number; parts: ComboCell[] }>()
+  const byCombo = new Map<string, { total: number; parts: ComboCell[]; label: string; carPlatformId: number; trackPlatformId: number }>()
   for (const c of cells) {
-    const e = byCombo.get(c.combo) ?? { total: c.comboHours, parts: [] }
+    const key = `${c.carPlatformId}/${c.trackPlatformId}`
+    const e = byCombo.get(key) ?? { total: c.comboHours, parts: [], label: c.combo, carPlatformId: c.carPlatformId, trackPlatformId: c.trackPlatformId }
     e.parts.push(c)
-    byCombo.set(c.combo, e)
+    byCombo.set(key, e)
   }
   const ordered = [...byCombo.entries()].sort((a, b) => b[1].total - a[1].total)
 
@@ -847,12 +858,13 @@ function ComboTable({ cells }: { cells: ComboCell[] }) {
             <th className="no-sort">Car and track</th>
             <th className="no-sort num">Driving</th>
             <th className="no-sort">Split by category</th>
+            <th className="no-sort">Brake-It</th>
           </tr>
         </thead>
         <tbody>
-          {ordered.map(([combo, e]) => (
-            <tr key={combo}>
-              <td>{combo}</td>
+          {ordered.map(([key, e]) => (
+            <tr key={key}>
+              <td>{e.label}</td>
               <td className="num">{hours(e.total)}</td>
               <td>
                 {[...e.parts]
@@ -860,6 +872,7 @@ function ComboTable({ cells }: { cells: ComboCell[] }) {
                   .map((p) => `${labelForKey(p.category)} ${hours(p.hours)}`)
                   .join(' · ')}
               </td>
+              <td>{e.parts.some((part) => /^(Race|Practice)\//.test(part.category)) && <Link to={`/brake-it/garage61?carPlatformId=${e.carPlatformId}&trackPlatformId=${e.trackPlatformId}`}>Prepare scenario</Link>}</td>
             </tr>
           ))}
         </tbody>

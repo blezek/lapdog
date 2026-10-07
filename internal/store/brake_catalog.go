@@ -192,6 +192,29 @@ func validGarage61CitationURL(value string) bool {
 // SQLite database used by the LapDog server. Catalog rows are read-only in the
 // HTTP API because they use the existing built-in origin.
 func (s *Store) ImportBrakeCatalog(catalog BrakeCatalog) (int, error) {
+	return s.importBrakeCatalog(catalog, "")
+}
+
+// ImportLocalBrakeCatalog replaces a complete combination atomically. Retired
+// zones remain available to past results, and local targets survive startup's
+// bundled-catalog reconciliation.
+func (s *Store) ImportLocalBrakeCatalog(catalog BrakeCatalog, carID, trackID int) (int, error) {
+	if carID <= 0 || trackID <= 0 {
+		return 0, errors.New("store: invalid Garage61 combination IDs")
+	}
+	prefix := fmt.Sprintf("garage61-iracing-track-%d-car-%d-zone-", trackID, carID)
+	for _, item := range catalog.Scenarios {
+		if !strings.HasPrefix(item.ID, prefix) {
+			return 0, errors.New("store: scenario does not belong to the requested combination")
+		}
+	}
+	if len(catalog.Scenarios) == 0 {
+		return 0, errors.New("store: no supported Garage61 zones to import")
+	}
+	return s.importBrakeCatalog(catalog, prefix)
+}
+
+func (s *Store) importBrakeCatalog(catalog BrakeCatalog, localPrefix string) (int, error) {
 	if err := validateBrakeCatalog(catalog); err != nil {
 		return 0, err
 	}
@@ -201,7 +224,27 @@ func (s *Store) ImportBrakeCatalog(catalog BrakeCatalog) (int, error) {
 	}
 	defer tx.Rollback()
 
+	count := 0
+	if localPrefix != "" {
+		if _, err := tx.Exec(`UPDATE brake_scenarios SET retired=1, source_json=NULL, local_generated=1, review_needed=0 WHERE source_provider='garage61' AND substr(id,1,?)=?`, len(localPrefix), localPrefix); err != nil {
+			return 0, err
+		}
+	}
 	for _, item := range catalog.Scenarios {
+		if localPrefix == "" {
+			var local bool
+			prefix := item.ID
+			if index := strings.LastIndex(prefix, "-zone-"); index >= 0 {
+				prefix = prefix[:index+len("-zone-")]
+			}
+			err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM brake_scenarios WHERE local_generated=1 AND substr(id,1,?)=?)`, len(prefix), prefix).Scan(&local)
+			if err != nil {
+				return 0, err
+			}
+			if local {
+				continue
+			}
+		}
 		rec := item.BrakeScenario
 		provider := catalog.SourceProvider
 		rec.Origin = "builtin"
@@ -256,9 +299,15 @@ func (s *Store) ImportBrakeCatalog(catalog BrakeCatalog) (int, error) {
 		if changed != 1 {
 			return 0, fmt.Errorf("store: brake catalog id %q conflicts with a non-catalog scenario", rec.ID)
 		}
+		if localPrefix != "" {
+			if _, err := tx.Exec(`UPDATE brake_scenarios SET local_generated=1 WHERE id=?`, rec.ID); err != nil {
+				return 0, err
+			}
+		}
+		count++
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, fmt.Errorf("store: commit brake catalog import: %w", err)
 	}
-	return len(catalog.Scenarios), nil
+	return count, nil
 }

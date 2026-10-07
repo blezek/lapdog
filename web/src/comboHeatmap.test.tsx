@@ -22,8 +22,8 @@ interface HeatmapOption {
 describe('car-and-track heatmap', () => {
   it.each([1, 3, 4])('matches row labels and values for %i pairings', (count) => {
     const cells: ComboCell[] = Array.from({ length: count }, (_, i) => [
-      { combo: `Car ${i} at Track ${i}`, category: 'Race', hours: 10 - i, comboHours: 12 - i },
-      { combo: `Car ${i} at Track ${i}`, category: 'Practice', hours: 2, comboHours: 12 - i },
+      { combo: `Car ${i} at Track ${i}`, category: 'Race', hours: 10 - i, comboHours: 12 - i, carPlatformId: i+1, trackPlatformId: i+10 },
+      { combo: `Car ${i} at Track ${i}`, category: 'Practice', hours: 2, comboHours: 12 - i, carPlatformId: i+1, trackPlatformId: i+10 },
     ]).flat()
     renderToStaticMarkup(<ComboHeatmap cells={cells} theme={{ seq: [] } as unknown as Theme} />)
     const { option } = capture.mock.lastCall![0] as { option: HeatmapOption }

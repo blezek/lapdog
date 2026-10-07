@@ -199,6 +199,8 @@ export interface ComboCell {
   category: string
   hours: number
   comboHours: number
+  carPlatformId: number
+  trackPlatformId: number
 }
 
 /**

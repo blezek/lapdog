@@ -24,7 +24,29 @@ async function mutate<T>(url: string, method: string, body: unknown): Promise<T>
   )
 }
 
+export type GarageEntity = { id: number; name: string; variant?: string; platform: string; platform_id?: string }
+export type GarageCatalog = { configured: boolean; cars: GarageEntity[]; tracks: GarageEntity[] }
+export type GarageJob = { runId: number; queueItemId?: number; state: 'idle' | 'running' | 'complete' | 'partial' | 'review' | 'failed' | 'cancelled' | 'unmatched' | 'deleted'; message: string; carId: number; trackId: number; count: number; scenarioId?: string; all?: boolean; index?: number; total?: number; succeeded?: number; reviewNeeded?: number; errors?: string[] }
+export type GarageQueueItem = { id: number; carPlatformId: number; trackPlatformId: number; garageCarId: number; garageTrackId: number; carName: string; trackName: string; source: 'history' | 'manual' | 'refresh'; state: 'queued' | 'running' | 'done' | 'review' | 'failed' | 'unmatched' | 'cancelled' | 'deleted'; queuedAt: string; startedAt?: string; finishedAt?: string; attemptCount: number; error?: string }
+export type GarageSavedCombination = { carName: string; trackName: string; preparedAt: string; carId?: number; trackId?: number; reviewNeeded: boolean }
+export type GarageRefresh = { combinations: GarageSavedCombination[]; dueCount: number; reminderDue: boolean; snoozeUntil: string | null }
+export type MyDrivenCombination = { carPlatformId: number; trackPlatformId: number; carName: string; trackName: string; trackConfig: string; drivingHours: number }
+
 export const brakeApi = {
+  garageCatalog: () => fetch('/api/brake-it/garage61/catalog').then(response<GarageCatalog>),
+  garageRefresh: () => fetch('/api/brake-it/garage61/refresh').then(response<GarageRefresh>),
+  garageMyCombinations: () => fetch('/api/brake-it/garage61/my-combinations').then(response<MyDrivenCombination[]>),
+  snoozeGarage: (until: string) => mutate<GarageRefresh>('/api/brake-it/garage61/snooze', 'PUT', { until }),
+  garageJob: () => fetch('/api/brake-it/garage61/job').then(response<GarageJob>),
+  garageQueue: () => fetch('/api/brake-it/garage61/queue').then(response<GarageQueueItem[]>),
+  enqueueGarage: (carId: number, trackId: number) => mutate<GarageQueueItem[]>('/api/brake-it/garage61/queue', 'POST', { carId, trackId }),
+  enqueueRefreshAllGarage: () => mutate<GarageQueueItem[]>('/api/brake-it/garage61/queue', 'POST', { all: true }),
+  retryGarageQueue: (id: number) => mutate<GarageQueueItem[]>(`/api/brake-it/garage61/queue/${id}/retry`, 'POST', {}),
+  deleteGarageCombination: (carId: number, trackId: number) => mutate<{ deleted: number }>(`/api/brake-it/garage61/combinations/${carId}/${trackId}`, 'DELETE', {}),
+  deleteGarageCombinations: (combinations: { carId: number; trackId: number }[]) => mutate<{ deleted: number }>('/api/brake-it/garage61/combinations/delete', 'POST', { combinations }),
+  processGarage: (carId: number, trackId: number) => mutate<GarageJob>('/api/brake-it/garage61/job', 'POST', { carId, trackId }),
+  refreshAllGarage: () => mutate<GarageJob>('/api/brake-it/garage61/job', 'POST', { all: true }),
+  cancelGarage: () => mutate<{ ok: boolean }>('/api/brake-it/garage61/job', 'DELETE', {}),
   scenarios: () => fetch('/api/brake-it/scenarios').then(response<Scenario[]>),
   createScenario: (scenario: Scenario) =>
     mutate<Scenario>('/api/brake-it/scenarios', 'POST', scenario),

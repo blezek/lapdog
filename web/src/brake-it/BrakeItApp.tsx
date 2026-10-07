@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { Link, Navigate, NavLink, Route, Routes } from 'react-router-dom'
+import { Garage61 } from './Garage61'
 
 import { api } from '../api'
 import brakeItIcon from '../assets/brake-it-icon.png'
@@ -65,6 +66,7 @@ export const brakeItTabs = [
   // Keep the editor route implemented but undiscoverable until custom scenario
   // editing is useful enough to expose as a supported workflow.
   // ['/brake-it/scenarios', 'Scenarios', 'speedometer'],
+  ['/brake-it/garage61', 'Garage61', 'speedometer'],
   ['/brake-it/devices', 'Devices', 'cog'],
   ['/brake-it/results', 'Results', 'chart-line'],
 ] as const
@@ -232,18 +234,15 @@ export function BrakeItApp() {
 
       {error && <div className="brake-error" role="alert">{error}<button type="button" onClick={() => setError(null)}>Dismiss</button></div>}
 
-      {!selectedScenario ? (
-        <div className="brake-empty">No Brake-it scenario is available.</div>
-      ) : (
-        <Routes>
-          <Route path="/brake-it" element={<Navigate to="/brake-it/simulator" replace />} />
-          <Route path="/brake-it/simulator" element={<Simulator scenarios={scenarios} scenario={selectedScenario} input={currentInput} deviceLabel={selectedDevice.label} onSelectScenario={selectScenario} onResult={storeResult} />} />
-          <Route path="/brake-it/scenarios" element={<ScenarioEditor scenarios={scenarios} scenario={selectedScenario} onSelect={selectScenario} onChange={updateScenarioLocal} onSave={saveScenario} onDuplicate={duplicateScenario} onDelete={deleteScenario} />} />
-          <Route path="/brake-it/devices" element={<GamepadDevices devices={gamepadDevices} configurations={deviceConfigurations} selectedDeviceID={selectedDeviceID} onSelect={setSelectedDeviceID} onRefresh={refreshGamepads} onSave={saveDevice} onRemove={removeDevice} />} />
-          <Route path="/brake-it/results" element={<Results results={results} scenarios={scenarios} />} />
-          <Route path="*" element={<Navigate to="/brake-it/simulator" replace />} />
-        </Routes>
-      )}
+      <Routes>
+        <Route path="/brake-it/garage61" element={<Garage61 scenarios={scenarios} onReady={async (id) => { const rows = await brakeApi.scenarios(); setScenarios(rows); if (id) selectScenario(id) }} />} />
+        <Route path="/brake-it" element={<Navigate to="/brake-it/simulator" replace />} />
+        <Route path="/brake-it/simulator" element={selectedScenario ? <Simulator scenarios={scenarios} scenario={selectedScenario} input={currentInput} deviceLabel={selectedDevice.label} onSelectScenario={selectScenario} onResult={storeResult} /> : <div className="brake-empty">No scenarios are ready. <Link to="/brake-it/garage61">Prepare a Garage61 combination</Link></div>} />
+        <Route path="/brake-it/scenarios" element={selectedScenario ? <ScenarioEditor scenarios={scenarios} scenario={selectedScenario} onSelect={selectScenario} onChange={updateScenarioLocal} onSave={saveScenario} onDuplicate={duplicateScenario} onDelete={deleteScenario} /> : <Navigate to="/brake-it/garage61" replace />} />
+        <Route path="/brake-it/devices" element={<GamepadDevices devices={gamepadDevices} configurations={deviceConfigurations} selectedDeviceID={selectedDeviceID} onSelect={setSelectedDeviceID} onRefresh={refreshGamepads} onSave={saveDevice} onRemove={removeDevice} />} />
+        <Route path="/brake-it/results" element={<Results results={results} scenarios={scenarios} />} />
+        <Route path="*" element={<Navigate to="/brake-it/simulator" replace />} />
+      </Routes>
     </div>
   )
 }
@@ -472,6 +471,7 @@ export function ScenarioPicker({ scenarios, selectedID, disabled = false, onSele
         return <option key={encodeChoice(choice)} value={encodeChoice(choice)} disabled={choice === null}>{trackChoiceLabel(choice)}{choice === null || available ? '' : ` · unavailable for ${carChoiceLabel(car)}`}</option>
       })}</select></label>
       <label><span>Practice scenario</span><select aria-label="Practice scenario" value={combinationValid && selectedMatches ? selectedID : ''} disabled={disabled || !combinationValid} aria-invalid={!combinationValid} onChange={(event) => onSelect(event.target.value)}>{!combinationValid && <option value="">No scenarios for this car and track</option>}{matchingScenarios.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
+      {!disabled && <small><a href="/brake-it/garage61">Prepare another car and track with Garage61</a></small>}
       {disabled && <small>Stop the current run to change scenarios.</small>}
       {!disabled && !combinationValid && <small role="status">Choose a car and track marked as available before starting.</small>}
     </section>
@@ -667,7 +667,7 @@ export function SourcePanel({ scenario }: { scenario: Scenario }) {
             </div>
           )
         })}
-        {laps.length === 0 && <p>No lap citations were retained in this older catalog. Re-run <code>make brake-it</code> to add them.</p>}
+        {laps.length === 0 && <p>No lap citations were retained in this older catalog. Reprocess this combination from the Garage61 tab to add them.</p>}
       </div>
     </section>
   )

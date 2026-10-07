@@ -658,10 +658,12 @@ const defaultComboLimit = 10
 // means the ordering the store chose cannot disagree with the ordering the
 // interface draws.
 type ComboCell struct {
-	Combo      string  `json:"combo"`
-	Category   string  `json:"category"`
-	Hours      float64 `json:"hours"`
-	ComboHours float64 `json:"comboHours"`
+	Combo           string  `json:"combo"`
+	Category        string  `json:"category"`
+	Hours           float64 `json:"hours"`
+	ComboHours      float64 `json:"comboHours"`
+	CarPlatformID   int     `json:"carPlatformId"`
+	TrackPlatformID int     `json:"trackPlatformId"`
 }
 
 // TopCombos returns the busiest car-and-track pairings, split by session category.
@@ -700,11 +702,12 @@ WITH combo AS (
 SELECT c.label,
        s.session_type || '/' || s.event_context AS category,
        SUM(s.driving_seconds) / 3600.0,
-       c.tot / 3600.0
+       c.tot / 3600.0,
+       c.ci, c.ti
 FROM sessions s
 JOIN combo c ON c.ci = s.car_id AND c.ti = s.track_id
 WHERE ` + pred + `
-GROUP BY c.label, category, c.tot
+GROUP BY c.ci, c.ti, category, c.tot
 ORDER BY c.tot DESC, category`
 
 	qargs := make([]any, 0, len(args)*2+1)
@@ -721,7 +724,7 @@ ORDER BY c.tot DESC, category`
 	out := []ComboCell{}
 	for rows.Next() {
 		var c ComboCell
-		if err := rows.Scan(&c.Combo, &c.Category, &c.Hours, &c.ComboHours); err != nil {
+		if err := rows.Scan(&c.Combo, &c.Category, &c.Hours, &c.ComboHours, &c.CarPlatformID, &c.TrackPlatformID); err != nil {
 			return nil, fmt.Errorf("store: scan combo cell: %w", err)
 		}
 		out = append(out, c)
