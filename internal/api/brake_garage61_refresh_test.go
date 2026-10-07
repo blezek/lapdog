@@ -31,14 +31,20 @@ func TestGarage61WeeklyStatusSnoozeAndRefreshAll(t *testing.T) {
 	fixture.Car.PlatformID = "67"
 	fixture.Track.PlatformID = "523"
 	old := store.BrakeCatalog{CatalogVersion: 1, SourceProvider: "garage61", GeneratedAt: "2026-09-01T00:00:00Z", Scenarios: fixture.Scenarios}
+	unmatchedCar, unmatchedTrack := "Unmatched fixture car", "Unmatched fixture layout"
+	unmatched := fixture.Scenarios[0]
+	unmatched.ID = "garage61-iracing-track-999-car-888-zone-1"
+	unmatched.Name = "Unmatched fixture braking zone"
+	unmatched.CarName, unmatched.TrackName = &unmatchedCar, &unmatchedTrack
+	unmatched.Source = json.RawMessage(`{"provider":"garage61","car":{"name":"Unmatched fixture car"},"track":{"name":"Unmatched fixture layout"}}`)
+	old.Scenarios = append(old.Scenarios, unmatched)
 	for i := range old.Scenarios {
 		old.Scenarios[i].UpdatedAt = old.GeneratedAt
 	}
 	if _, err := st.ImportBrakeCatalog(old); err != nil {
 		t.Fatal(err)
 	}
-	current := old
-	current.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
+	current := store.BrakeCatalog{CatalogVersion: 1, SourceProvider: "garage61", GeneratedAt: time.Now().UTC().Format(time.RFC3339), Scenarios: fixture.Scenarios}
 	fake := &fakeGarage{catalog: garage61.Catalog{Cars: []garage61.Entity{fixture.Car}, Tracks: []garage61.Entity{fixture.Track}}, output: current, release: make(chan struct{})}
 	srv := New(st, fakeStatus{}, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv.garage = fake
@@ -85,8 +91,8 @@ func TestGarage61WeeklyStatusSnoozeAndRefreshAll(t *testing.T) {
 			if job.Total != 1 || job.Succeeded != 1 || job.Count != 2 {
 				t.Fatalf("batch job=%+v", job)
 			}
-			if len(job.Errors) == 0 {
-				t.Fatalf("unmatched saved combinations were not reported: %+v", job)
+			if len(job.Errors) == 0 || !strings.Contains(strings.Join(job.Errors, " "), unmatchedCar) {
+				t.Fatalf("unmatched fixture combination was not reported: %+v", job)
 			}
 			return
 		}
