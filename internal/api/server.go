@@ -16,6 +16,7 @@ import (
 
 	"github.com/blezek/lapdog/internal/collector"
 	"github.com/blezek/lapdog/internal/config"
+	"github.com/blezek/lapdog/internal/garage61"
 	"github.com/blezek/lapdog/internal/store"
 	"github.com/blezek/lapdog/internal/updater"
 	"github.com/blezek/lapdog/internal/web"
@@ -56,6 +57,9 @@ type Server struct {
 	reindexMu     sync.Mutex
 	reindexStatus captureReindexStatus
 	updates       UpdateCoordinator
+	garage        garageProvider
+	garageState   garageState
+	garageWake    chan struct{}
 }
 
 // UpdateCoordinator is the updater surface exposed to the local API.
@@ -67,7 +71,7 @@ type UpdateCoordinator interface {
 
 // New returns a Server.
 func New(st *store.Store, sp StatusProvider, cfg ConfigStore, log *slog.Logger) *Server {
-	return &Server{st: st, sp: sp, cfg: cfg, log: log}
+	return &Server{st: st, sp: sp, cfg: cfg, log: log, garage: garage61.New(garage61.EnvironmentToken), garageWake: make(chan struct{}, 1)}
 }
 
 // SetUpdater attaches the process-owned update coordinator.
@@ -110,6 +114,15 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("GET /api/update", s.handleUpdate)
 	mux.HandleFunc("POST /api/update/check", s.protectMutations(s.handleUpdateCheck))
 	mux.HandleFunc("POST /api/update/action", s.protectMutations(s.handleUpdateAction))
+	mux.HandleFunc("GET /api/brake-it/garage61/catalog", s.handleGarageCatalog)
+	mux.HandleFunc("GET /api/brake-it/garage61/refresh", s.handleGarageRefresh)
+	mux.HandleFunc("PUT /api/brake-it/garage61/snooze", s.protectMutations(s.handleGarageSnooze))
+	mux.HandleFunc("GET /api/brake-it/garage61/my-combinations", s.handleMyGarageCombinations)
+	mux.HandleFunc("/api/brake-it/garage61/queue", s.protectMutations(s.handleGarageQueue))
+	mux.HandleFunc("POST /api/brake-it/garage61/queue/{id}/retry", s.protectMutations(s.handleGarageQueueRetry))
+	mux.HandleFunc("POST /api/brake-it/garage61/combinations/delete", s.protectMutations(s.handleGarageCombinationsDelete))
+	mux.HandleFunc("DELETE /api/brake-it/garage61/combinations/{carId}/{trackId}", s.protectMutations(s.handleGarageCombinationDelete))
+	mux.HandleFunc("/api/brake-it/garage61/job", s.protectMutations(s.handleGarageJob))
 	mux.HandleFunc("/api/brake-it/scenarios", s.protectMutations(s.handleBrakeScenarios))
 	mux.HandleFunc("/api/brake-it/scenarios/{id}", s.protectMutations(s.handleBrakeScenario))
 	mux.HandleFunc("/api/brake-it/results", s.protectMutations(s.handleBrakeResults))
@@ -194,6 +207,13 @@ func (s *Server) Serve(ln net.Listener, h http.Handler) error {
 		Handler:           h,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	if err := s.st.RecoverGarageQueue(); err != nil {
+		ln.Close()
+		return err
+	}
+	queueCtx, stopQueue := context.WithCancel(context.Background())
+	defer stopQueue()
+	go s.runGarageQueue(queueCtx)
 	s.log.Info("serving user interface", "url", "http://"+addr)
 	return srv.Serve(ln)
 }

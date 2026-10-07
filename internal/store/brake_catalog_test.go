@@ -174,3 +174,113 @@ func TestBrakeCatalogUpsertCannotReplaceSyntheticBuiltin(t *testing.T) {
 		t.Fatalf("ImportBrakeCatalog custom collision = %v, want conflict", err)
 	}
 }
+
+func TestLocalBrakeCatalogReplacementSurvivesPackagedImport(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "local.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	catalog, err := DecodeBrakeCatalog(strings.NewReader(validBrakeCatalog))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := catalog.Scenarios[0]
+	first.ID = "garage61-iracing-track-202-car-101-zone-1"
+	second := first
+	second.ID = "garage61-iracing-track-202-car-101-zone-2"
+	catalog.Scenarios = []BrakeCatalogScenario{first, second}
+	if _, err := st.ImportBrakeCatalog(catalog); err != nil {
+		t.Fatal(err)
+	}
+	all, err := st.Garage61Combinations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundPackagedIDs := false
+	for _, combo := range all {
+		if combo.CarName == *first.CarName && combo.TrackName == *first.TrackName && combo.CarID == 101 && combo.TrackID == 202 {
+			foundPackagedIDs = true
+		}
+	}
+	if !foundPackagedIDs {
+		t.Fatalf("packaged combination IDs were not recovered: %+v", all)
+	}
+	local := catalog
+	local.Scenarios = []BrakeCatalogScenario{first}
+	local.Scenarios[0].TargetBrakePercent = 55
+	if count, err := st.ImportLocalBrakeCatalog(local, 101, 202); err != nil || count != 1 {
+		t.Fatalf("local import=%d,%v", count, err)
+	}
+	// A bundled catalog must not restore an obsolete zone or introduce another
+	// old zone into a combination the user already regenerated locally.
+	third := first
+	third.ID = "garage61-iracing-track-202-car-101-zone-3"
+	catalog.Scenarios = append(catalog.Scenarios, third)
+	if count, err := st.ImportBrakeCatalog(catalog); err != nil || count != 0 {
+		t.Fatalf("packaged import=%d,%v", count, err)
+	}
+	got, err := st.BrakeScenarioByID(first.ID)
+	if err != nil || got.TargetBrakePercent != 55 {
+		t.Fatalf("local target=%+v err=%v", got, err)
+	}
+	retired, err := st.BrakeScenarioByID(second.ID)
+	if err != nil || !retired.Retired || len(retired.Source) != 0 {
+		t.Fatalf("obsolete zone=%+v err=%v", retired, err)
+	}
+	if _, err := st.BrakeScenarioByID(third.ID); err == nil {
+		t.Fatal("packaged zone was added to local combination")
+	}
+	// A mid-import conflict rolls back retirement as well as scenario changes.
+	custom := first.BrakeScenario
+	custom.ID = "garage61-iracing-track-202-car-101-zone-4"
+	custom.Name = "User-owned collision"
+	if err := st.CreateBrakeScenario(&custom); err != nil {
+		t.Fatal(err)
+	}
+	conflict := first
+	conflict.ID = custom.ID
+	local.Scenarios = append(local.Scenarios, conflict)
+	if _, err := st.ImportLocalBrakeCatalog(local, 101, 202); err == nil {
+		t.Fatal("expected conflict")
+	}
+	got, err = st.BrakeScenarioByID(first.ID)
+	if err != nil || got.Retired {
+		t.Fatalf("failed import retired prior scenario: %+v %v", got, err)
+	}
+	empty := BrakeCatalog{CatalogVersion: BrakeCatalogVersion, SourceProvider: "garage61", GeneratedAt: "2026-10-06T13:00:00Z", Scenarios: []BrakeCatalogScenario{}}
+	if _, err := st.ImportLocalBrakeCatalog(empty, 101, 202); err == nil {
+		t.Fatal("empty refresh was imported")
+	}
+	if affected, err := st.FlagGarageCombination(101, 202); err != nil || affected != 1 {
+		t.Fatalf("flag saved combination: affected=%d err=%v", affected, err)
+	}
+	kept, err := st.BrakeScenarioByID(first.ID)
+	if err != nil || kept.Retired || len(kept.Source) == 0 {
+		t.Fatalf("unavailable source retired saved scenario: %+v err=%v", kept, err)
+	}
+	combos, err := st.Garage61Combinations()
+	if err != nil || !hasReviewFlag(combos, 101, 202, true) {
+		t.Fatalf("review flag missing: %+v err=%v", combos, err)
+	}
+	if count, err := st.ImportBrakeCatalog(catalog); err != nil || count != 0 {
+		t.Fatalf("packaged catalog resurrected retired zone: count=%d err=%v", count, err)
+	}
+	local.Scenarios = []BrakeCatalogScenario{first}
+	if count, err := st.ImportLocalBrakeCatalog(local, 101, 202); err != nil || count != 1 {
+		t.Fatalf("successful refresh: count=%d err=%v", count, err)
+	}
+	combos, err = st.Garage61Combinations()
+	if err != nil || !hasReviewFlag(combos, 101, 202, false) {
+		t.Fatalf("successful refresh retained review flag: %+v err=%v", combos, err)
+	}
+}
+
+func hasReviewFlag(combos []Garage61Combination, carID, trackID int, want bool) bool {
+	for _, combo := range combos {
+		if combo.CarID == carID && combo.TrackID == trackID {
+			return combo.ReviewNeeded == want
+		}
+	}
+	return false
+}

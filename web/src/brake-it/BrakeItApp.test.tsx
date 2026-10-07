@@ -59,7 +59,7 @@ afterEach(() => vi.unstubAllGlobals())
 
 describe('Brake-It parity', () => {
   it('keeps the scenario editor out of the visible navigation', () => {
-    expect(brakeItTabs.map(([, label]) => label)).toEqual(['Simulator', 'Devices', 'Results'])
+    expect(brakeItTabs.map(([, label]) => label)).toEqual(['Simulator', 'Garage61', 'Devices', 'Results'])
   })
 
   it('links car, track, and scenario choices in the simulator', () => {

@@ -131,6 +131,68 @@ unavailable pairing rather than silently changing the other selection. Custom
 scenarios can assign or clear their car and track in the scenario editor, with
 suggestions drawn from the local catalog.
 
+The **Garage61** tab prepares scenarios directly in the running Go application.
+Set `GARAGE61_TOKEN` in the environment of the process starting LapDog (or
+`lapdogctl serve`), then open `/brake-it/garage61`. Choose an iRacing car and
+track layout and click **Queue scenarios**. The picker lists Garage61's
+available iRacing catalog; availability of usable laps depends on the token's
+permissions. No Python installation or rebuild is needed. The token stays on
+the server and is never sent to the browser or saved in the database. OAuth
+sign-in is not implemented; the Go client accepts a separate token source so
+an OAuth token manager can replace the environment provider later.
+
+Recorded race and practice car/layout pairs appear as shortcuts in the Garage61
+tab. Selecting one fills the car and track controls; it does not queue work.
+Click **Queue scenarios** to request that combination, or **Queue refresh of all
+saved combinations** to request a refresh. Requested work persists through
+restarts and starts automatically, one combination at a time, when
+`GARAGE61_TOKEN` is available. Without a token, existing requests wait until
+LapDog restarts with one. The tab shows waiting, running, completed, and failed
+items; failed and unmatched items can be retried. The current item shows
+progress and can be cancelled without losing later items.
+
+Processing runs one combination at a time, with progress and cancellation.
+It uses the Python catalog model: up to 12 viewable laps, seven-sample smoothing,
+4% braking-event threshold, 18% minimum peak, 1.8% lap-distance clustering,
+and at least three distinct laps (or 35% of analyzed laps, whichever is greater)
+per zone. Median timings and the peak-brake p10–p90 envelope define the targets.
+As in Python, sample timing is estimated from lap time and sample count.
+Requests are sequential with a one-second interval and Garage61 rate-limit
+backoff. Processing stops after 30 minutes if it cannot finish.
+
+Successful combinations appear under **Ready to practice** and in the Simulator's
+car/track selectors. Targets and screened lap citations are saved atomically in
+the local SQLite database and work offline. Reprocessing replaces the selected
+combination's zones only after successful analysis; obsolete zones are retired
+so existing run history keeps its references. Local targets take precedence over
+bundled catalog imports, including after restart. Failed or cancelled analysis
+keeps the previous scenarios. Raw CSV and driver identity are not saved.
+Search fields narrow the Garage61 car and layout pickers. **Delete downloaded
+scenarios** removes a prepared combination from the picker; check multiple rows
+under **Ready to practice** and use **Delete selected** to remove them in one
+transaction. Deletion clears their saved lap citations and keeps prior practice
+results. A deletion
+marker prevents packaged imports from silently restoring that combination.
+Explicitly queueing it again removes the marker.
+
+The Dashboard has a **Prepare a combination** link beside its car/track chart,
+and its table links recorded race and practice pairings directly to Brake-It.
+The Garage61 tab also lists every raced or practiced pairing from local LapDog
+history, while its full picker covers all iRacing cars and layouts returned by
+Garage61. A local weekly check highlights saved combinations whose last successful
+preparation is at least seven days old. **Queue refresh of all saved combinations**
+adds them to the processing queue, saving each successful result;
+**Remind me in one week** hides the weekly reminder for seven days. Manual
+refresh stays available under **Ready to practice**. The reminder check does not contact Garage61 or refresh
+data on its own. If Garage61 supplies too few usable laps for an existing pairing,
+its scenarios and citations remain available and the pairing is flagged for review.
+An inaccessible or ambiguous catalog pairing is reported without changing its
+scenarios. These controls support periodic review; they do not by themselves
+establish a retention or erasure policy for Garage61 source data.
+
+The Python scripts below remain available for generating developer build-time
+catalogs and as the reference for the synthetic Go parity test.
+
 The baseline scenario in a clean checkout is synthetic. An approved local
 Garage61 import also stages its privacy-screened catalog as a Go embed input,
 so subsequent LapDog builds include those read-only scenarios and reconcile

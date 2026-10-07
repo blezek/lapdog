@@ -231,3 +231,37 @@
   .brake-source-head { align-items: stretch; flex-direction: column; }
   .brake-source-head > .brake-source-actions { justify-content: space-between; }
 }
+
+.brake-garage { display: grid; gap: 24px; max-width: 1120px; margin: 0 auto; padding: 24px; }
+.brake-garage h1, .brake-garage h2 { margin: 0; }
+.brake-garage p { line-height: 1.6; }
+.brake-garage-selectors { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
+.brake-garage-selectors label { display: grid; gap: 8px; min-width: 0; }
+.brake-garage-selectors select { width: 100%; }
+.brake-garage-progress { display: flex; align-items: center; flex-wrap: wrap; gap: 16px; padding: 20px 0; }
+.brake-garage-progress progress { max-width: 180px; }
+.brake-garage-note { opacity: .7; font-size: 13px; }
+.brake-garage .brake-list button { display: grid; gap: 6px; padding: 16px; border: 1px solid var(--brake-border); border-radius: 8px; color: inherit; text-decoration: none; }
+.brake-garage .brake-list button:hover { background: rgba(128,128,128,.12); }
+@media (max-width: 700px) { .brake-garage { padding: 12px; } .brake-garage-selectors { grid-template-columns: 1fr; } }
+
+.brake-garage-selectors select { padding: 10px; border: 1px solid var(--brake-border); border-radius: 6px; color: var(--brake-text); background: var(--brake-surface); font: inherit; }
+.brake-garage-picker { display: grid; gap: 12px; min-width: 0; }
+.brake-garage-selectors input[type='search'] { width: 100%; padding: 10px; border: 1px solid var(--brake-border); border-radius: 6px; color: var(--brake-text); background: var(--brake-surface); font: inherit; }
+.brake-garage-mine summary { cursor: pointer; font-weight: 700; }
+.brake-garage-mine > label { display: grid; gap: 8px; margin: 18px 0; }
+.brake-garage-mine input, .brake-garage input[type='date'] { padding: 10px; border: 1px solid var(--brake-border); border-radius: 6px; background: var(--brake-surface); color: var(--brake-text); }
+.brake-garage-combo { display: grid; gap: 5px; padding: 12px 2px; border-bottom: 1px solid var(--brake-border); }
+.brake-garage-combo span { color: var(--brake-muted); font-size: 13px; }
+.brake-queue-item { grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.brake-queue-item > div { display: grid; gap: 5px; min-width: 0; }
+.brake-garage .brake-queue-item button { display: inline-block; padding: 7px 12px; }
+.brake-ready-combo { display: flex; gap: 8px; align-items: stretch; }
+.brake-ready-combo > button:not(.brake-delete-combo) { flex: 1; min-width: 0; }
+.brake-ready-select { display: flex; align-items: center; gap: 6px; padding: 0 8px; font-size: 12px; cursor: pointer; }
+.brake-ready-select input { width: 18px; height: 18px; accent-color: var(--brake-blue); }
+.brake-ready-actions { justify-content: flex-end; }
+.brake-garage .brake-delete-selected { color: var(--status-critical); }
+.brake-garage .brake-ready-combo .brake-delete-combo { display: inline-block; padding: 9px 12px; color: var(--status-critical); }
+@media (max-width: 600px) { .brake-ready-combo { flex-direction: column; } .brake-queue-item { grid-template-columns: 1fr; } }
+.brake-garage-progress ul { flex-basis: 100%; margin: 0; padding-left: 20px; }

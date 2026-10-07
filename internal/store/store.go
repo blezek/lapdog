@@ -25,7 +25,7 @@ import (
 var migrationFS embed.FS
 
 // CurrentSchemaVersion is the schema this build understands.
-const CurrentSchemaVersion = 7
+const CurrentSchemaVersion = 11
 
 // ErrSchemaTooNew indicates the database was written by a newer build. Downgrade
 // is not supported, so this is refused rather than risked.
