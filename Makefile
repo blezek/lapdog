@@ -40,6 +40,7 @@ UI_SRC  := $(shell find web/src -type f 2>/dev/null) \
            $(wildcard web/vite.config.ts web/tsconfig*.json)
 
 EXE      := $(DIST)/lapdog.exe
+DEBUG_EXE := $(DIST)/lapdog-debug.exe
 CTLEXE   := $(DIST)/lapdogctl.exe
 PORTABLE := $(DIST)/lapdog-$(VERSION)-portable.zip
 SETUP    := $(DIST)/lapdog-$(VERSION)-setup.exe
@@ -85,7 +86,7 @@ TIMESTAMP_URL ?= http://timestamp.digicert.com
 .NOTPARALLEL:
 
 .PHONY: help build local-packages ci test run ui-dev dataset dataset-db ingest brake-it release tools clean \
-        lint ui verify-embed build-windows build-ctl build-gen \
+        lint ui verify-embed build-windows build-windows-diagnostic build-ctl build-gen \
         fixtures validate portable installer sign goreleaser-check \
 		release-snapshot print-version print-local-version
 
@@ -105,6 +106,7 @@ help:
 	@echo "release     build, then Authenticode-sign and write SHA256SUMS"
 	@echo "release-snapshot  local GoReleaser release without publishing"
 	@echo "goreleaser-check  validate .goreleaser.yaml"
+	@echo "build-windows-diagnostic  foreground Windows build with crash diagnostics"
 	@echo "tools       install the macOS packaging toolchain via brew"
 	@echo "clean       remove build output and the generated bundle"
 	@echo
@@ -191,6 +193,23 @@ ui-dev:
 build-windows: $(BUNDLE)
 	GOOS=windows GOARCH=amd64 go build -ldflags "-H windowsgui $(LDFLAGS)" -o $(EXE) ./cmd/lapdog
 	GOOS=windows GOARCH=amd64 go build -ldflags "$(LDFLAGS)" -o $(CTLEXE) ./cmd/lapdogctl
+
+# This is intentionally a console-subsystem executable: Command Prompt waits for
+# it, stdout/stderr are valid from process start, and an unhandled runtime crash
+# has somewhere visible to print. The diagnostic tag also replaces the embedded
+# Garage61 catalog with an empty filesystem so observing a startup failure cannot
+# import unrelated local scenarios into the database. Version "dev" disables the
+# automatic updater, keeping it from replacing the instrumented binary mid-test.
+# Symbols and paths remain present so a panic stack is useful.
+build-windows-diagnostic: $(BUNDLE)
+	go test -tags diagnostic ./internal/store -run '^TestDiagnosticBuildOmitsPackagedBrakeCatalog$$'
+	GOOS=windows GOARCH=amd64 go build -tags diagnostic \
+	  -ldflags "-X $(MODULE)/internal/version.Version=dev -X $(MODULE)/internal/version.Revision=$(REVISION)" \
+	  -o $(DEBUG_EXE) ./cmd/lapdog
+	@go version -m $(DEBUG_EXE) | grep -q "GOOS=windows"
+	@go version -m $(DEBUG_EXE) | grep -q "GOARCH=amd64"
+	@go version -m $(DEBUG_EXE) | grep -q -- "-tags=diagnostic"
+	@echo "build-windows-diagnostic: $(DEBUG_EXE) (windows/amd64 console build, updater and packaged catalog disabled)"
 
 # The host build of the CLI, for development on this machine.
 build-ctl: $(BUNDLE)
@@ -370,11 +389,13 @@ release: build sign
 	@echo "Release artefacts in $(DIST):"
 	@cd $(DIST) && ls -lh lapdog.exe lapdogctl.exe $(notdir $(PORTABLE)) $(notdir $(SETUP)) SHA256SUMS
 
+# Keep the local token separate from gh's authentication. Map it only for
+# GoReleaser, retaining GITHUB_TOKEN as a fallback for CI and existing setups.
 goreleaser-check:
-	goreleaser check
+	GITHUB_TOKEN="$${_GITHUB_TOKEN:-$${GITHUB_TOKEN:-}}" goreleaser check
 
 release-snapshot:
-	goreleaser release --snapshot --clean --skip=publish
+	GITHUB_TOKEN="$${_GITHUB_TOKEN:-$${GITHUB_TOKEN:-}}" goreleaser release --snapshot --clean --skip=publish
 
 # Proves the interface really is inside a Windows executable rather than read from
 # disk at runtime, by finding strings that only exist in the bundle and icon set.

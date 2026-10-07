@@ -183,6 +183,7 @@ than inserting duplicate rows.
 | `release` | Build, optionally Authenticode-sign, and write checksums |
 | `release-snapshot` | Exercise the GoReleaser pipeline without publishing |
 | `goreleaser-check` | Validate `.goreleaser.yaml` |
+| `build-windows-diagnostic` | Build a foreground Windows executable with crash diagnostics and no packaged catalog |
 | `tools` | Install the macOS packaging toolchain with Homebrew |
 | `clean` | Remove build output and the generated frontend bundle |
 
@@ -215,6 +216,7 @@ capture through the current collector. The same replay implementation backs
 
 ```bash
 make build-windows  # dist/lapdog.exe and dist/lapdogctl.exe
+make build-windows-diagnostic  # dist/lapdog-debug.exe, console subsystem
 make verify-embed   # verify windows/amd64 and the embedded interface
 make portable       # zip both executables
 make installer      # build the NSIS installer

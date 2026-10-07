@@ -1,7 +1,6 @@
 package store
 
 import (
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,12 +12,9 @@ import (
 
 const BrakeCatalogVersion = 1
 
-// packagedBrakeCatalogFS contains the privacy-screened catalog copied into
-// this package by `make brake-it`. The tracked placeholder keeps ordinary Go
-// builds valid when no local Garage61 catalog has been generated.
-//
-//go:embed all:brake_catalog_data
-var packagedBrakeCatalogFS embed.FS
+type brakeCatalogFiles interface {
+	ReadFile(string) ([]byte, error)
+}
 
 // BrakeCatalog is the privacy-screened interchange format produced by the
 // local Garage61 generator. It contains aggregate targets and Garage61 lap

@@ -1,17 +1,64 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/blezek/lapdog/internal/applog"
 	"github.com/blezek/lapdog/internal/config"
 )
+
+func TestConsoleRequestedBeforeFlagParsing(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "absent", args: []string{"--debug"}, want: false},
+		{name: "long", args: []string{"--console", "--debug"}, want: true},
+		{name: "short", args: []string{"-console"}, want: true},
+		{name: "explicit true", args: []string{"--console=true"}, want: true},
+		{name: "explicit false", args: []string{"--console=false"}, want: false},
+		{name: "last value wins", args: []string{"--console", "--console=false"}, want: false},
+		{name: "invalid value still attaches for error output", args: []string{"--console=perhaps"}, want: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := consoleRequested(test.args); got != test.want {
+				t.Errorf("consoleRequested(%q) = %v, want %v", test.args, got, test.want)
+			}
+		})
+	}
+}
+
+func TestRecoverRunPanicWritesStackAndReturnsError(t *testing.T) {
+	var output bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&output, nil))
+	var runErr error
+	func() {
+		defer recoverRunPanic(logger, &runErr)
+		panic("startup exploded")
+	}()
+	if runErr == nil || !strings.Contains(runErr.Error(), "startup exploded") {
+		t.Fatalf("recovered error = %v, want startup panic", runErr)
+	}
+	for _, want := range []string{"application panicked", "startup exploded", "TestRecoverRunPanicWritesStackAndReturnsError"} {
+		if !strings.Contains(output.String(), want) {
+			t.Errorf("panic log missing %q: %s", want, output.String())
+		}
+	}
+}
 
 func TestApplyRuntimeConfigAppliesLiveSettings(t *testing.T) {
 	cfg := config.Default()
@@ -196,4 +243,74 @@ func (l fakeListener) Addr() net.Addr {
 
 func tcpAddr(port int) net.Addr {
 	return &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: port}
+}
+
+// Exercise the real startup path: the GUI build cannot rely on stderr to
+// explain why an existing database could not be opened.
+func TestStartupFailureWrittenToLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses the XDG data-directory override")
+	}
+	root := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", root)
+	originalWriter := stdlog.Writer()
+	originalFlags := stdlog.Flags()
+	originalPrefix := stdlog.Prefix()
+	defer func() {
+		stdlog.SetOutput(originalWriter)
+		stdlog.SetFlags(originalFlags)
+		stdlog.SetPrefix(originalPrefix)
+	}()
+	var standardLog bytes.Buffer
+	stdlog.SetOutput(&standardLog)
+	stdlog.SetFlags(0)
+	stdlog.SetPrefix("before-run:")
+	originalLevel := applog.Level.Level()
+	applog.Level.Set(slog.LevelInfo)
+	defer applog.Level.Set(originalLevel)
+	dir := filepath.Join(root, "lapdog")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Default()
+	cfg.Debug = false
+	if err := config.Save(config.ConfigPath(dir), cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(config.DBPath(dir), []byte("not a SQLite database"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	args := os.Args
+	os.Args = []string{"lapdog", "--debug"}
+	defer func() { os.Args = args }()
+	err := run()
+	if err == nil {
+		t.Fatal("startup succeeded with corrupt database")
+	}
+	body, readErr := os.ReadFile(config.LogPath(dir))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	for _, want := range []string{
+		"application failed", err.Error(), "opening database",
+		"debug=true", "savedDebug=false", "commandLineDebug=true",
+	} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("startup log missing %q: %s", want, body)
+		}
+	}
+	stdlog.Print("writer-restored")
+	if got := standardLog.String(); !strings.Contains(got, "before-run:writer-restored") {
+		t.Errorf("standard logger was not restored after run: %q", got)
+	}
+	if got := applog.Level.Level(); got != slog.LevelInfo {
+		t.Errorf("application log level after run = %v, want restored info level", got)
+	}
+	crashBody, readErr := os.ReadFile(config.CrashPath(dir))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(crashBody), "LapDog process started") {
+		t.Errorf("crash report missing process header: %s", crashBody)
+	}
 }

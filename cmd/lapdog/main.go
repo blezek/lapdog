@@ -5,14 +5,18 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
+	stdlog "log"
 	"log/slog"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"runtime"
+	runtimedebug "runtime/debug"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
@@ -61,7 +65,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	if handoff, ok, err := updater.ParseHandoff(os.Args[1:]); ok {
 		if err != nil {
 			return err
@@ -71,6 +75,26 @@ func run() error {
 			return err
 		}
 		return nil
+	}
+	// A GUI-subsystem executable starts without usable standard streams. Attach
+	// before flag.Parse so help and malformed-flag errors are visible too; parsing
+	// first would make the diagnostic switch fail precisely on its error path.
+	if consoleRequested(os.Args[1:]) {
+		if err := attachConsole(); err != nil {
+			return err
+		}
+	}
+	flags := flag.NewFlagSet("lapdog", flag.ContinueOnError)
+	console := flags.Bool("console", false, "attach to the launching console (or open a new console)")
+	debug := flags.Bool("debug", false, "enable debug logging for this run")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected argument: %s", flags.Arg(0))
 	}
 	dataDir, err := config.DataDir()
 	if err != nil {
@@ -87,9 +111,37 @@ func run() error {
 		return err
 	}
 	defer logCloser.Close()
+	disableCrashOutput, crashErr := installCrashOutput(config.CrashPath(dataDir))
+	if disableCrashOutput != nil {
+		defer disableCrashOutput()
+	}
+	defer func() {
+		if runErr != nil {
+			log.Error("application failed", "err", runErr)
+		}
+	}()
+	defer recoverRunPanic(log, &runErr)
+	// Capture standard-library logging too, including systray initialization errors.
+	previousLogger := slog.Default()
+	previousLogWriter := stdlog.Writer()
+	previousLogFlags := stdlog.Flags()
+	previousLogPrefix := stdlog.Prefix()
+	slog.SetDefault(log)
+	defer func() {
+		slog.SetDefault(previousLogger)
+		stdlog.SetOutput(previousLogWriter)
+		stdlog.SetFlags(previousLogFlags)
+		stdlog.SetPrefix(previousLogPrefix)
+	}()
 	log.Info("starting", "version", version.Version, "dataDir", dataDir,
 		"platform", runtime.GOOS, "arch", runtime.GOARCH,
-		"logPath", config.LogPath(dataDir))
+		"logPath", config.LogPath(dataDir), "crashPath", config.CrashPath(dataDir),
+		"console", *console, "commandLineDebug", *debug)
+	if crashErr != nil {
+		log.Warn("crash report file unavailable", "path", config.CrashPath(dataDir), "err", crashErr)
+	} else {
+		log.Debug("crash reporting enabled", "path", config.CrashPath(dataDir))
+	}
 
 	cfgStore, err := config.NewStore(config.ConfigPath(dataDir))
 	if err != nil {
@@ -99,9 +151,14 @@ func run() error {
 
 	// Apply the log level before anything else runs, so the start-up sequence itself is
 	// captured at the level the user chose.
-	applog.SetDebug(cfg.Debug)
+	previousLogLevel := applog.Level.Level()
+	defer applog.Level.Set(previousLogLevel)
+	effectiveDebug := cfg.Debug || *debug
+	applog.SetDebug(effectiveDebug)
 	log.Info("configuration loaded",
-		"debug", cfg.Debug,
+		"debug", effectiveDebug,
+		"savedDebug", cfg.Debug,
+		"commandLineDebug", *debug,
 		"pollIntervalSeconds", cfg.PollIntervalSeconds,
 		"minSessionSeconds", cfg.MinSessionSeconds,
 		"captureEnabled", cfg.CaptureEnabled,
@@ -118,12 +175,15 @@ func run() error {
 			log.Warn("could not reconcile installed version", "err", err)
 		}
 	}
+	log.Debug("executable configuration ready", "path", exePath)
 
+	log.Debug("opening database", "path", config.DBPath(dataDir))
 	st, err := store.Open(config.DBPath(dataDir))
 	if err != nil {
 		return err
 	}
 	defer st.Close()
+	log.Debug("database ready")
 
 	// The live source narrates its read path through this logger. On the machine that
 	// matters there is no debugger, so the trace is the only instrument.
@@ -152,10 +212,12 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	log.Debug("collector ready")
 
 	// Runtime settings take effect live; a port change does not, which the settings
 	// API reports to the user rather than silently ignoring.
 	cfgStore.OnChange(func(c config.Config) {
+		c.Debug = c.Debug || *debug
 		applyRuntimeConfig(log, coll, exePath, config.SetAutostart, c)
 	})
 
@@ -186,9 +248,12 @@ func run() error {
 		return err
 	}
 	srv.SetUpdater(updates)
+	log.Debug("updater ready", "state", updates.Snapshot().State)
 	updates.Start(ctx)
 	iface := startInterface(srv, cfg.Port, log)
+	log.Debug("user interface startup complete", "url", iface.URL, "error", iface.Error)
 
+	log.Debug("starting system tray", "url", iface.URL)
 	tray.Run(tray.Options{
 		Status:          coll.Status,
 		SetPaused:       coll.SetPaused,
@@ -208,8 +273,11 @@ func run() error {
 		UpdateStatus: updates.Snapshot,
 	})
 
-	// The tray returned, so the user chose Quit. Give the collector a moment to
+	// The tray returned. Give the collector a moment to
 	// flush the active session before exiting.
+	if ctx.Err() == nil {
+		log.Warn("system tray returned without a shutdown request")
+	}
 	stop()
 	select {
 	case <-collDone:
@@ -219,6 +287,48 @@ func run() error {
 	}
 	log.Info("stopped")
 	return nil
+}
+
+// recoverRunPanic turns a panic on the startup/tray goroutine into a durable log
+// entry. Panics on other goroutines and runtime fatal errors are handled by the
+// separate runtime crash output installed above.
+func recoverRunPanic(log *slog.Logger, runErr *error) {
+	if recovered := recover(); recovered != nil {
+		log.Error("application panicked",
+			"panic", recovered,
+			"stack", string(runtimedebug.Stack()))
+		*runErr = fmt.Errorf("application panic: %v", recovered)
+	}
+}
+
+// consoleRequested performs only the small pre-parse needed to make flag parser
+// diagnostics visible in a windowsgui build. flag.Parse remains authoritative.
+func consoleRequested(args []string) bool {
+	requested := false
+	for _, arg := range args {
+		switch arg {
+		case "-console", "--console":
+			requested = true
+		default:
+			var value string
+			switch {
+			case strings.HasPrefix(arg, "-console="):
+				value = strings.TrimPrefix(arg, "-console=")
+			case strings.HasPrefix(arg, "--console="):
+				value = strings.TrimPrefix(arg, "--console=")
+			default:
+				continue
+			}
+			parsed, err := strconv.ParseBool(value)
+			if err != nil {
+				// Attach so flag.Parse can display the invalid value.
+				requested = true
+				continue
+			}
+			requested = parsed
+		}
+	}
+	return requested
 }
 
 func startInterface(srv interfaceServer, preferredPort int, log *slog.Logger) interfaceBinding {
