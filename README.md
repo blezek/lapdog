@@ -110,10 +110,18 @@ can narrow the comparison before sorting.
 
 Brake-It is a pedal-timing trainer inside LapDog at
 `http://127.0.0.1:47047/brake-it`. It provides a keyboard simulator and reads
-racing pedals exposed through the browser Gamepad API. The Devices screen detects
-the accelerator and brake by watching which axis or analog button moves during a
-guided full-press calibration; mappings can be removed or detected again and are
-stored in LapDog's SQLite database. Scenarios, completed runs, and their sampled
+racing pedals exposed through the browser Gamepad API. The Devices screen shows
+live raw axis values for any visible controller, detects pedals during guided
+calibration, and lets the driver choose an axis when automatic detection picks
+the wrong one. It samples released and held positions, then asks the driver to
+press and verify each pedal separately before saving. The device list refreshes
+when the tab gains focus and explains when gamepad access is blocked. The
+simulator can switch between the keyboard and connected, calibrated controllers;
+a run stops without saving if its controller disconnects. Device names can be
+changed on the Devices screen. Controllers with the same browser name share a
+calibration, so the driver chooses the intended live browser index for each
+session. Mappings can be removed or detected again and are stored in LapDog's
+SQLite database. Scenarios, completed runs, and their sampled
 pedal traces are stored there too. Brake-It is currently an experimental feature
 and is available only through its direct URL; it is not linked from LapDog's
 navigation. Its routes, APIs, and stored data remain available while development
