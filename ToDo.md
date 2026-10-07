@@ -2,13 +2,15 @@
 
 ## Brake-It Windows hardware verification
 
-In Windows Chrome or Edge, open `/brake-it/devices`, grant access to a physical
-serial pedal controller, and verify identification, accelerator/brake streaming,
-disconnect, and route-away cleanup. Complete a run with audio enabled, restart
-LapDog, and confirm the result remains under `/brake-it/results`. The keyboard
+In Windows Chrome, Edge, and Firefox, open `/brake-it/devices` with a physical
+Gamepad API pedal controller. Verify browser discovery, each reported axis,
+released and held calibration, accelerator/brake verification, identical-device
+warnings where possible, disconnect handling, and route-away cleanup. Complete
+a run with audio enabled, restart LapDog, and confirm the result remains under
+`/brake-it/results`. The keyboard
 path, SQLite persistence, direct routes, cross-application navigation, and
-responsive light/dark layouts have been verified on macOS; the physical serial
-path has not.
+responsive light/dark layouts have been verified on macOS; physical pedal input
+has not.
 
 ## Brake-It Garage61 import verification
 

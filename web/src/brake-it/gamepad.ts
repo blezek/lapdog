@@ -4,6 +4,8 @@ import { clamp } from './scenario'
 import type { BrakeDevice, ControllerDevice, PedalBinding, PedalInput } from './types'
 
 export type RawGamepadState = { axes: number[]; buttons: number[] }
+export type GamepadSnapshot = RawGamepadState & { mapping: string; timestamp: number }
+export type GamepadScan = { devices: ControllerDevice[]; issue: 'unsupported' | 'blocked' | 'failed' | null }
 
 export function hasGamepadAPI(): boolean {
   return typeof navigator !== 'undefined' && typeof navigator.getGamepads === 'function'
@@ -12,6 +14,7 @@ export function hasGamepadAPI(): boolean {
 export function gamepadState(gamepad: Gamepad): RawGamepadState {
   return {
     axes: [...gamepad.axes],
+    // Saved mappings may still refer to buttons, although new calibration uses axes only.
     buttons: gamepad.buttons.map((button) => button.value),
   }
 }
@@ -29,6 +32,23 @@ export function pedalPercent(raw: number | null, binding: PedalBinding): number 
   return clamp(((raw - binding.restValue) / span) * 100, 0, 100)
 }
 
+export function pedalVerification(
+  state: RawGamepadState | null,
+  acceleratorBinding: PedalBinding | null,
+  brakeBinding: PedalBinding | null,
+): { accelerator: number; brake: number; acceleratorReady: boolean; brakeReady: boolean } {
+  const accelerator = state && acceleratorBinding
+    ? pedalPercent(rawBindingValue(state, acceleratorBinding), acceleratorBinding) : 0
+  const brake = state && brakeBinding
+    ? pedalPercent(rawBindingValue(state, brakeBinding), brakeBinding) : 0
+  return {
+    accelerator,
+    brake,
+    acceleratorReady: !!state && !!acceleratorBinding && !!brakeBinding && accelerator >= 80 && brake <= 20,
+    brakeReady: !!state && !!acceleratorBinding && !!brakeBinding && brake >= 80 && accelerator <= 20,
+  }
+}
+
 export function detectPedalInput(
   baseline: RawGamepadState,
   current: RawGamepadState,
@@ -36,80 +56,139 @@ export function detectPedalInput(
 ): PedalBinding | null {
   let found: PedalBinding | null = null
   let largest = minimumChange
-  const inspect = (inputKind: 'axis' | 'button', before: number[], now: number[]) => {
-    for (let inputIndex = 0; inputIndex < Math.min(before.length, now.length); inputIndex += 1) {
-      const delta = Math.abs(now[inputIndex]! - before[inputIndex]!)
-      if (delta <= largest) continue
-      largest = delta
-      found = {
-        inputKind,
-        inputIndex,
-        restValue: before[inputIndex]!,
-        pressedValue: now[inputIndex]!,
-      }
-    }
+  for (let inputIndex = 0; inputIndex < Math.min(baseline.axes.length, current.axes.length); inputIndex += 1) {
+    const binding = bindingForInput(baseline, current, inputIndex, minimumChange)
+    if (!binding) continue
+    const delta = Math.abs(binding.pressedValue - binding.restValue)
+    if (delta <= largest) continue
+    largest = delta
+    found = binding
   }
-  inspect('axis', baseline.axes, current.axes)
-  inspect('button', baseline.buttons, current.buttons)
   return found
+}
+
+export function bindingForInput(
+  baseline: RawGamepadState,
+  current: RawGamepadState,
+  inputIndex: number,
+  minimumChange = 0.15,
+): PedalBinding | null {
+  const before = baseline.axes[inputIndex]
+  const now = current.axes[inputIndex]
+  if (before === undefined || now === undefined || !Number.isFinite(before) || !Number.isFinite(now)) return null
+  if (Math.abs(now - before) <= minimumChange) return null
+  return { inputKind: 'axis', inputIndex, restValue: before, pressedValue: now }
+}
+
+// A capture is usable only when every reported axis stays near one position.
+// Averaging several readings avoids saving a single noisy or moving sample.
+export function stableAxes(samples: number[][], maxSpread = 0.08): number[] | null {
+  if (samples.length < 5 || samples[0]?.length === 0) return null
+  const count = samples[0]!.length
+  if (samples.some((sample) => sample.length !== count || sample.some((value) => !Number.isFinite(value)))) return null
+  const averaged: number[] = []
+  for (let index = 0; index < count; index += 1) {
+    const values = samples.map((sample) => sample[index]!)
+    if (Math.max(...values) - Math.min(...values) > maxSpread) return null
+    averaged.push(values.reduce((sum, value) => sum + value, 0) / values.length)
+  }
+  return averaged
 }
 
 export function currentGamepad(index: number, expectedID?: string): Gamepad | null {
   if (!hasGamepadAPI()) return null
   try {
     const gamepad = navigator.getGamepads()[index]
-    if (!gamepad || (expectedID && gamepad.id && gamepad.id !== expectedID)) return null
+    if (!gamepad || gamepad.connected === false) return null
+    const identity = gamepad.id.trim() || `Game controller ${gamepad.index + 1}`
+    if (expectedID && identity !== expectedID) return null
     return gamepad
   } catch {
     return null
   }
 }
 
-function enumerateGamepads(): ControllerDevice[] {
-  if (!hasGamepadAPI()) return []
+export function useGamepadSnapshot(index?: number, expectedID?: string): GamepadSnapshot | null {
+  const [snapshot, setSnapshot] = useState<GamepadSnapshot | null>(null)
+  const signature = useRef('')
+  useEffect(() => {
+    let active = true
+    let frame = 0
+    const tick = () => {
+      const gamepad = index === undefined ? null : currentGamepad(index, expectedID)
+      const next = gamepad ? { ...gamepadState(gamepad), mapping: gamepad.mapping, timestamp: gamepad.timestamp } : null
+      const nextSignature = JSON.stringify(next)
+      if (signature.current !== nextSignature) {
+        signature.current = nextSignature
+        setSnapshot(next)
+      }
+      if (active) frame = requestAnimationFrame(tick)
+    }
+    frame = requestAnimationFrame(tick)
+    return () => { active = false; cancelAnimationFrame(frame) }
+  }, [index, expectedID])
+  return snapshot
+}
+
+export function scanGamepads(): GamepadScan {
+  if (!hasGamepadAPI()) return { devices: [], issue: 'unsupported' }
   try {
-    return [...navigator.getGamepads()].flatMap((gamepad) => {
-      if (!gamepad) return []
+    const devices = [...navigator.getGamepads()].flatMap((gamepad) => {
+      if (!gamepad || gamepad.connected === false) return []
       const identity = gamepad.id.trim() || `Game controller ${gamepad.index + 1}`
       return [{
         id: `gamepad-${gamepad.index}`,
         label: identity.slice(0, 200),
         kind: 'gamepad' as const,
         status: 'available' as const,
-        detail: `${gamepad.axes.length} axes · ${gamepad.buttons.length} buttons · browser index ${gamepad.index}`,
+        detail: `${gamepad.axes.length} axes · browser index ${gamepad.index}`,
         gamepadIndex: gamepad.index,
         gamepadId: identity,
       }]
     })
-  } catch {
-    return []
+    return { devices, issue: null }
+  } catch (error) {
+    return { devices: [], issue: error instanceof DOMException && error.name === 'SecurityError' ? 'blocked' : 'failed' }
   }
 }
 
-export function useGamepadDevices(): { devices: ControllerDevice[]; refresh: () => void } {
-  const [devices, setDevices] = useState<ControllerDevice[]>([])
+export function resolveSelectedGamepad(devices: ControllerDevice[], selectedID: string, identity: string | null): ControllerDevice | null {
+  if (!identity) return null
+  const selected = devices.find((device) => device.id === selectedID && device.gamepadId === identity)
+  if (selected) return selected
+  const matches = devices.filter((device) => device.gamepadId === identity)
+  return matches.length === 1 ? matches[0] ?? null : null
+}
+
+export function useGamepadDevices(): { devices: ControllerDevice[]; issue: GamepadScan['issue']; refresh: () => void } {
+  const [scan, setScan] = useState<GamepadScan>({ devices: [], issue: null })
   const signature = useRef('')
   const refresh = useCallback(() => {
-    const next = enumerateGamepads()
+    const next = scanGamepads()
     const nextSignature = JSON.stringify(next)
     if (nextSignature === signature.current) return
     signature.current = nextSignature
-    setDevices(next)
+    setScan(next)
   }, [])
 
   useEffect(() => {
     refresh()
     const changed = () => refresh()
+    const visible = () => { if (document.visibilityState === 'visible') refresh() }
     window.addEventListener('gamepadconnected', changed)
     window.addEventListener('gamepaddisconnected', changed)
-    const timer = window.setInterval(refresh, 1000)
+    window.addEventListener('focus', changed)
+    document.addEventListener('visibilitychange', visible)
+    const timer = window.setInterval(visible, 1000)
     return () => {
       window.removeEventListener('gamepadconnected', changed)
       window.removeEventListener('gamepaddisconnected', changed)
+      window.removeEventListener('focus', changed)
+      document.removeEventListener('visibilitychange', visible)
       window.clearInterval(timer)
     }
   }, [refresh])
-  return { devices, refresh }
+  return { ...scan, refresh }
 }
 
 export function useGamepadInput(

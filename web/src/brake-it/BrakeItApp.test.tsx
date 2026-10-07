@@ -1,4 +1,5 @@
 import { renderToStaticMarkup } from 'react-dom/server'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { brakeItTabs, PracticeCue, ScenarioMetadataFields, ScenarioPicker, ScenarioTraceEditor, Simulator, SourcePanel, TraceChart } from './BrakeItApp'
@@ -91,14 +92,19 @@ describe('Brake-It parity', () => {
     expect(html).toContain('Stop the current run to change scenarios.')
 
     const simulator = renderToStaticMarkup(
-      <Simulator
-        scenarios={[scenario, second, bmwSpa]}
-        scenario={second}
-        input={{ accelerator: 0, brake: 0, source: 'keyboard' }}
-        deviceLabel="Keyboard simulator"
-        onSelectScenario={() => undefined}
-        onResult={() => undefined}
-      />,
+      <MemoryRouter>
+        <Simulator
+          scenarios={[scenario, second, bmwSpa]}
+          scenario={second}
+          input={{ accelerator: 0, brake: 0, source: 'keyboard' }}
+          deviceLabel="Keyboard simulator"
+          devices={[{ id: 'keyboard', label: 'Keyboard simulator', kind: 'keyboard', status: 'connected', detail: 'Arrow keys' }]}
+          selectedDeviceID="keyboard"
+          onSelectDevice={() => undefined}
+          onSelectScenario={() => undefined}
+          onResult={() => undefined}
+        />
+      </MemoryRouter>,
     )
     expect(simulator).toContain('aria-label="Practice car"')
     expect(simulator).toContain('aria-label="Practice track"')
@@ -259,7 +265,7 @@ describe('Brake-It HID pedal devices', () => {
           label: 'Sim Pedals (Vendor: 1234 Product: abcd)',
           kind: 'gamepad',
           status: 'available',
-          detail: '3 axes · 0 buttons · browser index 0',
+          detail: '3 axes · browser index 0',
           gamepadIndex: 0,
           gamepadId: 'Sim Pedals (Vendor: 1234 Product: abcd)',
         }]}
@@ -275,15 +281,46 @@ describe('Brake-It HID pedal devices', () => {
         selectedDeviceID="gamepad-0"
         onSelect={() => undefined}
         onRefresh={() => undefined}
-        onSave={() => undefined}
+        onSave={async () => true}
+        onRename={async () => true}
         onRemove={() => undefined}
       />,
     )
 
     expect(html).toContain('Sim Pedals (Vendor: 1234 Product: abcd)')
     expect(html).toContain('Pedals configured')
+    expect(html).toContain('Inspect axes for Sim Pedals')
+    expect(html).toContain('Use in simulator')
     expect(html).toContain('Reconfigure')
     expect(html).toContain('Remove')
     expect(html).not.toContain('Web Serial')
+  })
+
+  it('marks shared browser names as ambiguous while keeping each live index inspectable', () => {
+    vi.stubGlobal('navigator', { getGamepads: () => [] })
+    const devices = [0, 1].map((index) => ({
+      id: `gamepad-${index}`, label: 'Unknown Device', kind: 'gamepad' as const,
+      status: 'available' as const, detail: `2 axes · browser index ${index}`,
+      gamepadIndex: index, gamepadId: 'e502-bbab-Unknown Device',
+    }))
+    const html = renderToStaticMarkup(<GamepadDevices
+      devices={devices} configurations={[]} selectedDeviceID="keyboard"
+      onSelect={() => undefined} onRefresh={() => undefined} onSave={async () => true}
+      onRename={async () => true} onRemove={() => undefined}
+    />)
+    expect(html).toContain('Inspect axes for Unknown Device, browser index 0')
+    expect(html).toContain('Inspect axes for Unknown Device, browser index 1')
+    expect(html.match(/Several connected devices share this name and one saved calibration/g)).toHaveLength(2)
+  })
+
+  it('prevents starting a run while its selected controller is unavailable', () => {
+    const html = renderToStaticMarkup(<MemoryRouter><Simulator
+      scenarios={[scenario]} scenario={scenario} input={{ accelerator: 0, brake: 0, source: 'gamepad' }}
+      deviceLabel="Pedals (unavailable)" deviceAvailable={false}
+      devices={[{ id: 'keyboard', label: 'Keyboard simulator', kind: 'keyboard', status: 'connected', detail: '' }]}
+      selectedDeviceID="gamepad-0" onSelectDevice={() => undefined} onSelectScenario={() => undefined} onResult={() => undefined}
+    /></MemoryRouter>)
+    expect(html).toContain('The selected controller is unavailable')
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Start<\/button>/)
   })
 })

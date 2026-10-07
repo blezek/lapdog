@@ -63,7 +63,7 @@ async function connect() {
     const result = await send('Runtime.evaluate', {
       expression, returnByValue: true, awaitPromise: true,
     })
-    if (result.exceptionDetails) throw new Error(result.exceptionDetails.text)
+    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description ?? result.exceptionDetails.text)
     return result.result.value
   }
   return { send, evaluate, close: () => socket.close() }
@@ -377,22 +377,80 @@ async function cleanupVerifierDevice(client) {
 async function verifyHIDPedalCalibration(client) {
   await client.send('Page.navigate', { url: `${BASE}/brake-it/devices` })
   await sleep(1400)
+  await client.evaluate(`globalThis.__lapdogVerifierBlock = true; window.dispatchEvent(new Event('focus'))`)
+  await sleep(200)
+  const blocked = await client.evaluate(`document.body.innerText.includes('This page cannot read gamepads')`)
+  if (!blocked) throw new Error('devices: blocked gamepad access was not explained')
+  await client.evaluate(`globalThis.__lapdogVerifierBlock = false; window.dispatchEvent(new Event('focus'))`)
+  await sleep(200)
+  const restored = await client.evaluate(`document.body.innerText.includes(${JSON.stringify(VIRTUAL_GAMEPAD_ID)})`)
+  if (!restored) throw new Error('devices: controller did not return after access recovered')
+  const rawInputs = await client.evaluate(`({
+    inputs: document.querySelector('[aria-label="Live controller inputs"]')?.innerText ?? '',
+    labels: [...document.querySelectorAll('[aria-label="Live controller inputs"] .brake-raw-input span')].map(span => span.textContent),
+  })`)
+  if (rawInputs.labels.length !== 3 || rawInputs.labels.some(label => label?.startsWith('Button')) || rawInputs.inputs.includes('Buttons')) {
+    throw new Error(`devices: button inputs appeared in the axis monitor: ${JSON.stringify(rawInputs)}`)
+  }
   const click = async (label) => client.evaluate(`{
     const button = [...document.querySelectorAll('button')].find(item => item.textContent === ${JSON.stringify(label)});
-    if (!button || button.disabled) throw new Error(${JSON.stringify(label)} + ' is not available');
+    if (!button || button.disabled) throw new Error(${JSON.stringify(label)} + ' is not available: ' + document.querySelector('[aria-label="Pedal detection"]')?.innerText);
     button.click();
   }`)
   await click('Detect pedals')
+  await sleep(150)
   await click('Capture released pedals')
+  await sleep(350)
   await client.evaluate(`globalThis.__lapdogVerifierAxes[0] = -1`)
   await sleep(500)
   await click('Use this accelerator')
+  await sleep(350)
   await client.evaluate(`globalThis.__lapdogVerifierAxes[0] = 1`)
   await sleep(300)
   await click('Detect brake')
   await client.evaluate(`globalThis.__lapdogVerifierAxes[1] = -1`)
   await sleep(500)
-  await click('Save pedal mapping')
+  await click('Use this brake')
+  await sleep(350)
+  const beforeVerification = await client.evaluate(`({
+    saved: document.body.innerText.includes('Pedals configured'),
+    acceleratorButton: [...document.querySelectorAll('button')].find(button => button.textContent === 'Accelerator verified')?.disabled,
+  })`)
+  if (beforeVerification.saved || !beforeVerification.acceleratorButton) {
+    throw new Error(`devices: calibration saved before independent pedal verification: ${JSON.stringify(beforeVerification)}`)
+  }
+  await client.evaluate(`globalThis.__lapdogVerifierAxes[1] = 1; globalThis.__lapdogVerifierAxes[0] = -1`)
+  await sleep(250)
+  await click('Accelerator verified')
+  await client.evaluate(`globalThis.__lapdogVerifierAxes[0] = 1`)
+  await sleep(250)
+  await click('Verify brake')
+  await client.evaluate(`globalThis.__lapdogVerifierAxes[1] = -1`)
+  await sleep(250)
+  console.log(`       ${await screenshot(client, 'devices-verification')}`)
+  await client.evaluate(`{
+    const actualFetch = window.fetch;
+    window.fetch = (...args) => {
+      if (args[0] === '/api/brake-it/devices' && args[1]?.method === 'POST') {
+        window.fetch = actualFetch;
+        return Promise.resolve(new Response(JSON.stringify({ error: 'Verifier save failure' }), {
+          status: 500, headers: { 'Content-Type': 'application/json' },
+        }));
+      }
+      return actualFetch(...args);
+    };
+  }`)
+  await click('Save verified mapping')
+  await sleep(250)
+  const failedSave = await client.evaluate(`({
+    wizard: Boolean(document.querySelector('[aria-label="Pedal detection"]')),
+    retry: [...document.querySelectorAll('button')].some(button => button.textContent === 'Save verified mapping' && !button.disabled),
+    error: document.body.innerText.includes('Verifier save failure'),
+  })`)
+  if (!failedSave.wizard || !failedSave.retry || !failedSave.error) {
+    throw new Error(`devices: failed save discarded calibration: ${JSON.stringify(failedSave)}`)
+  }
+  await click('Save verified mapping')
   await sleep(700)
   const configured = await client.evaluate(`Promise.all([
     fetch('/api/brake-it/devices').then(response => response.json()),
@@ -406,8 +464,122 @@ async function verifyHIDPedalCalibration(client) {
   if (configured.count !== 1 || !configured.configured || !configured.reconfigure || !configured.remove) {
     throw new Error(`devices: calibration did not persist: ${JSON.stringify(configured)}`)
   }
-  console.log('  PASS HID axes detected, calibrated, and persisted')
+  if (await client.evaluate(`Boolean(document.querySelector('.brake-device.active'))`)) {
+    throw new Error('devices: saving a mapping selected a controller without the driver choosing it')
+  }
+  await click('Use in simulator')
+  await click('Rename')
+  console.log(`       ${await screenshot(client, 'devices-rename')}`)
+  await client.evaluate(`{
+    const input = document.querySelector('.brake-device-rename input');
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+    setter.call(input, 'Verifier pedals');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  }`)
+  await sleep(100)
+  await click('Save name')
+  await sleep(500)
+  const renamed = await client.evaluate(`fetch('/api/brake-it/devices')
+    .then(response => response.json())
+    .then(rows => rows.find(device => device.gamepadId === ${JSON.stringify(VIRTUAL_GAMEPAD_ID)})?.label)`)
+  if (renamed !== 'Verifier pedals') throw new Error(`devices: name was not persisted: ${renamed}`)
+  await client.evaluate(`globalThis.__lapdogVerifierHidden = true; window.dispatchEvent(new Event('focus'))`)
+  await sleep(200)
+  const offline = await client.evaluate(`({
+    summary: [...document.querySelectorAll('.brake-device-summary')]
+      .find(summary => summary.textContent.includes(${JSON.stringify(VIRTUAL_GAMEPAD_ID)}))?.textContent ?? '',
+    rename: [...document.querySelectorAll('.brake-device')]
+      .filter(device => device.textContent.includes(${JSON.stringify(VIRTUAL_GAMEPAD_ID)}))
+      .some(device => [...device.querySelectorAll('button')].some(button => button.textContent === 'Rename')),
+  })`)
+  if (!offline.summary.includes('Verifier pedals') || !offline.rename) {
+    throw new Error(`devices: saved controller cannot be renamed while disconnected: ${JSON.stringify(offline)}`)
+  }
+  console.log(`       ${await screenshot(client, 'devices-offline')}`)
+  await client.evaluate(`globalThis.__lapdogVerifierHidden = false; window.dispatchEvent(new Event('focus'))`)
+  await sleep(200)
+  await client.evaluate(`globalThis.__lapdogVerifierSlot = 1; window.dispatchEvent(new Event('focus'))`)
+  await sleep(250)
+  const moved = await client.evaluate(`({
+    active: document.querySelector('.brake-device.active strong')?.textContent ?? '',
+    inputs: document.querySelector('[aria-label="Live controller inputs"]')?.textContent ?? '',
+  })`)
+  if (moved.active !== 'Verifier pedals' || !moved.inputs.includes('Axis 0')) {
+    throw new Error(`devices: selected controller was lost after its browser slot moved: ${JSON.stringify(moved)}`)
+  }
+  await client.evaluate(`[...document.querySelectorAll('button')]
+    .find(button => button.getAttribute('aria-label') === 'Inspect axes for Other controller, browser index 0')?.click()`)
+  await sleep(150)
+  const inspected = await client.evaluate(`({
+    title: document.querySelector('[aria-label="Live controller inputs"] .brake-panel-head span')?.textContent,
+    active: document.querySelector('.brake-device.active strong')?.textContent,
+  })`)
+  if (inspected.title !== 'Other controller' || inspected.active !== 'Verifier pedals') {
+    throw new Error(`devices: inspection changed the simulator device: ${JSON.stringify(inspected)}`)
+  }
+  await client.evaluate(`globalThis.__lapdogVerifierSlot = 0; window.dispatchEvent(new Event('focus'))`)
+  await sleep(250)
+  await client.evaluate(`[...document.querySelectorAll('button')]
+    .find(button => button.getAttribute('aria-label') === 'Inspect axes for Verifier pedals, browser index 0')?.click()`)
+  console.log('  PASS HID axes detected, verified, and persisted')
   console.log(`       ${await screenshot(client, 'devices-configured')}`)
+  await client.evaluate(`globalThis.__lapdogVerifierAxes[1] = 1`)
+  await client.send('Page.navigate', { url: `${BASE}/brake-it/simulator` })
+  await sleep(1400)
+  const options = await client.evaluate(`[...document.querySelectorAll('select[aria-label="Input device"] option')].map(option => ({ value: option.value, label: option.textContent }))`)
+  if (!options.some(option => option.value === 'gamepad-0' && option.label === 'Verifier pedals')) {
+    throw new Error(`simulator: renamed controller is absent from the device selector: ${JSON.stringify(options)}`)
+  }
+  await client.evaluate(`{
+    const select = document.querySelector('select[aria-label="Input device"]');
+    select.value = 'gamepad-0';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }`)
+  await sleep(250)
+  const selected = await client.evaluate(`({
+    value: document.querySelector('select[aria-label="Input device"]')?.value,
+    keyboardHint: document.body.innerText.includes('Keyboard: ↑ accelerator'),
+  })`)
+  if (selected.value !== 'gamepad-0' || selected.keyboardHint) {
+    throw new Error(`simulator: controller selection did not take effect: ${JSON.stringify(selected)}`)
+  }
+  await click('Audio on')
+  await click('Start')
+  let deviceLocked = false
+  for (let attempt = 0; attempt < 20 && !deviceLocked; attempt += 1) {
+    await sleep(100)
+    deviceLocked = await client.evaluate(`document.querySelector('select[aria-label="Input device"]')?.disabled ?? false`)
+  }
+  if (!deviceLocked) {
+    throw new Error('simulator: input device could change during a run')
+  }
+  await client.evaluate(`{
+    const gamepad = navigator.getGamepads()[0];
+    globalThis.__lapdogVerifierHidden = true;
+    const disconnected = new Event('gamepaddisconnected');
+    Object.defineProperty(disconnected, 'gamepad', { value: gamepad });
+    window.dispatchEvent(disconnected);
+  }`)
+  await sleep(250)
+  const lost = await client.evaluate(`({
+    stopped: [...document.querySelectorAll('button')].some(button => button.textContent === 'Start' && button.disabled),
+    notice: document.body.innerText.includes('this run stopped without saving a result'),
+  })`)
+  if (!lost.stopped || !lost.notice) throw new Error(`simulator: disconnected controller did not stop the run: ${JSON.stringify(lost)}`)
+  await client.evaluate(`globalThis.__lapdogVerifierHidden = false; window.dispatchEvent(new Event('focus'))`)
+  await sleep(250)
+  await client.evaluate(`{
+    const select = document.querySelector('select[aria-label="Input device"]');
+    select.value = 'keyboard';
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  }`)
+  await sleep(200)
+  if (!await client.evaluate(`document.querySelector('select[aria-label="Input device"]')?.value === 'keyboard' && document.body.innerText.includes('Keyboard: ↑ accelerator')`)) {
+    throw new Error('simulator: keyboard could not be reselected')
+  }
+  console.log('  PASS renamed controller can be selected in the simulator and locked during a run')
+  await client.send('Page.navigate', { url: `${BASE}/brake-it/devices` })
+  await sleep(1400)
   await click('Remove')
   await sleep(500)
   const remaining = await client.evaluate(`fetch('/api/brake-it/devices')
@@ -587,13 +759,27 @@ async function main() {
     }
     await client.send('Page.addScriptToEvaluateOnNewDocument', { source: `
       globalThis.__lapdogVerifierAxes = [1, 1, 0];
+      globalThis.__lapdogVerifierButtons = [0.8, 0];
+      globalThis.__lapdogVerifierSlot = 0;
+      globalThis.__lapdogVerifierBlock = false;
+      globalThis.__lapdogVerifierHidden = false;
       Object.defineProperty(navigator, 'getGamepads', {
         configurable: true,
-        value: () => [{
-          id: ${JSON.stringify(VIRTUAL_GAMEPAD_ID)}, index: 0, connected: true,
-          mapping: '', axes: [...globalThis.__lapdogVerifierAxes], buttons: [],
-          timestamp: performance.now(), vibrationActuator: null,
-        }],
+        value: () => {
+          if (globalThis.__lapdogVerifierBlock) throw new DOMException('Blocked', 'SecurityError');
+          if (globalThis.__lapdogVerifierHidden) return [];
+          const slot = globalThis.__lapdogVerifierSlot;
+          const pedal = {
+            id: ${JSON.stringify(VIRTUAL_GAMEPAD_ID)}, index: slot, connected: true,
+            mapping: '', axes: [...globalThis.__lapdogVerifierAxes],
+            buttons: globalThis.__lapdogVerifierButtons.map(value => ({ value })),
+            timestamp: performance.now(), vibrationActuator: null,
+          };
+          return slot === 0 ? [pedal] : [{
+            id: 'Other controller', index: 0, connected: true,
+            mapping: '', axes: [0], buttons: [], timestamp: performance.now(),
+          }, pedal];
+        },
       });
     ` })
     await verifyBrakeItIsUndiscoverable(client)
@@ -603,8 +789,8 @@ async function main() {
       console.log(`  PASS desktop /brake-it/${route}`)
       if (route === 'devices') {
         const deviceCopy = await client.evaluate(`document.body.innerText`)
-        if (!deviceCopy.includes('HID pedal support') || deviceCopy.includes('Web Serial')) {
-          throw new Error('devices: HID calibration replaced by unsupported serial setup')
+        if (!deviceCopy.includes('Controller discovery') || deviceCopy.includes('Web Serial')) {
+          throw new Error(`devices: controller discovery text missing or unsupported serial setup present: ${deviceCopy.slice(0, 500)}`)
         }
         console.log(`       ${await screenshot(client, 'devices-desktop')}`)
       }
@@ -614,6 +800,9 @@ async function main() {
       }
     }
     await verifyHIDPedalCalibration(client)
+    await inspectRoute(client, 'devices', 390, 844)
+    console.log('  PASS phone /brake-it/devices')
+    console.log(`       ${await screenshot(client, 'devices-phone')}`)
     await inspectRoute(client, 'simulator', 390, 844)
     console.log('  PASS phone /brake-it/simulator')
     console.log(`       ${await screenshot(client, 'simulator-phone')}`)

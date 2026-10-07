@@ -11,7 +11,7 @@ import { evaluateRun } from './analysis'
 import { brakeApi } from './api'
 import { CuePlayer } from './audio'
 import { GamepadDevices } from './GamepadDevices'
-import { useGamepadDevices, useGamepadInput } from './gamepad'
+import { currentGamepad, resolveSelectedGamepad, useGamepadDevices, useGamepadInput } from './gamepad'
 import {
   carTrackCombinationExists,
   carChoicesForTrack,
@@ -78,18 +78,54 @@ export function BrakeItApp() {
   const [selectedScenarioID, setSelectedScenarioID] = useState('')
   const [deviceConfigurations, setDeviceConfigurations] = useState<BrakeDevice[]>([])
   const [selectedDeviceID, setSelectedDeviceID] = useState('keyboard')
+  const [selectedGamepadIdentity, setSelectedGamepadIdentity] = useState<string | null>(null)
+  const [deviceSelectionInterrupted, setDeviceSelectionInterrupted] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const { devices: gamepadDevices, refresh: refreshGamepads } = useGamepadDevices()
-  const devices = useMemo(() => [keyboardDevice, ...gamepadDevices], [gamepadDevices])
+  const { devices: gamepadDevices, issue: gamepadIssue, refresh: refreshGamepads } = useGamepadDevices()
   const keyboardInput = useKeyboardController(selectedDeviceID === 'keyboard')
   const selectedScenario = scenarios.find((scenario) => scenario.id === selectedScenarioID) ?? scenarios[0]
-  const selectedDevice = devices.find((device) => device.id === selectedDeviceID) ?? keyboardDevice
+  const selectedDevice = resolveSelectedGamepad(gamepadDevices, selectedDeviceID, selectedGamepadIdentity) ?? keyboardDevice
+  const selectDevice = (id: string) => {
+    const device = gamepadDevices.find((item) => item.id === id)
+    setSelectedDeviceID(device?.id ?? 'keyboard')
+    setSelectedGamepadIdentity(device?.gamepadId ?? null)
+    setDeviceSelectionInterrupted(false)
+  }
   const selectedCalibration = selectedDevice.gamepadId
     ? deviceConfigurations.find((device) => device.gamepadId === selectedDevice.gamepadId) ?? null
     : null
-  const gamepadInput = useGamepadInput(selectedDevice.kind === 'gamepad' ? selectedDevice : null, selectedCalibration)
-  const currentInput = selectedDevice.kind === 'keyboard' ? keyboardInput : gamepadInput
+  const selectedConfiguration = selectedGamepadIdentity
+    ? deviceConfigurations.find((device) => device.gamepadId === selectedGamepadIdentity) ?? null
+    : null
+  const simulatorDevices = useMemo(() => [
+    keyboardDevice,
+    ...gamepadDevices.flatMap((device) => {
+      const configured = deviceConfigurations.find((item) => item.gamepadId === device.gamepadId)
+      if (!configured) return []
+      const duplicated = gamepadDevices.some((other) => other.id !== device.id && other.gamepadId === device.gamepadId)
+      return [{ ...device, label: duplicated ? `${configured.label} · browser index ${device.gamepadIndex}` : configured.label }]
+    }),
+  ], [deviceConfigurations, gamepadDevices])
+  const simulatorDeviceID = !deviceSelectionInterrupted && selectedDevice.kind === 'gamepad' ? selectedDevice.id : selectedDeviceID
+  const gamepadInput = useGamepadInput(!deviceSelectionInterrupted && selectedDevice.kind === 'gamepad' ? selectedDevice : null, selectedCalibration)
+  const currentInput = selectedDeviceID === 'keyboard' ? keyboardInput : gamepadInput
+  const selectedDeviceLabel = selectedDeviceID !== 'keyboard' && (selectedDevice.kind === 'keyboard' || deviceSelectionInterrupted)
+    ? `${selectedConfiguration?.label ?? selectedGamepadIdentity ?? 'Controller'} (unavailable)`
+    : selectedCalibration?.label ?? selectedDevice.label
+  const deviceAvailable = selectedDeviceID === 'keyboard' || (!deviceSelectionInterrupted && selectedDevice.kind === 'gamepad' && !!selectedCalibration &&
+    selectedDevice.gamepadIndex !== undefined && !!currentGamepad(selectedDevice.gamepadIndex, selectedDevice.gamepadId))
+
+  useEffect(() => {
+    const disconnected = (event: GamepadEvent) => {
+      const identity = event.gamepad.id.trim() || `Game controller ${event.gamepad.index + 1}`
+      if (`gamepad-${event.gamepad.index}` === selectedDeviceID && identity === selectedGamepadIdentity) {
+        setDeviceSelectionInterrupted(true)
+      }
+    }
+    window.addEventListener('gamepaddisconnected', disconnected)
+    return () => window.removeEventListener('gamepaddisconnected', disconnected)
+  }, [selectedDeviceID, selectedGamepadIdentity])
 
   useEffect(() => {
     const before = document.title
@@ -189,15 +225,15 @@ export function BrakeItApp() {
     }
   }, [])
 
-  const saveDevice = async (device: BrakeDevice, exists: boolean) => {
+  const saveDevice = async (device: BrakeDevice, exists: boolean): Promise<boolean> => {
     try {
       const saved = exists ? await brakeApi.updateDevice(device) : await brakeApi.createDevice(device)
       setDeviceConfigurations((current) => [...current.filter((item) => item.id !== saved.id), saved])
-      const visible = gamepadDevices.find((item) => item.gamepadId === saved.gamepadId)
-      if (visible) setSelectedDeviceID(visible.id)
       setError(null)
+      return true
     } catch (caught) {
       setError(message(caught))
+      return false
     }
   }
 
@@ -205,11 +241,22 @@ export function BrakeItApp() {
     try {
       await brakeApi.deleteDevice(device.id)
       setDeviceConfigurations((current) => current.filter((item) => item.id !== device.id))
-      const selected = devices.find((item) => item.id === selectedDeviceID)
-      if (selected?.gamepadId === device.gamepadId) setSelectedDeviceID('keyboard')
+      if (selectedGamepadIdentity === device.gamepadId) selectDevice('keyboard')
       setError(null)
     } catch (caught) {
       setError(message(caught))
+    }
+  }
+
+  const renameDevice = async (device: BrakeDevice, label: string): Promise<boolean> => {
+    try {
+      const saved = await brakeApi.updateDevice({ ...device, label })
+      setDeviceConfigurations((current) => [...current.filter((item) => item.id !== saved.id), saved])
+      setError(null)
+      return true
+    } catch (caught) {
+      setError(message(caught))
+      return false
     }
   }
 
@@ -237,9 +284,9 @@ export function BrakeItApp() {
       <Routes>
         <Route path="/brake-it/garage61" element={<Garage61 scenarios={scenarios} onReady={async (id) => { const rows = await brakeApi.scenarios(); setScenarios(rows); if (id) selectScenario(id) }} />} />
         <Route path="/brake-it" element={<Navigate to="/brake-it/simulator" replace />} />
-        <Route path="/brake-it/simulator" element={selectedScenario ? <Simulator scenarios={scenarios} scenario={selectedScenario} input={currentInput} deviceLabel={selectedDevice.label} onSelectScenario={selectScenario} onResult={storeResult} /> : <div className="brake-empty">No scenarios are ready. <Link to="/brake-it/garage61">Prepare a Garage61 combination</Link></div>} />
+        <Route path="/brake-it/simulator" element={selectedScenario ? <Simulator scenarios={scenarios} scenario={selectedScenario} input={currentInput} deviceLabel={selectedDeviceLabel} deviceAvailable={deviceAvailable} devices={simulatorDevices} selectedDeviceID={simulatorDeviceID} onSelectDevice={selectDevice} onSelectScenario={selectScenario} onResult={storeResult} /> : <div className="brake-empty">No scenarios are ready. <Link to="/brake-it/garage61">Prepare a Garage61 combination</Link></div>} />
         <Route path="/brake-it/scenarios" element={selectedScenario ? <ScenarioEditor scenarios={scenarios} scenario={selectedScenario} onSelect={selectScenario} onChange={updateScenarioLocal} onSave={saveScenario} onDuplicate={duplicateScenario} onDelete={deleteScenario} /> : <Navigate to="/brake-it/garage61" replace />} />
-        <Route path="/brake-it/devices" element={<GamepadDevices devices={gamepadDevices} configurations={deviceConfigurations} selectedDeviceID={selectedDeviceID} onSelect={setSelectedDeviceID} onRefresh={refreshGamepads} onSave={saveDevice} onRemove={removeDevice} />} />
+        <Route path="/brake-it/devices" element={<GamepadDevices devices={gamepadDevices} scanIssue={gamepadIssue} configurations={deviceConfigurations} selectedDeviceID={selectedDevice.id} onSelect={selectDevice} onRefresh={refreshGamepads} onSave={saveDevice} onRename={renameDevice} onRemove={removeDevice} />} />
         <Route path="/brake-it/results" element={<Results results={results} scenarios={scenarios} />} />
         <Route path="*" element={<Navigate to="/brake-it/simulator" replace />} />
       </Routes>
@@ -247,7 +294,7 @@ export function BrakeItApp() {
   )
 }
 
-export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectScenario, onResult }: { scenarios: Scenario[]; scenario: Scenario; input: PedalInput; deviceLabel: string; onSelectScenario: (id: string) => void; onResult: (result: RunResult) => void }) {
+export function Simulator({ scenarios, scenario, input, deviceLabel, deviceAvailable = true, devices, selectedDeviceID, onSelectDevice, onSelectScenario, onResult }: { scenarios: Scenario[]; scenario: Scenario; input: PedalInput; deviceLabel: string; deviceAvailable?: boolean; devices: ControllerDevice[]; selectedDeviceID: string; onSelectDevice: (id: string) => void; onSelectScenario: (id: string) => void; onResult: (result: RunResult) => void }) {
   const [running, setRunning] = useState(false)
   const [nowMS, setNowMS] = useState(0)
   const [samples, setSamples] = useState<PedalSample[]>([])
@@ -256,12 +303,14 @@ export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectSce
   const [visualCuesEnabled, setVisualCuesEnabled] = useState(false)
   const [accelerationIncluded, setAccelerationIncluded] = useState(true)
   const [scenarioCombinationValid, setScenarioCombinationValid] = useState(true)
+  const [inputInterrupted, setInputInterrupted] = useState(false)
   const inputRef = useRef(input)
   const frame = useRef(0)
   const startAt = useRef(0)
   const lastSample = useRef(-100)
   const saved = useRef(false)
   const lastPhase = useRef('approach')
+  const runDeviceLabel = useRef(deviceLabel)
   const cues = useRef(new CuePlayer())
   const practiceFinishMS = getPracticeFinishMS(scenario, accelerationIncluded)
   const phase = !accelerationIncluded && nowMS >= practiceFinishMS
@@ -274,6 +323,13 @@ export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectSce
   )
 
   useEffect(() => { inputRef.current = input }, [input])
+  useEffect(() => {
+    if (!running || deviceAvailable) return
+    saved.current = true
+    setInputInterrupted(true)
+    setRunning(false)
+    cancelAnimationFrame(frame.current)
+  }, [deviceAvailable, running])
   useEffect(() => { cues.current.setEnabled(audioEnabled) }, [audioEnabled])
   useEffect(() => () => { cancelAnimationFrame(frame.current); void cues.current.close() }, [])
   useEffect(() => {
@@ -324,7 +380,7 @@ export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectSce
       id: crypto.randomUUID(),
       scenarioId: scenario.id,
       scenarioName: scenario.name,
-      deviceLabel,
+      deviceLabel: runDeviceLabel.current,
       createdAt: '',
       scoringVersion: 2,
       accelerationIncluded,
@@ -335,7 +391,9 @@ export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectSce
   }, [accelerationIncluded, deviceLabel, onResult, practiceFinishMS, running, samples, scenario])
 
   const start = async () => {
-    if (!scenarioCombinationValid) return
+    if (!scenarioCombinationValid || !deviceAvailable) return
+    setInputInterrupted(false)
+    runDeviceLabel.current = deviceLabel
     saved.current = false
     lastPhase.current = 'approach'
     lastSample.current = -100
@@ -364,8 +422,17 @@ export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectSce
       <div className={`brake-cue brake-cue-${phase.color}`}>
         <div><span>Phase</span><strong>{phase.label}</strong></div>
         <div><span>Time</span><strong>{formatMS(nowMS)} / {formatMS(practiceFinishMS)}</strong></div>
-        <div><span>Device</span><strong>{deviceLabel}</strong></div>
+        <div className="brake-cue-device">
+          <label htmlFor="brake-input-device">Input device</label>
+          <select id="brake-input-device" aria-label="Input device" value={selectedDeviceID} disabled={running} onChange={(event) => onSelectDevice(event.target.value)}>
+            {!devices.some((device) => device.id === selectedDeviceID) && <option value={selectedDeviceID}>{deviceLabel}</option>}
+            {devices.map((device) => <option key={device.id} value={device.id}>{device.label}</option>)}
+          </select>
+          <Link to="/brake-it/devices">Manage devices</Link>
+        </div>
       </div>
+      {!deviceAvailable && <p className="brake-device-alert" role="status">The selected controller is unavailable. Reconnect and select it again, or choose Keyboard simulator.</p>}
+      {inputInterrupted && <p className="brake-device-alert" role="status">The controller became unavailable, so this run stopped without saving a result.</p>}
       <div className="brake-sim-grid">
         <section className="brake-panel">
           <div className="brake-panel-head">
@@ -379,12 +446,12 @@ export function Simulator({ scenarios, scenario, input, deviceLabel, onSelectSce
               <button type="button" aria-pressed={visualCuesEnabled} onClick={() => setVisualCuesEnabled((value) => !value)}>{visualCuesEnabled ? 'Visual cues on' : 'Visual cues off'}</button>
               <button type="button" aria-pressed={accelerationIncluded} disabled={running} onClick={toggleAcceleration}>{accelerationIncluded ? 'Acceleration on' : 'Braking only'}</button>
               <button type="button" onClick={() => { stop(); setSamples([]); setNowMS(0); saved.current = true }}>Reset</button>
-              <button className={running ? 'danger' : 'primary'} type="button" disabled={!running && !scenarioCombinationValid} onClick={running ? stop : start}>{running ? 'Stop' : 'Start'}</button>
+              <button className={running ? 'danger' : 'primary'} type="button" disabled={!running && (!scenarioCombinationValid || !deviceAvailable)} onClick={running ? stop : start}>{running ? 'Stop' : 'Start'}</button>
             </div>
           </div>
           {visualCuesEnabled && <PracticeCue phase={phase.id} />}
           <TraceChart scenario={scenario} samples={samples} nowMS={nowMS} showTarget={targetTraceVisible} durationMS={practiceFinishMS} />
-          <p className="brake-key-hint">Keyboard: ↑ accelerator · ↓ brake · ←/→ trim brake pressure</p>
+          {selectedDeviceID === 'keyboard' && <p className="brake-key-hint">Keyboard: ↑ accelerator · ↓ brake · ←/→ trim brake pressure</p>}
         </section>
         <aside className="brake-panel brake-live">
           <PedalMeter label="Accelerator" value={input.accelerator} kind="accelerator" />
