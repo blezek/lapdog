@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
-import { brakeApi, type GarageCatalog, type GarageJob, type GarageQueueItem, type GarageRefresh, type MyDrivenCombination } from './api'
+import { brakeApi, type GarageCatalog, type GarageJob, type GarageQueueItem, type GarageRefresh, type GarageTokenStatus, type MyDrivenCombination } from './api'
 import type { Scenario } from './types'
 
 export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onReady: (scenarioId?: string) => Promise<void> }) {
@@ -9,6 +9,11 @@ export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onRead
   const navigate = useNavigate()
   const location = useLocation()
   const [catalog, setCatalog] = useState<GarageCatalog | null>(null)
+  const [tokenStatus, setTokenStatus] = useState<GarageTokenStatus | null>(null)
+  const [tokenStatusIssue, setTokenStatusIssue] = useState(false)
+  const [tokenInput, setTokenInput] = useState('')
+  const [tokenNotice, setTokenNotice] = useState<string | null>(null)
+  const [tokenBusy, setTokenBusy] = useState(false)
   const [refresh, setRefresh] = useState<GarageRefresh | null>(null)
   const [queue, setQueue] = useState<GarageQueueItem[] | null>(null)
   const [myCombos, setMyCombos] = useState<MyDrivenCombination[]>([])
@@ -23,11 +28,13 @@ export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onRead
   const [busy, setBusy] = useState(false)
   const ready = useRef(onReady)
   const handledRunID = useRef(0)
+  const tokenChangeVersion = useRef(0)
   ready.current = onReady
 
   useEffect(() => {
     let disposed = false
     let timer: ReturnType<typeof setTimeout>
+    const initialVersion = tokenChangeVersion.current
     const poll = async () => {
       try {
         const [next, queued] = await Promise.all([brakeApi.garageJob(), brakeApi.garageQueue()])
@@ -43,7 +50,8 @@ export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onRead
       } catch (caught) { if (!disposed) setError(errorMessage(caught)) }
       if (!disposed) timer = setTimeout(() => void poll(), 1500)
     }
-    void brakeApi.garageCatalog().then((value) => { if (!disposed) setCatalog(value) }).catch((caught) => { if (!disposed) setError(errorMessage(caught)) })
+    void brakeApi.garageCatalog().then((value) => { if (!disposed && tokenChangeVersion.current === initialVersion) setCatalog(value) }).catch((caught) => { if (!disposed && tokenChangeVersion.current === initialVersion) setError(errorMessage(caught)) })
+    void brakeApi.garageTokenStatus().then((value) => { if (!disposed && tokenChangeVersion.current === initialVersion) setTokenStatus(value) }).catch((caught) => { if (!disposed && tokenChangeVersion.current === initialVersion) { setTokenStatusIssue(true); setError(errorMessage(caught)) } })
     void brakeApi.garageRefresh().then((value) => { if (!disposed) setRefresh(value) }).catch((caught) => { if (!disposed) setError(errorMessage(caught)) })
     void brakeApi.garageMyCombinations().then((value) => { if (!disposed) setMyCombos(value) }).catch((caught) => { if (!disposed) setError(errorMessage(caught)) })
     void poll()
@@ -95,6 +103,35 @@ export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onRead
   const deletableCombinations = combinations.filter((item) => !deletionBlocked(item))
   const selectedDeletionBlocked = selectedCombinations.some(deletionBlocked)
   const visibleMyCombos = myCombos.filter((item) => `${item.carName} ${item.trackName} ${item.trackConfig}`.toLocaleLowerCase().includes(search.toLocaleLowerCase()))
+
+  const saveToken = async () => {
+    setTokenBusy(true); setError(null); setTokenNotice(null)
+    try {
+      const status = await brakeApi.saveGarageToken(tokenInput)
+      tokenChangeVersion.current++
+      setTokenStatus(status)
+      setTokenStatusIssue(false)
+      setTokenInput('')
+      setTokenNotice('Token saved in LapDog’s data directory. Garage61 access will be checked when the catalog loads.')
+      setCatalog(null); setCar(''); setTrack('')
+      setCatalog(await brakeApi.garageCatalog())
+    } catch (caught) { setError(errorMessage(caught)) }
+    finally { setTokenBusy(false) }
+  }
+  const deleteToken = async () => {
+    if (!window.confirm('Remove the saved Garage61 token? LapDog will use GARAGE61_TOKEN if it is set.')) return
+    setTokenBusy(true); setError(null); setTokenNotice(null)
+    try {
+      const status = await brakeApi.deleteGarageToken()
+      tokenChangeVersion.current++
+      setTokenStatus(status)
+      setTokenStatusIssue(false)
+      setTokenNotice('Saved token removed.')
+      setCatalog(null); setCar(''); setTrack('')
+      setCatalog(await brakeApi.garageCatalog())
+    } catch (caught) { setError(errorMessage(caught)) }
+    finally { setTokenBusy(false) }
+  }
 
   const process = async () => {
     setBusy(true); setError(null)
@@ -182,10 +219,16 @@ export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onRead
   return <main className="brake-garage">
     <section className="brake-panel">
       <div className="brake-panel-head"><div><h1>Garage61 scenarios</h1><span>Prepare braking practice from lap telemetry</span></div></div>
+      <form className="brake-garage-token" onSubmit={(event) => { event.preventDefault(); void saveToken() }}>
+        <label htmlFor="garage61-token-input">Garage61 access token<input id="garage61-token-input" type="password" autoComplete="off" spellCheck={false} maxLength={16384} value={tokenInput} onChange={(event) => { setTokenInput(event.target.value); setTokenNotice(null) }} placeholder={tokenStatus?.source === 'file' ? 'Enter a replacement token' : 'Paste your Garage61 token'} /></label>
+        <div className="brake-actions"><button className="primary" type="submit" disabled={!tokenInput.trim() || tokenBusy}>{tokenBusy ? 'Saving…' : tokenStatus?.source === 'file' ? 'Replace token' : 'Save token'}</button>{tokenStatus?.source === 'file' && <button type="button" disabled={tokenBusy} onClick={() => void deleteToken()}>Remove saved token</button>}</div>
+        <p role="status">{tokenStatus?.source === 'file' ? 'Using a token saved in LapDog’s data directory.' : tokenStatus?.source === 'environment' ? 'Using GARAGE61_TOKEN from LapDog’s environment. A saved token will take precedence.' : tokenStatus ? 'No Garage61 token is configured.' : tokenStatusIssue ? 'Token status is unavailable. You can replace the saved token here.' : 'Checking Garage61 token status…'} The token is never displayed after saving.</p>
+        {tokenNotice && <p role="status">{tokenNotice}</p>}
+      </form>
       <p>Choose any iRacing car and track layout. Brake-It finds up to 12 viewable laps and prepares the braking zones supported by at least three laps.</p>
       {error && <p className="brake-error" role="alert">{error}</p>}
       {!catalog && !error && <p role="status">Loading Garage61 cars and tracks…</p>}
-      {catalog && !catalog.configured && <p role="status">Set <code>GARAGE61_TOKEN</code> in the environment used to start LapDog, then restart it. Garage61 sign-in is not available yet. Your prepared scenarios remain available below.</p>}
+      {catalog && !catalog.configured && <p role="status">Enter a Garage61 token above or set <code>GARAGE61_TOKEN</code> when starting LapDog. Garage61 sign-in is not available yet. Your prepared scenarios remain available below.</p>}
       {catalog?.configured && <>
         <div className="brake-garage-selectors">
           <div className="brake-garage-picker"><label>Search cars<input type="search" aria-label="Search Garage61 cars" value={carSearch} onChange={(event) => setCarSearch(event.target.value)} placeholder="Filter cars" /></label><label>Car<select aria-label="Garage61 car" value={car} disabled={busy} onChange={(event) => setCar(event.target.value)}><option value="">Select a car</option>{visibleCars.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label></div>

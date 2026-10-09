@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -58,6 +59,7 @@ type Server struct {
 	reindexStatus captureReindexStatus
 	updates       UpdateCoordinator
 	garage        garageProvider
+	garageToken   *garage61.LocalTokenStore
 	garageState   garageState
 	garageWake    chan struct{}
 }
@@ -71,7 +73,8 @@ type UpdateCoordinator interface {
 
 // New returns a Server.
 func New(st *store.Store, sp StatusProvider, cfg ConfigStore, log *slog.Logger) *Server {
-	return &Server{st: st, sp: sp, cfg: cfg, log: log, garage: garage61.New(garage61.EnvironmentToken), garageWake: make(chan struct{}, 1)}
+	token := garage61.NewLocalTokenStore(config.Garage61TokenPath(filepath.Dir(st.Path())))
+	return &Server{st: st, sp: sp, cfg: cfg, log: log, garage: garage61.New(token.Token), garageToken: token, garageWake: make(chan struct{}, 1)}
 }
 
 // SetUpdater attaches the process-owned update coordinator.
@@ -115,6 +118,7 @@ func (s *Server) Handler() (http.Handler, error) {
 	mux.HandleFunc("POST /api/update/check", s.protectMutations(s.handleUpdateCheck))
 	mux.HandleFunc("POST /api/update/action", s.protectMutations(s.handleUpdateAction))
 	mux.HandleFunc("GET /api/brake-it/garage61/catalog", s.handleGarageCatalog)
+	mux.HandleFunc("/api/brake-it/garage61/token", s.protectMutations(s.handleGarageToken))
 	mux.HandleFunc("GET /api/brake-it/garage61/refresh", s.handleGarageRefresh)
 	mux.HandleFunc("PUT /api/brake-it/garage61/snooze", s.protectMutations(s.handleGarageSnooze))
 	mux.HandleFunc("GET /api/brake-it/garage61/my-combinations", s.handleMyGarageCombinations)

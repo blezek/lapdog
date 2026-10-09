@@ -79,16 +79,21 @@ func (s *Server) handleMyGarageCombinations(w http.ResponseWriter, r *http.Reque
 
 func (s *Server) garageCatalog(ctx context.Context) (garage61.Catalog, error) {
 	s.garageState.mu.Lock()
-	catalog, loaded := s.garageState.catalog, s.garageState.loaded
+	catalog, loaded, epoch := s.garageState.catalog, s.garageState.loaded, s.garageState.catalogEpoch
 	s.garageState.mu.Unlock()
 	if loaded {
 		return catalog, nil
 	}
 	catalog, err := s.garage.Catalog(ctx)
+	s.garageState.mu.Lock()
+	if s.garageState.catalogEpoch != epoch {
+		s.garageState.mu.Unlock()
+		return s.garageCatalog(ctx)
+	}
 	if err != nil {
+		s.garageState.mu.Unlock()
 		return garage61.Catalog{}, err
 	}
-	s.garageState.mu.Lock()
 	s.garageState.catalog = catalog
 	s.garageState.loaded = true
 	s.garageState.mu.Unlock()

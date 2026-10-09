@@ -140,24 +140,31 @@ scenarios can assign or clear their car and track in the scenario editor, with
 suggestions drawn from the local catalog.
 
 The **Garage61** tab prepares scenarios directly in the running Go application.
-Set `GARAGE61_TOKEN` in the environment of the process starting LapDog (or
-`lapdogctl serve`), then open `/brake-it/garage61`. Choose an iRacing car and
-track layout and click **Queue scenarios**. The picker lists Garage61's
+Open `/brake-it/garage61` and enter a Garage61 access token. LapDog saves it in
+`garage61-token` inside its data directory. The file is created with `0600`
+permissions on platforms that use Unix file modes; Windows uses the data
+directory's access controls. The token is not returned to the browser after
+saving, stored in the database, or written to the log. It can be replaced or
+removed in the tab without restarting LapDog. Alternatively, set
+`GARAGE61_TOKEN` in the environment of
+the process starting LapDog (or `lapdogctl serve`); a saved token takes
+precedence over the environment variable. Choose an iRacing car and track
+layout and click **Queue scenarios**. The picker lists Garage61's
 available iRacing catalog; availability of usable laps depends on the token's
-permissions. No Python installation or rebuild is needed. The token stays on
-the server and is never sent to the browser or saved in the database. OAuth
-sign-in is not implemented; the Go client accepts a separate token source so
-an OAuth token manager can replace the environment provider later.
+permissions. No Python installation or rebuild is needed. OAuth sign-in is not
+implemented; the Go client accepts a separate token source so an OAuth token
+manager can replace this temporary local-file flow later.
 
 Recorded race and practice car/layout pairs appear as shortcuts in the Garage61
 tab. Selecting one fills the car and track controls; it does not queue work.
 Click **Queue scenarios** to request that combination, or **Queue refresh of all
 saved combinations** to request a refresh. Requested work persists through
 restarts and starts automatically, one combination at a time, when
-`GARAGE61_TOKEN` is available. Without a token, existing requests wait until
-LapDog restarts with one. The tab shows waiting, running, completed, and failed
-items; failed and unmatched items can be retried. The current item shows
-progress and can be cancelled without losing later items.
+either token source is available. Without a token, existing requests wait until
+one is saved or LapDog restarts with `GARAGE61_TOKEN`. The tab shows waiting,
+running, completed, and failed items; failed and unmatched items can be
+retried. The current item shows progress and can be cancelled without losing
+later items.
 
 Processing runs one combination at a time, with progress and cancellation.
 It uses the Python catalog model: up to 12 viewable laps, seven-sample smoothing,

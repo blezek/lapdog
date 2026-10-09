@@ -612,15 +612,25 @@ async function verifyGarage61Flow(client) {
     const originalFetch = window.fetch.bind(window);
     const garageJob = { runId: 0, state: 'idle', message: '', carId: 0, trackId: 0, count: 0 };
     const garageQueue = [];
+    const garageToken = { configured: false, source: 'none' };
     const garageRefresh = { combinations: [{ carName: 'Fixture MX-5', trackName: 'Fixture circuit Full Course', preparedAt: '2026-01-01T00:00:00Z', carId: 101, trackId: 202, reviewNeeded: true }], dueCount: 1, reminderDue: true, snoozeUntil: null };
     window.__garageJob = garageJob;
     window.__garageQueue = garageQueue;
+    window.__garageToken = garageToken;
     window.__garageSaved = false;
     window.__garageScenarioFetches = 0;
     window.__garagePolls = 0;
     window.confirm = () => true;
     window.fetch = async (url, options = {}) => {
       const json = value => new Response(JSON.stringify(value), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      if (url === '/api/brake-it/garage61/token') {
+        if (options.method === 'PUT') {
+          if (JSON.parse(options.body).token !== 'verifier-secret') throw new Error('wrong Garage61 token submitted');
+          Object.assign(garageToken, { configured: true, source: 'file' });
+        }
+        if (options.method === 'DELETE') Object.assign(garageToken, { configured: false, source: 'none' });
+        return json(garageToken);
+      }
       if (url === '/api/brake-it/garage61/catalog') return json({ configured: true, cars: [{ id: 101, name: 'Fixture MX-5', platform: 'iracing', platform_id: '67' }, { id: 102, name: 'Fixture GT4', platform: 'iracing', platform_id: '68' }], tracks: [{ id: 202, name: 'Fixture circuit', variant: 'Full Course', platform: 'iracing', platform_id: '523' }, { id: 203, name: 'Fixture short circuit', variant: 'Club', platform: 'iracing', platform_id: '524' }] });
       if (url === '/api/brake-it/garage61/my-combinations') return json([{ carPlatformId: 67, trackPlatformId: 523, carName: 'Fixture MX-5', trackName: 'Fixture circuit', trackConfig: 'Full Course', drivingHours: 1.5 }]);
       if (url === '/api/brake-it/garage61/refresh') return json(garageRefresh);
@@ -675,6 +685,21 @@ async function verifyGarage61Flow(client) {
   try {
     await inspectRoute(client, 'garage61', 1440, 1000)
     const click = (text) => client.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === ${JSON.stringify(text)})?.click()`)
+    await client.evaluate(`{
+      const input = document.querySelector('#garage61-token-input');
+      if (input?.type !== 'password') throw new Error('Garage61 token is not masked');
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+      setter.call(input, 'verifier-secret');
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }`)
+    await sleep(100)
+    await click('Save token')
+    await sleep(250)
+    if (!await client.evaluate(`window.__garageToken.source === 'file' && document.querySelector('#garage61-token-input')?.value === '' && !document.body.innerText.includes('verifier-secret') && document.body.innerText.includes('Using a token saved')`)) throw new Error('Garage61 token was not saved privately in the UI')
+    console.log(`       ${await screenshot(client, 'garage61-token-saved')}`)
+    await click('Remove saved token')
+    await sleep(250)
+    if (!await client.evaluate(`window.__garageToken.source === 'none' && document.body.innerText.includes('No Garage61 token is configured')`)) throw new Error('Garage61 token removal did not update the UI')
     if (!await client.evaluate(`[...document.querySelectorAll('button')].find(b => b.textContent === 'Queue scenarios')?.disabled`)) throw new Error('Garage61 accepts an empty combination')
     if (!await client.evaluate(`document.body.innerText.includes('Processing queue') && document.body.innerText.includes('No combinations have been queued yet.')`)) throw new Error('Recorded combination queued before a click')
     if (!await client.evaluate(`document.body.innerText.includes('Needs review') && document.body.innerText.includes('due for refresh')`)) throw new Error('Garage61 weekly review status is missing')

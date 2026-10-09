@@ -37,6 +37,10 @@ func DataDir() (string, error) {
 // ConfigPath returns the settings file path within dir.
 func ConfigPath(dir string) string { return filepath.Join(dir, "config.json") }
 
+// Garage61TokenPath holds the temporary, locally entered Garage61 credential.
+// It is kept separate from config.json so settings exports cannot include it.
+func Garage61TokenPath(dir string) string { return filepath.Join(dir, "garage61-token") }
+
 // DBPath returns the SQLite database path within dir.
 func DBPath(dir string) string { return filepath.Join(dir, "lapdog.db") }
 
