@@ -11,7 +11,6 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,14 +21,6 @@ import (
 // TokenSource is deliberately independent of HTTP and scenario generation so
 // a future OAuth token manager can supply and refresh credentials server-side.
 type TokenSource func(context.Context) (string, error)
-
-func EnvironmentToken(context.Context) (string, error) {
-	token := strings.TrimSpace(os.Getenv("GARAGE61_TOKEN"))
-	if token == "" {
-		return "", errors.New("set GARAGE61_TOKEN in the LapDog process environment to connect to Garage61")
-	}
-	return token, nil
-}
 
 type Entity struct {
 	ID         int    `json:"id"`
@@ -118,7 +109,7 @@ func (c *Client) get(ctx context.Context, path string, query url.Values, csv boo
 			return nil, nil
 		}
 		if res.StatusCode == 401 {
-			return nil, errors.New("Garage61 rejected the access token; update GARAGE61_TOKEN and restart LapDog")
+			return nil, errors.New("Garage61 rejected the access token; update it on the Garage61 tab or in GARAGE61_TOKEN")
 		}
 		if res.StatusCode < 200 || res.StatusCode >= 300 {
 			return nil, fmt.Errorf("Garage61 returned HTTP %d", res.StatusCode)

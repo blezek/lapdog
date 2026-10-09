@@ -26,6 +26,7 @@ async function mutate<T>(url: string, method: string, body: unknown): Promise<T>
 
 export type GarageEntity = { id: number; name: string; variant?: string; platform: string; platform_id?: string }
 export type GarageCatalog = { configured: boolean; cars: GarageEntity[]; tracks: GarageEntity[] }
+export type GarageTokenStatus = { configured: boolean; source: 'file' | 'environment' | 'none' }
 export type GarageJob = { runId: number; queueItemId?: number; state: 'idle' | 'running' | 'complete' | 'partial' | 'review' | 'failed' | 'cancelled' | 'unmatched' | 'deleted'; message: string; carId: number; trackId: number; count: number; scenarioId?: string; all?: boolean; index?: number; total?: number; succeeded?: number; reviewNeeded?: number; errors?: string[] }
 export type GarageQueueItem = { id: number; carPlatformId: number; trackPlatformId: number; garageCarId: number; garageTrackId: number; carName: string; trackName: string; source: 'history' | 'manual' | 'refresh'; state: 'queued' | 'running' | 'done' | 'review' | 'failed' | 'unmatched' | 'cancelled' | 'deleted'; queuedAt: string; startedAt?: string; finishedAt?: string; attemptCount: number; error?: string }
 export type GarageSavedCombination = { carName: string; trackName: string; preparedAt: string; carId?: number; trackId?: number; reviewNeeded: boolean }
@@ -34,6 +35,9 @@ export type MyDrivenCombination = { carPlatformId: number; trackPlatformId: numb
 
 export const brakeApi = {
   garageCatalog: () => fetch('/api/brake-it/garage61/catalog').then(response<GarageCatalog>),
+  garageTokenStatus: () => fetch('/api/brake-it/garage61/token', { cache: 'no-store' }).then(response<GarageTokenStatus>),
+  saveGarageToken: (token: string) => mutate<GarageTokenStatus>('/api/brake-it/garage61/token', 'PUT', { token }),
+  deleteGarageToken: () => mutate<GarageTokenStatus>('/api/brake-it/garage61/token', 'DELETE', {}),
   garageRefresh: () => fetch('/api/brake-it/garage61/refresh').then(response<GarageRefresh>),
   garageMyCombinations: () => fetch('/api/brake-it/garage61/my-combinations').then(response<MyDrivenCombination[]>),
   snoozeGarage: (until: string) => mutate<GarageRefresh>('/api/brake-it/garage61/snooze', 'PUT', { until }),

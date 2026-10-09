@@ -260,6 +260,10 @@
 .brake-garage { display: grid; gap: 24px; max-width: 1120px; margin: 0 auto; padding: 24px; }
 .brake-garage h1, .brake-garage h2 { margin: 0; }
 .brake-garage p { line-height: 1.6; }
+.brake-garage-token { display: grid; gap: 10px; margin: 18px 0; padding: 16px; border: 1px solid var(--brake-border); border-radius: 8px; background: var(--brake-surface); }
+.brake-garage-token label { display: grid; gap: 8px; font-weight: 650; }
+.brake-garage-token input { width: 100%; min-width: 0; padding: 10px; border: 1px solid var(--brake-border); border-radius: 6px; background: var(--brake-bg); color: var(--brake-text); font: inherit; }
+.brake-garage-token p { margin: 0; color: var(--brake-muted); font-size: 13px; }
 .brake-garage-selectors { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 24px 0; }
 .brake-garage-selectors label { display: grid; gap: 8px; min-width: 0; }
 .brake-garage-selectors select { width: 100%; }

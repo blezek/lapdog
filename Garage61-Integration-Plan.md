@@ -1,7 +1,9 @@
 # Garage61 OAuth and Verification Integration Plan
 
 **Status:** design only; nothing in this document is implemented.  Research and
-API review performed 2026-09-23.
+API review performed 2026-09-23.  Registration correspondence updated
+2026-10-08; final callback registration and public-client behavior remain
+unconfirmed.
 
 ## Goal
 
@@ -63,7 +65,8 @@ Garage61 with the submitting user's authorization.
 
 ## Recommended architecture
 
-Use **two Garage61 OAuth applications** and one LapDog account/device binding.
+The design recommends **two Garage61 OAuth applications** and one LapDog
+account/device binding; Garage61 has not yet confirmed that arrangement.
 This keeps the installed open-source program a public client, keeps the website
 secret on the server, and avoids copying either side's refresh token to the
 other side.
@@ -159,10 +162,13 @@ an authorization key.
 
 Do not use a fixed custom URI scheme.  A loopback callback is bound to this
 running process and PKCE protects an intercepted code.  Bind `127.0.0.1`, not all
-interfaces.  The existing configurable interface port creates a registration
-question: prefer a dedicated fixed callback port if Garage61 requires exact
-ports; otherwise ask whether a loopback redirect with an ephemeral port is
-supported.
+interfaces.  The requested desktop/CLI callback is
+`http://127.0.0.1:47047/oauth/callback`.  Port 47047 is acceptable whether
+Garage61 matches it exactly or permits arbitrary loopback ports.  If exact
+matching is required, keep the callback available on 47047 even when the
+interface uses a different configured port; the listener arrangement remains
+an implementation decision.  Do not assume ephemeral ports are supported
+until Garage61 answers.
 
 ### Website OAuth flow
 
@@ -298,43 +304,50 @@ disconnects.
   deletion.  Define retention for tokens, evidence and audit records before
   launch.
 
-## URLs to request from the Garage61 team
+## Callback registration correspondence (2026-10-08)
 
-Ask Garage61 to create two applications and register these **exact callback
-URLs**, subject to their answer about loopback ports:
+The original April 1 application request named Lapdog, requested OAuth2 with
+`driving_data`, and described comparing Garage61 laps for consistency in braking,
+turn-in, apex and speed.  On June 28, Simon rejected `lapdog://callback` as an
+invalid callback and requested a redirect URL.
 
-### Desktop/public application
+On October 6, Daniel proposed the hosts `127.0.0.1:47047`,
+`lapdog.blezek.com` and `brake-it.blezek.com`, with the deployment direction
+still undecided.  On October 8, Simon said the callback domains looked okay
+and asked for the scheme and full URI for each.  That response does not confirm
+registration of the complete URLs or approval of a particular client model.
 
-- Production: `http://127.0.0.1:47047/api/integrations/garage61/callback`
-- Development: `http://127.0.0.1:5173/api/integrations/garage61/callback`
+The October 8 reply supplies these exact redirect URIs, superseding the earlier
+callback paths and development-port suggestions in this plan:
 
-Prefer `127.0.0.1` over `localhost` to avoid hostname resolution and IPv6
-differences.  If Garage61 registers redirect **origins/hosts** rather than exact
-URLs, ask them to allow only the loopback origins needed and still have LapDog
-send the exact callback path.  If they support RFC 8252 loopback redirects with
-an arbitrary port, request `http://127.0.0.1:{ephemeral}/api/integrations/garage61/callback`
-instead and remove the fixed-port assumption.  Do not request a wildcard
-non-loopback host.
+| Intended use | Requested redirect URI |
+|---|---|
+| Local desktop / CLI | `http://127.0.0.1:47047/oauth/callback` |
+| Hosted LapDog | `https://lapdog.blezek.com/oauth/callback` |
+| Hosted Brake It | `https://brake-it.blezek.com/oauth/callback` |
 
-Port 5173 is useful only for the Vite development server.  If Garage61 limits
-redirect count, use the production loopback callback during development instead
-of broadening registration.
+The reply also asks two questions that remain unanswered in the supplied
+correspondence:
 
-### Hosted/confidential application
+1. Can the locally installed app authenticate as a public client using PKCE
+   only, without a client secret?  A user's machine cannot safely hold an
+   embedded application secret.
+2. For the `127.0.0.1` redirect, is port 47047 matched exactly, or is any port
+   allowed in the RFC 8252 style?  Port 47047 is acceptable either way.
 
-- Production: `https://lapdog.blezek.com/auth/garage61/callback`
-- Local hosted-service development, if they permit it:
-  `http://localhost:8080/auth/garage61/callback`
+These are requested callbacks, not confirmed registrations.  The correspondence
+does not establish whether Garage61 will assign them to one application or
+separate public and confidential clients.  Retain the two-client recommendation
+above pending confirmation; do not infer that combining HTTP loopback and HTTPS
+website redirects preserves secret-free desktop authentication.  The Brake It
+URL is a hosted option, not a decision to migrate the LapDog website.
 
-The later production domain must be registered as a new exact callback before
-cutover, for example:
-
-- `https://<future-domain>/auth/garage61/callback`
-
-Keep the old callback registered only for the migration window.  OAuth redirects
-do not follow the site's normal domain redirect safely unless Garage61 accepts
-the final callback URI exactly; test existing refresh grants before removing the
-old domain.
+Use the requested loopback callback during local development unless another URI
+is explicitly registered.  Do not assume a Vite callback on port 5173 or a
+hosted-service callback on port 8080 is approved.  Any future production domain
+needs its exact `/oauth/callback` URI registered before cutover.  During a domain
+migration, test login and existing refresh grants before removing the old
+callback.
 
 Also tell Garage61 the non-callback URLs they may need for application review:
 
@@ -348,11 +361,14 @@ targets.
 
 ## Questions for Garage61 before implementation
 
-1. Will they approve two clients for one product: a public loopback client with
-   no secret and a confidential hosted client?  Is PKCE S256 supported and
-   required for both?
-2. Are redirect URIs matched exactly?  Are variable loopback ports supported?
-   May HTTP be used only for loopback development?
+1. Pending from the October 8 reply: can the desktop client use PKCE only,
+   without a client secret?  Also confirm the proposed split into public
+   loopback and confidential hosted clients, including the Brake It callback,
+   and whether PKCE S256 is supported and required for both client types.
+2. Pending from the October 8 reply: is the loopback port matched exactly or
+   may it vary (RFC 8252 style)?  Port 47047 is acceptable either way.  Confirm
+   registration of all three exact URIs above, including HTTP for local
+   desktop/CLI use.
 3. What token endpoint authentication method is required for the confidential
    client, and what exact parameters are required for authorization, exchange,
    refresh and revocation?  Is there a revocation endpoint?

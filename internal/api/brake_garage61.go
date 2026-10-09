@@ -18,12 +18,13 @@ type garageProvider interface {
 	Generate(context.Context, garage61.Entity, garage61.Entity, func(string)) (store.BrakeCatalog, error)
 }
 type garageState struct {
-	mu        sync.Mutex
-	catalog   garage61.Catalog
-	loaded    bool
-	job       garageJob
-	cancel    context.CancelFunc
-	nextRunID uint64
+	mu           sync.Mutex
+	catalog      garage61.Catalog
+	loaded       bool
+	catalogEpoch uint64
+	job          garageJob
+	cancel       context.CancelFunc
+	nextRunID    uint64
 }
 type garageJob struct {
 	RunID        uint64   `json:"runId"`
@@ -85,7 +86,7 @@ func (s *Server) handleGarageJob(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !s.garage.Configured(r.Context()) {
-			s.fail(w, http.StatusConflict, errors.New("set GARAGE61_TOKEN and restart LapDog before processing scenarios"))
+			s.fail(w, http.StatusConflict, errors.New("add a Garage61 token on the Garage61 tab or set GARAGE61_TOKEN before processing scenarios"))
 			return
 		}
 		catalog, err := s.garageCatalog(r.Context())
