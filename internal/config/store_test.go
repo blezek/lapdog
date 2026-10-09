@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestStoreRoundTripsThroughDisk(t *testing.T) {
@@ -33,6 +34,63 @@ func TestStoreRoundTripsThroughDisk(t *testing.T) {
 	}
 	if got := s2.Get(); got.PollIntervalSeconds != 2.5 || got.Theme != "dark" {
 		t.Errorf("reopened store = %+v", got)
+	}
+}
+
+func TestInstallerStartupChoiceOverridesOnlyThatSetting(t *testing.T) {
+	for _, tc := range []struct {
+		name, marker  string
+		initial, want bool
+	}{
+		{"declined", "0\r\n", true, false},
+		{"selected", "1\r\n", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.json")
+			cfg := Default()
+			cfg.StartWithWindows = tc.initial
+			cfg.Theme = "dark"
+			if err := Save(path, cfg); err != nil {
+				t.Fatal(err)
+			}
+			marker := filepath.Join(filepath.Dir(path), installerStartupChoice)
+			if err := os.WriteFile(marker, []byte(tc.marker), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			store, err := NewStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := store.Get(); got.StartWithWindows != tc.want || got.Theme != "dark" {
+				t.Fatalf("after installer choice: %+v", got)
+			}
+			if _, err := os.Stat(marker); !os.IsNotExist(err) {
+				t.Fatalf("marker was not consumed: %v", err)
+			}
+			reloaded, err := Load(path)
+			if err != nil || reloaded.StartWithWindows != tc.want || reloaded.Theme != "dark" {
+				t.Fatalf("saved choice=%+v err=%v", reloaded, err)
+			}
+		})
+	}
+}
+
+func TestInstallerStartupChoiceOnFirstRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	marker := filepath.Join(filepath.Dir(path), installerStartupChoice)
+	if err := os.WriteFile(marker, []byte("0\r\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if store.Get().StartWithWindows {
+		t.Fatal("first-run installer choice was ignored")
+	}
+	saved, err := Load(path)
+	if err != nil || saved.StartWithWindows {
+		t.Fatalf("first-run choice was not saved: %+v err=%v", saved, err)
 	}
 }
 
@@ -158,6 +216,102 @@ func TestStoreConcurrentAccess(t *testing.T) {
 	wg.Wait()
 	if err := s.Get().Validate(); err != nil {
 		t.Errorf("config is invalid after concurrent writes: %v", err)
+	}
+	// The file and live setting must describe the same last accepted change.
+	// Saving before acquiring the store lock lets slower writes land after a
+	// newer in-memory assignment.
+	onDisk, err := Load(s.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if onDisk != s.Get() {
+		t.Errorf("disk config %+v differs from live config %+v", onDisk, s.Get())
+	}
+}
+
+func TestStoreUpdateKeepsConcurrentPartialChanges(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var wg sync.WaitGroup
+	for _, change := range []func(Config) (Config, error){
+		func(c Config) (Config, error) { c.Theme = "dark"; return c, nil },
+		func(c Config) (Config, error) { c.Units = "imperial"; return c, nil },
+	} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, _, err := s.Update(change); err != nil {
+				t.Errorf("Update: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	got := s.Get()
+	if got.Theme != "dark" || got.Units != "imperial" {
+		t.Fatalf("partial updates lost each other: %+v", got)
+	}
+	onDisk, err := Load(s.Path())
+	if err != nil || onDisk != got {
+		t.Fatalf("saved config=%+v live=%+v err=%v", onDisk, got, err)
+	}
+}
+
+func TestStoreUpdateNotifiesInCommitOrder(t *testing.T) {
+	s, err := NewStore(filepath.Join(t.TempDir(), "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstNotification := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var mu sync.Mutex
+	seen := []string{}
+	s.OnChange(func(c Config) {
+		if c.Theme == "dark" && c.Units == "metric" {
+			close(firstNotification)
+			<-releaseFirst
+		}
+		mu.Lock()
+		seen = append(seen, c.Theme+"/"+c.Units)
+		mu.Unlock()
+	})
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		_, _, _ = s.Update(func(c Config) (Config, error) {
+			c.Theme = "dark"
+			return c, nil
+		})
+	}()
+	select {
+	case <-firstNotification:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first notification did not start")
+	}
+	secondStarted := make(chan struct{})
+	secondDone := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		defer close(secondDone)
+		_, _, _ = s.Update(func(c Config) (Config, error) {
+			c.Units = "imperial"
+			return c, nil
+		})
+	}()
+	<-secondStarted
+	select {
+	case <-secondDone:
+		t.Fatal("later update notified before the earlier callback finished")
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(releaseFirst)
+	<-firstDone
+	<-secondDone
+	mu.Lock()
+	defer mu.Unlock()
+	if len(seen) != 2 || seen[0] != "dark/metric" || seen[1] != "dark/imperial" {
+		t.Fatalf("notifications out of commit order: %v", seen)
 	}
 }
 

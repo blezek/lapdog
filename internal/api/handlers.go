@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -309,22 +310,32 @@ func (s *Server) handleSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, s.cfg.Get())
 
 	case http.MethodPut:
-		before := s.cfg.Get()
-		// Start from the current values so a partial body updates only what it
-		// names rather than silently zeroing everything it omits.
-		next := before
-		if err := json.NewDecoder(r.Body).Decode(&next); err != nil {
-			s.fail(w, http.StatusBadRequest, err)
+		var patch json.RawMessage
+		if !s.decodeJSONRequest(w, r, &patch) {
 			return
 		}
-		// Validate rather than normalise: a value the user explicitly typed should
-		// be reported as wrong, not silently changed underneath them.
-		if err := next.Validate(); err != nil {
-			s.fail(w, http.StatusBadRequest, err)
-			return
-		}
-		if err := s.cfg.Set(next); err != nil {
-			s.fail(w, http.StatusInternalServerError, err)
+		// Apply a partial body to the current config while holding the store lock.
+		// Otherwise two tabs can both read the old config and overwrite each
+		// other's changes even when they edit different fields.
+		before, next, err := s.cfg.Update(func(current config.Config) (config.Config, error) {
+			next := current
+			dec := json.NewDecoder(bytes.NewReader(patch))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&next); err != nil {
+				return current, fmt.Errorf("%w: %v", ErrBadRequest, err)
+			}
+			// Validate rather than silently normalising a typed value.
+			if err := next.Validate(); err != nil {
+				return current, fmt.Errorf("%w: %v", ErrBadRequest, err)
+			}
+			return next, nil
+		})
+		if err != nil {
+			code := http.StatusInternalServerError
+			if errors.Is(err, ErrBadRequest) {
+				code = http.StatusBadRequest
+			}
+			s.fail(w, code, err)
 			return
 		}
 		var restart []string

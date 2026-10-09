@@ -13,6 +13,7 @@ import {
   useFilter,
 } from '../useFilter'
 import { DateFilter } from './DateFilter'
+import { ErrorNote } from './ui'
 
 interface Option {
   value: string
@@ -28,7 +29,7 @@ export function Filters({
   hide?: ('car' | 'track' | 'type')[]
 }) {
   const { state, update, toggleIn, clear, active } = useFilter()
-  const { data: facets } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
+  const { data: facets, error: facetsError } = useQuery({ queryKey: ['facets'], queryFn: api.facets })
   const [openMenu, setOpenMenu] = useState<string | null>(null)
   const wrap = useRef<HTMLDivElement | null>(null)
 
@@ -155,6 +156,7 @@ export function Filters({
 
         {matched && <span className="matched">{matched}</span>}
       </div>
+      {facetsError && <ErrorNote error={facetsError} />}
     </div>
   )
 }

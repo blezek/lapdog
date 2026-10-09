@@ -1,16 +1,103 @@
 package collector
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/blezek/lapdog/internal/irsdk"
 	"github.com/blezek/lapdog/internal/source"
 	"github.com/blezek/lapdog/internal/store"
 )
+
+func TestDisconnectDoesNotReusePreviousSessionYAML(t *testing.T) {
+	c, src := collectorForFixture(t, "public-practice.lpd")
+	defer src.Close()
+	frame, err := src.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.handle(frame); err != nil {
+		t.Fatal(err)
+	}
+	c.disconnect()
+	frame.SessionYAML = nil
+	frame.YAMLChanged = false
+	frame.T++
+	if err := c.handle(frame); err != nil {
+		t.Fatal(err)
+	}
+	if c.Status().Recording {
+		t.Fatal("recorded new telemetry using the previous connection's YAML")
+	}
+}
+
+func TestCollectorPollRateChangeReachesActiveAccounting(t *testing.T) {
+	c, src := collectorForFixture(t, "public-practice.lpd")
+	defer src.Close()
+	frame, err := src.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := c.handle(frame); err != nil {
+		t.Fatal(err)
+	}
+	c.SetInterval(30 * time.Second)
+	frame.YAMLChanged = false
+	frame.T += 30
+	if err := c.handle(frame); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.Status().ConnectedSeconds; got != 30 {
+		t.Fatalf("connected after poll-rate change = %v, want 30", got)
+	}
+}
+
+func TestMissingVariablesLogOnceAndRecoverOnLayoutChange(t *testing.T) {
+	c, src := collectorForFixture(t, "public-practice.lpd")
+	defer src.Close()
+	var logs bytes.Buffer
+	c.log = slog.New(slog.NewTextHandler(&logs, nil))
+	frame, err := src.Next()
+	if err != nil {
+		t.Fatal(err)
+	}
+	complete := frame
+	var incomplete []irsdk.VarHeader
+	for _, header := range src.Meta().VarHeaders {
+		if header.Name != "Lap" {
+			incomplete = append(incomplete, header)
+		}
+	}
+	frame.Row = irsdk.NewRow(incomplete, frame.Row.Raw())
+	if err := c.handle(frame); err != nil {
+		t.Fatal(err)
+	}
+	frame.YAMLChanged = false
+	frame.T++
+	if err := c.handle(frame); err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(logs.String(), "refusing to record session"); n != 1 {
+		t.Fatalf("repeated refusal emitted %d logs, want 1", n)
+	}
+	complete.YAMLChanged = false
+	complete.T = frame.T + 1
+	if err := c.handle(complete); err != nil {
+		t.Fatal(err)
+	}
+	if !c.Status().Recording {
+		t.Fatal("did not retry recording after the required variable appeared")
+	}
+	if n := strings.Count(logs.String(), "recording session"); n != 1 {
+		t.Fatalf("one accepted segment emitted %d recording logs, want 1", n)
+	}
+}
 
 // collectorForFixture returns a collector wired to a replay source, without
 // running its loop, so individual frames can be handed to handle directly.

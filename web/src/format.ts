@@ -93,6 +93,12 @@ export function distance(
   return `${converted.toFixed(1)}${unit ? ` ${units === 'imperial' ? 'mi' : 'km'}` : ''}`
 }
 
+/** volume renders a fuel volume from stored litres in the selected unit system. */
+export function volume(litres: number, units: 'metric' | 'imperial', digits = 2, unit = true): string {
+  const converted = units === 'imperial' ? litres * 0.2641720524 : litres
+  return `${converted.toFixed(digits)}${unit ? ` ${units === 'imperial' ? 'gal' : 'L'}` : ''}`
+}
+
 /**
  * day renders a date as a short readable date, with its year.
  *
@@ -203,6 +209,9 @@ export function label(sessionType: string, eventContext: string): string {
  */
 export function labelForKey(key: string): string {
   if (key === OtherCategoryKey) return 'Other'
+  // Distinct qualifying contexts need distinct labels in chart legends and tables.
+  if (key === 'Qualify/OfficialPractice') return 'Practice qualifying'
+  if (key === 'Qualify/OfficialRace') return 'Race qualifying'
   const [type, context] = key.split('/')
   if (!type || !context) return key
   return label(type, context)

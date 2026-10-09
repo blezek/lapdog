@@ -451,6 +451,7 @@ export function Simulator({ scenarios, scenario, input, deviceLabel, deviceAvail
           </div>
           {visualCuesEnabled && <PracticeCue phase={phase.id} />}
           <TraceChart scenario={scenario} samples={samples} nowMS={nowMS} showTarget={targetTraceVisible} durationMS={practiceFinishMS} />
+          <TraceLegend showTarget={targetTraceVisible} />
           {selectedDeviceID === 'keyboard' && <p className="brake-key-hint">Keyboard: ↑ accelerator · ↓ brake · ←/→ trim brake pressure</p>}
         </section>
         <aside className="brake-panel brake-live">
@@ -660,6 +661,14 @@ export function TraceChart({ scenario, samples, nowMS, compact = false, pixelsPe
   )
 }
 
+function TraceLegend({ showTarget }: { showTarget: boolean }) {
+  return <div className="brake-trace-legend" aria-label="Pedal trace legend">
+    {showTarget && <><span><i className="target accelerator" />Target accelerator</span><span><i className="target brake" />Target brake</span><span><i className="tolerance" />Brake tolerance</span></>}
+    <span><i className="actual accelerator" />Actual accelerator</span>
+    <span><i className="actual brake" />Actual brake</span>
+  </div>
+}
+
 function PedalMeter({ label, value, kind, target, tolerance = 0 }: { label: string; value: number; kind: string; target?: number | null; tolerance?: number }) {
   return <div className="brake-pedal"><div><span>{label}</span><strong>{Math.round(value)}%</strong></div><div className="brake-meter">{target != null && <i className="band" style={{ left: `${clamp(target - tolerance, 0, 100)}%`, width: `${clamp(target + tolerance, 0, 100) - clamp(target - tolerance, 0, 100)}%` }} />}<i className={kind} style={{ width: `${clamp(value, 0, 100)}%` }} /></div></div>
 }
@@ -838,7 +847,7 @@ function Range({ label, value, min, max, step, unit, disabled, onChange }: { lab
 
 function Results({ results, scenarios }: { results: RunResult[]; scenarios: Scenario[] }) {
   const byID = new Map(scenarios.map((scenario) => [scenario.id, scenario]))
-  return <main className="brake-results"><div className="brake-panel-head"><div><h1>Results</h1><span>{results.length} completed run{results.length === 1 ? '' : 's'} stored in LapDog</span></div></div>{results.length === 0 ? <div className="brake-empty">No completed runs yet.</div> : results.map((result) => <article className="brake-panel brake-result" key={result.id}><div className="brake-panel-head"><div><strong>{result.scenarioName}</strong><span>{new Date(result.createdAt).toLocaleString()} · {result.deviceLabel}{result.accelerationIncluded ? '' : ' · Braking only'}</span></div><b>{Math.round(result.metrics.score)}</b></div><MetricTiles metrics={result.metrics} />{byID.get(result.scenarioId) && <TraceChart scenario={byID.get(result.scenarioId)!} samples={result.samples} nowMS={result.samples.at(-1)?.timeMs ?? 0} compact durationMS={result.accelerationIncluded ? undefined : getPracticeFinishMS(byID.get(result.scenarioId)!, false)} />}</article>)}</main>
+  return <main className="brake-results"><div className="brake-panel-head"><div><h1>Results</h1><span>{results.length} completed run{results.length === 1 ? '' : 's'} stored in LapDog</span></div></div>{results.length === 0 ? <div className="brake-empty">No completed runs yet.</div> : results.map((result) => <article className="brake-panel brake-result" key={result.id}><div className="brake-panel-head"><div><strong>{result.scenarioName}</strong><span>{new Date(result.createdAt).toLocaleString()} · {result.deviceLabel}{result.accelerationIncluded ? '' : ' · Braking only'}</span></div><b>{Math.round(result.metrics.score)}</b></div><MetricTiles metrics={result.metrics} />{byID.get(result.scenarioId) && <><TraceChart scenario={byID.get(result.scenarioId)!} samples={result.samples} nowMS={result.samples.at(-1)?.timeMs ?? 0} compact durationMS={result.accelerationIncluded ? undefined : getPracticeFinishMS(byID.get(result.scenarioId)!, false)} /><TraceLegend showTarget /></>}</article>)}</main>
 }
 
 function cueFor(id: string): 'brake' | 'threshold' | 'trail' | 'transition' | 'accelerate' | null {

@@ -8,6 +8,17 @@ import (
 	"testing"
 )
 
+func TestMappingOpenErrorOnlyTreatsAbsenceAsIdle(t *testing.T) {
+	absent := errors.New("mapping absent")
+	denied := errors.New("access denied")
+	if err := mappingOpenError(absent, absent); !errors.Is(err, ErrNotRunning) {
+		t.Fatalf("absent mapping = %v, want ErrNotRunning", err)
+	}
+	if err := mappingOpenError(denied, absent); errors.Is(err, ErrNotRunning) || !errors.Is(err, denied) {
+		t.Fatalf("access denied = %v, want a distinguishable failure", err)
+	}
+}
+
 // Off Windows, Open must fail cleanly with ErrUnsupported rather than panicking
 // or blocking. This is what lets the rest of the test suite run on macOS.
 func TestOpenOffWindowsIsUnsupported(t *testing.T) {

@@ -1,9 +1,10 @@
 import type { BreakdownRow } from './api'
-import { foldKey } from './categories'
+import { ambiguousBreakdownNames, breakdownGroupKey, breakdownGroupLabel, foldKey } from './categories'
 
 export type LeaderboardMetric = 'laps' | 'cleanLaps' | 'distance'
 
 export interface LeaderboardGroup {
+  key: string
   group: string
   total: number
   byCategory: Map<string, number>
@@ -24,6 +25,7 @@ export function rankLeaderboard(
   limit = 10,
 ): LeaderboardGroup[] {
   const groups = new Map<string, LeaderboardGroup>()
+  const ambiguous = ambiguousBreakdownNames(rows)
   for (const row of rows) {
     const value =
       metric === 'laps'
@@ -31,10 +33,11 @@ export function rankLeaderboard(
         : metric === 'cleanLaps'
           ? row.cleanLaps
           : row.distanceKm
-    let group = groups.get(row.group)
+    const groupKey = breakdownGroupKey(row)
+    let group = groups.get(groupKey)
     if (!group) {
-      group = { group: row.group, total: 0, byCategory: new Map() }
-      groups.set(row.group, group)
+      group = { key: groupKey, group: breakdownGroupLabel(row, ambiguous), total: 0, byCategory: new Map() }
+      groups.set(groupKey, group)
     }
     const key = foldKey(order, row.stack)
     group.total += value

@@ -1,4 +1,5 @@
 import os
+import math
 import unittest
 from unittest import mock
 
@@ -124,6 +125,21 @@ class Garage61RequestThrottleTest(unittest.TestCase):
     response = generator.FetchResponse(429, "not-json", {"retry-after": "invalid"})
 
     self.assertEqual(10.0, generator.response_retry_seconds(response))
+
+
+class Garage61TelemetryInputTest(unittest.TestCase):
+  def test_rejects_nonfinite_values_in_any_telemetry_column(self):
+    header = "Speed,LapDistPct,Brake,Throttle,PositionType\n"
+    rows = ["100,0.5,0.2,0.8,3"]
+    for column in range(4):
+      bad = ["100", "0.5", "0.2", "0.8", "3"]
+      bad[column] = "nan" if column % 2 == 0 else "inf"
+      rows.append(",".join(bad))
+    parsed = generator.load_csv_rows(header + "\n".join(rows) + "\n")
+    self.assertEqual(1, len(parsed))
+    self.assertTrue(all(math.isfinite(value) for value in (
+      parsed[0].speed, parsed[0].lap_pct, parsed[0].brake, parsed[0].throttle,
+    )))
 
 
 if __name__ == "__main__":

@@ -131,7 +131,8 @@ func applyRangePreset(f *store.Filter, preset string, now time.Time) error {
 		if err != nil || days <= 0 {
 			return fmt.Errorf("%w: unknown range %q", ErrBadRequest, preset)
 		}
-		from = today.AddDate(0, 0, -days)
+		// Today is the first included date, so N calendar days reach back N-1.
+		from = today.AddDate(0, 0, 1-days)
 	}
 
 	f.From = from.UTC().Format(time.RFC3339)

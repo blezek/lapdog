@@ -13,6 +13,15 @@ var ErrUnsupported = errors.New("irsdk: live telemetry is only available on Wind
 // published a connected status. This is an expected state, not a fault.
 var ErrNotRunning = errors.New("irsdk: simulator not running")
 
+// mappingOpenError reserves ErrNotRunning for an absent mapping. Other errors,
+// especially access denied, must remain distinguishable to the live source.
+func mappingOpenError(err, absent error) error {
+	if errors.Is(err, absent) {
+		return fmt.Errorf("%w: %v", ErrNotRunning, err)
+	}
+	return fmt.Errorf("irsdk: open telemetry mapping: %w", err)
+}
+
 // Trace receives a description of each step of an open or a read.
 //
 // The mapping code only runs on Windows, on a machine with a simulator attached and

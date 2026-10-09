@@ -45,7 +45,7 @@ type StatusProvider interface {
 // ConfigStore reads and persists user settings.
 type ConfigStore interface {
 	Get() config.Config
-	Set(config.Config) error
+	Update(func(config.Config) (config.Config, error)) (config.Config, config.Config, error)
 }
 
 // Server serves the JSON API and the embedded user interface.
@@ -206,9 +206,14 @@ func (s *Server) Serve(ln net.Listener, h http.Handler) error {
 		return errors.New("api: nil handler")
 	}
 	addr := ln.Addr().String()
+	_, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		ln.Close()
+		return fmt.Errorf("api: invalid listener address %q: %w", addr, err)
+	}
 	srv := &http.Server{
 		Addr:              addr,
-		Handler:           h,
+		Handler:           s.rejectUntrustedHost(h, port),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	if err := s.st.RecoverGarageQueue(); err != nil {
@@ -220,6 +225,22 @@ func (s *Server) Serve(ln net.Listener, h http.Handler) error {
 	go s.runGarageQueue(queueCtx)
 	s.log.Info("serving user interface", "url", "http://"+addr)
 	return srv.Serve(ln)
+}
+
+// rejectUntrustedHost prevents a page on a DNS-rebound domain from reading or
+// changing the local API. Binding to loopback alone does not validate the Host
+// header sent by a browser. The interface's normal URL uses 127.0.0.1; localhost
+// is accepted for people who enter it explicitly.
+func (s *Server) rejectUntrustedHost(next http.Handler, port string) http.Handler {
+	loopback := net.JoinHostPort(LoopbackHost, port)
+	localhost := net.JoinHostPort("localhost", port)
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != loopback && !strings.EqualFold(r.Host, localhost) {
+			s.fail(w, http.StatusForbidden, errors.New("untrusted request host"))
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // ListenAndServe binds the loopback interface only and serves until the listener

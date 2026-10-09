@@ -63,8 +63,12 @@ type Accountant struct {
 	Clamped int
 
 	interval float64
-	lastT    float64
-	haveLast bool
+	// A settings change can arrive while the source is waiting at its old rate.
+	// Allow one interval at either rate before applying the new clamp threshold.
+	transitionInterval float64
+	lastT              float64
+	haveLast           bool
+	lastReplay         bool
 }
 
 // NewAccountant returns an Accountant sized for the given poll interval.
@@ -83,37 +87,54 @@ func (a *Accountant) Reset() {
 	a.Clamped = 0
 	a.lastT = 0
 	a.haveLast = false
+	a.lastReplay = false
+	a.transitionInterval = 0
+}
+
+// SetInterval changes the expected poll gap without discarding an in-flight
+// sample that may still have been paced at the previous interval.
+func (a *Accountant) SetInterval(interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	a.transitionInterval = max(a.interval, a.transitionInterval, interval.Seconds())
+	a.interval = interval.Seconds()
 }
 
 // Add credits the interval since the previous sample to whichever counters
 // qualify.
 //
 // The first sample after construction or Reset establishes a baseline and credits
-// nothing, because there is no prior observation to measure against. A replay
-// sample credits nothing but still advances the baseline, so time either side of
-// it is unaffected.
+// nothing, because there is no prior observation to measure against. An interval
+// touching a replay sample credits nothing: its time cannot safely be attributed
+// to live driving.
 func (a *Accountant) Add(s Sample) {
 	if !a.haveLast {
 		a.lastT = s.T
 		a.haveLast = true
+		a.lastReplay = s.Replay
 		return
 	}
 
 	elapsed := s.T - a.lastT
 	a.lastT = s.T
+	previousReplay := a.lastReplay
+	a.lastReplay = s.Replay
+	clampInterval := max(a.interval, a.transitionInterval)
+	a.transitionInterval = 0
 
 	// Time running backwards is nonsense; credit nothing rather than subtracting.
 	if elapsed <= 0 {
 		return
 	}
-	if elapsed > a.interval*clampFactor {
+	if elapsed > clampInterval*clampFactor {
 		elapsed = a.interval
 		a.Clamped++
 	}
 
 	// Replay playback is never counted, and there is deliberately no setting for
 	// it.
-	if s.Replay {
+	if s.Replay || previousReplay {
 		return
 	}
 

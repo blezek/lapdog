@@ -150,12 +150,14 @@ type Collector struct {
 
 	// Active segment state. A nil segment means nothing is being recorded. Fields
 	// in this block are protected by activeMu.
-	seg       *Segment
-	lapDet    *LapDetector
-	posDet    *PositionDetector
-	info      *sessionyaml.Info
-	capWriter *capture.Writer
-	refused   bool
+	seg           *Segment
+	lapDet        *LapDetector
+	posDet        *PositionDetector
+	info          *sessionyaml.Info
+	capWriter     *capture.Writer
+	refused       bool
+	refusedKey    string
+	refusedLayout string
 	// quiesced prevents handle from opening a new segment while an accepted
 	// update is waiting to replace the executable.
 	quiesced   bool
@@ -205,10 +207,15 @@ func (c *Collector) SetInterval(d time.Duration) {
 	if d <= 0 {
 		return
 	}
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
 	c.mu.Lock()
 	c.interval = d
 	c.status.IntervalSeconds = d.Seconds()
 	c.mu.Unlock()
+	if c.seg != nil {
+		c.seg.Acct.SetInterval(d)
+	}
 	c.applyIntervalToSource(d)
 }
 
@@ -316,7 +323,7 @@ func (c *Collector) Run(ctx context.Context) error {
 		case errors.Is(err, source.ErrDisconnected):
 			// The sim not running is the normal state, not a failure.
 			c.setConnected(false)
-			c.closeSegment()
+			c.disconnect()
 			continue
 		case err != nil:
 			c.log.Warn("telemetry read failed", "err", err)
@@ -384,6 +391,13 @@ func (c *Collector) handle(f source.Frame) error {
 		return nil
 	}
 	if c.seg == nil {
+		if c.refused && !f.YAMLChanged {
+			refusalKey := fmt.Sprintf("%d/%d", subsession, sessionNum)
+			if c.refusedKey == refusalKey &&
+				c.refusedLayout == strings.Join(f.Row.Names(), "\x00") {
+				return nil
+			}
+		}
 		if err := c.openSegment(f, sessionNum); err != nil {
 			return err
 		}
@@ -455,6 +469,8 @@ func (c *Collector) syncCapture(f source.Frame) bool {
 // openSegment begins recording a new session segment.
 func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	c.refused = false
+	c.refusedKey = ""
+	c.refusedLayout = ""
 	c.lapDet.Reset()
 	c.posDet.Reset()
 	c.lastFlushT = f.T
@@ -479,6 +495,8 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	}
 	if missing := MissingVars(f.Row, need); len(missing) > 0 {
 		c.refused = true
+		c.refusedKey = fmt.Sprintf("%d/%d", seg.SubsessionID, sessionNum)
+		c.refusedLayout = strings.Join(f.Row.Names(), "\x00")
 		c.mu.Lock()
 		c.status.MissingVars = missing
 		c.mu.Unlock()
@@ -502,7 +520,7 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	c.status.MissingVars = nil
 	c.mu.Unlock()
 	c.log.Info("recording session",
-		"session", seg.Key, "type", seg.Class.SessionType, "context", seg.Class.EventContext,
+		"session", seg.Key, "label", seg.Label(), "type", seg.Class.SessionType, "context", seg.Class.EventContext,
 		"track", seg.trackName, "car", seg.carName, "isRace", seg.IsRace(),
 		"pollIntervalSeconds", c.pollInterval().Seconds())
 
@@ -514,7 +532,6 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	c.status.Recording = true
 	c.mu.Unlock()
 
-	c.log.Info("recording session", "key", seg.Key, "label", seg.Label())
 	return nil
 }
 
@@ -617,6 +634,18 @@ func (c *Collector) closeSegment() {
 	c.activeMu.Lock()
 	defer c.activeMu.Unlock()
 	c.closeSegmentLocked()
+}
+
+// disconnect ends the current segment and drops the document and refusal state
+// tied to the previous simulator connection.
+func (c *Collector) disconnect() {
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+	c.closeSegmentLocked()
+	c.info = nil
+	c.refused = false
+	c.refusedKey = ""
+	c.refusedLayout = ""
 }
 
 func (c *Collector) closeSegmentLocked() {

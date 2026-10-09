@@ -65,8 +65,8 @@ export function Export() {
         <h1>Export</h1>
       </div>
       <p className="page-sub">
-        Exports honour the filter below, so the file contains exactly what the other
-        pages are showing.
+        Exports use the filters below and include every matching row, including rows
+        beyond a table's current page.
       </p>
 
       <Filters />

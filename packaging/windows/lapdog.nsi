@@ -142,15 +142,6 @@ VIAddVersionKey "LegalCopyright" "${COMPANY}"
 
 ; ---------------------------------------------------------------- install
 
-Function .onInit
-  ; iRacing is 64-bit only, so a 32-bit host could never run the sim this tool
-  ; exists to watch.
-  ${IfNot} ${RunningX64}
-    MessageBox MB_ICONSTOP "${APPNAME} requires 64-bit Windows."
-    Abort
-  ${EndIf}
-FunctionEnd
-
 Section "-CheckRunning"
   ; Windows will not overwrite a running executable. Stop it before the core
   ; section tries to replace the file.
@@ -179,6 +170,24 @@ Section "${APPNAME}" SecCore
   WriteRegDWORD HKCU "${UNINSTKEY}" "EstimatedSize" 30000
 
   WriteUninstaller "$INSTDIR\uninstall.exe"
+
+  ; Existing installs keep the choice in config.json. Only a first install
+  ; needs a marker for the application's first startup.
+  IfFileExists "$LOCALAPPDATA\lapdog\config.json" startup_choice_done
+  CreateDirectory "$LOCALAPPDATA\lapdog"
+  FileOpen $0 "$LOCALAPPDATA\lapdog\installer-startup-choice" w
+  IfErrors 0 +2
+    Abort "Could not save the Start with Windows choice."
+  FileWrite $0 "0$\r$\n"
+  FileClose $0
+  DeleteRegValue HKCU "${RUNKEY}" "${APPNAME}"
+  startup_choice_done:
+  ; Keep an enabled login entry pointed at the newly selected install path.
+  ; An absent entry stays absent; the app reconciles it with config at launch.
+  ReadRegStr $0 HKCU "${RUNKEY}" "${APPNAME}"
+  ${If} $0 != ""
+    WriteRegStr HKCU "${RUNKEY}" "${APPNAME}" '"$INSTDIR\${EXENAME}"'
+  ${EndIf}
 SectionEnd
 
 Section "Start Menu shortcut" SecStartMenu
@@ -194,9 +203,16 @@ Section /o "Desktop shortcut" SecDesktop
 SectionEnd
 
 Section "Start with Windows" SecStartup
-  ; Writes exactly the value the application manages itself, so the installer and
-  ; the settings screen agree rather than competing.
+  ; On upgrades the saved setting wins; the installer must not silently turn
+  ; startup back on just because this section is selected by default.
+  IfFileExists "$LOCALAPPDATA\lapdog\config.json" startup_section_done
   WriteRegStr HKCU "${RUNKEY}" "${APPNAME}" '"$INSTDIR\${EXENAME}"'
+  FileOpen $0 "$LOCALAPPDATA\lapdog\installer-startup-choice" w
+  IfErrors 0 +2
+    Abort "Could not save the Start with Windows choice."
+  FileWrite $0 "1$\r$\n"
+  FileClose $0
+  startup_section_done:
 SectionEnd
 
 !insertmacro MUI_FUNCTION_DESCRIPTION_BEGIN
@@ -205,8 +221,22 @@ SectionEnd
   !insertmacro MUI_DESCRIPTION_TEXT ${SecStartMenu} "Add ${APPNAME} to the Start Menu."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecDesktop} "Add a shortcut to the Desktop."
   !insertmacro MUI_DESCRIPTION_TEXT ${SecStartup} \
-    "Launch ${APPNAME} automatically when you sign in, so sessions are recorded without you starting it."
+    "On a first install, launch ${APPNAME} when you sign in. Existing installations keep their choice from Settings."
 !insertmacro MUI_FUNCTION_DESCRIPTION_END
+
+Function .onInit
+  ; iRacing is 64-bit only, so a 32-bit host could never run the sim this tool
+  ; exists to watch.
+  ${IfNot} ${RunningX64}
+    MessageBox MB_ICONSTOP "${APPNAME} requires 64-bit Windows."
+    Abort
+  ${EndIf}
+  ; The config owns this choice on upgrades. Hide the installer checkbox so
+  ; every option the user can select actually changes the installed app.
+  IfFileExists "$LOCALAPPDATA\lapdog\config.json" 0 startup_option_done
+  SectionSetText ${SecStartup} ""
+  startup_option_done:
+FunctionEnd
 
 ; -------------------------------------------------------------- uninstall
 

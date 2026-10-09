@@ -30,7 +30,7 @@ func (s *Server) handleBrakeScenarios(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, rows)
 	case http.MethodPost:
 		var rec store.BrakeScenario
-		if !s.decodeBrakeRequest(w, r, &rec) {
+		if !s.decodeJSONRequest(w, r, &rec) {
 			return
 		}
 		// The server owns custom identities. Accepting a caller-selected id would
@@ -67,7 +67,7 @@ func (s *Server) handleBrakeScenario(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, rec)
 	case http.MethodPut:
 		var rec store.BrakeScenario
-		if !s.decodeBrakeRequest(w, r, &rec) {
+		if !s.decodeJSONRequest(w, r, &rec) {
 			return
 		}
 		if rec.ID != "" && rec.ID != id {
@@ -107,7 +107,7 @@ func (s *Server) handleBrakeResults(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, rows)
 	case http.MethodPost:
 		var run store.BrakeRun
-		if !s.decodeBrakeRequest(w, r, &run) {
+		if !s.decodeJSONRequest(w, r, &run) {
 			return
 		}
 		run.ID = uuid.NewString()
@@ -151,7 +151,7 @@ func (s *Server) handleBrakeSettings(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, settings)
 	case http.MethodPut:
 		var settings store.BrakeSettings
-		if !s.decodeBrakeRequest(w, r, &settings) {
+		if !s.decodeJSONRequest(w, r, &settings) {
 			return
 		}
 		if err := validateBrakeSettings(settings); err != nil {
@@ -189,7 +189,7 @@ func (s *Server) handleBrakeDevices(w http.ResponseWriter, r *http.Request) {
 		s.writeJSON(w, devices)
 	case http.MethodPost:
 		var device store.BrakeDevice
-		if !s.decodeBrakeRequest(w, r, &device) {
+		if !s.decodeJSONRequest(w, r, &device) {
 			return
 		}
 		if err := validateBrakeDevice(device); err != nil {
@@ -216,7 +216,7 @@ func (s *Server) handleBrakeDevice(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodPut:
 		var device store.BrakeDevice
-		if !s.decodeBrakeRequest(w, r, &device) {
+		if !s.decodeJSONRequest(w, r, &device) {
 			return
 		}
 		device.ID = id
@@ -241,7 +241,7 @@ func (s *Server) handleBrakeDevice(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func decodeBrakeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
+func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	r.Body = http.MaxBytesReader(w, r.Body, brakeRequestLimit)
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
@@ -257,8 +257,10 @@ func decodeBrakeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
 	return nil
 }
 
-func (s *Server) decodeBrakeRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
-	err := decodeBrakeJSON(w, r, dst)
+// decodeJSONRequest applies the same size, shape, and trailing-data checks to
+// every state-changing JSON request, including settings and updater actions.
+func (s *Server) decodeJSONRequest(w http.ResponseWriter, r *http.Request, dst any) bool {
+	err := decodeJSON(w, r, dst)
 	if err == nil {
 		return true
 	}

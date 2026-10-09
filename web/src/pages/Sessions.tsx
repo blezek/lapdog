@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { api, type Lap, type PositionEvent, type Session } from '../api'
+import { api, type Config, type Lap, type PositionEvent, type Session } from '../api'
 import {
   causeLabel,
   dateTime,
@@ -12,6 +12,7 @@ import {
   lapTime,
   num,
   position,
+  volume,
 } from '../format'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
@@ -34,6 +35,7 @@ export function Sessions() {
   const facets = useQuery({ queryKey: ['facets'], queryFn: api.facets })
 
   const items = list.data?.items ?? []
+  const total = list.data?.total ?? 0
   const selectedInList = selected != null && items.some((s) => s.id === selected)
   const current = selectedInList ? selected : (items[0]?.id ?? null)
 
@@ -49,8 +51,9 @@ export function Sessions() {
       <Filters
         matched={list.data ? `${num(list.data.total)} sessions matched` : undefined}
       />
-
-      {list.isError && <ErrorNote error={list.error} />}
+      {total > items.length && (
+        <p className="page-sub">Showing the latest {num(items.length)} of {num(total)} matching sessions. Narrow the filters to find older sessions.</p>
+      )}
 
       <div className="explorer">
         <aside>
@@ -110,7 +113,9 @@ export function Sessions() {
         </aside>
 
         <div className="session-list">
-          {list.isLoading ? (
+          {list.isError ? (
+            <ErrorNote error={list.error} />
+          ) : list.isLoading ? (
             <Loading />
           ) : items.length === 0 ? (
             <Empty>Nothing matches this filter.</Empty>
@@ -140,7 +145,7 @@ export function Sessions() {
           )}
         </div>
 
-        <div>{current == null ? <Empty>Select a session.</Empty> : <Detail id={current} />}</div>
+        <div>{list.isError ? null : list.isLoading ? <Loading /> : current == null ? <Empty>No session matches this filter.</Empty> : <Detail id={current} />}</div>
       </div>
     </>
   )
@@ -150,6 +155,8 @@ export function Sessions() {
 
 function Detail({ id }: { id: number }) {
   const theme = useTheme()
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const units = settings.data?.units ?? 'metric'
   const session = useQuery({ queryKey: ['session', id], queryFn: () => api.session(id) })
   const laps = useQuery({ queryKey: ['session-laps', id], queryFn: () => api.sessionLaps(id) })
   const events = useQuery({
@@ -157,6 +164,8 @@ function Detail({ id }: { id: number }) {
     queryFn: () => api.sessionPositions(id),
   })
 
+  if (settings.isError) return <ErrorNote error={settings.error} />
+  if (!settings.data) return <Loading />
   if (session.isLoading) return <Loading />
   if (session.isError) return <ErrorNote error={session.error} />
   if (!session.data) return null
@@ -201,20 +210,26 @@ function Detail({ id }: { id: number }) {
 
         <Card
           title="Lap times"
-          table={<LapTable laps={laps.data ?? []} bestLap={s.bestLapTimeS} />}
+          table={laps.data ? <LapTable laps={laps.data} bestLap={s.bestLapTimeS} units={units} /> : undefined}
         >
-          {laps.isLoading ? (
+          {laps.isError ? (
+            <ErrorNote error={laps.error} />
+          ) : laps.isLoading ? (
             <Loading />
           ) : (laps.data?.length ?? 0) === 0 ? (
             <Empty>No completed laps in this session.</Empty>
+          ) : !laps.data?.some((lap) => lap.lapTimeS != null && lap.lapTimeS > 0) ? (
+            <Empty>This session has completed laps, but none has a recorded lap time. Use Table to inspect them.</Empty>
           ) : (
             <LapChart laps={laps.data!} theme={theme} />
           )}
         </Card>
 
         {s.sessionType === 'Race' && (
-          <Card title="Position changes" table={<EventTable events={events.data ?? []} />}>
-            {events.isLoading ? (
+          <Card title="Position changes" table={events.data ? <EventTable events={events.data} /> : undefined}>
+            {events.isError ? (
+              <ErrorNote error={events.error} />
+            ) : events.isLoading ? (
               <Loading />
             ) : (events.data?.length ?? 0) === 0 ? (
               <Empty>No position changes recorded.</Empty>
@@ -232,14 +247,14 @@ function ResultRows({ session: s }: { session: Session }) {
   const rows: [string, string][] = [
     ['Laps completed', num(s.lapsCompleted)],
     ['Best lap', lapTime(s.bestLapTimeS)],
-    ['Incidents', `${num(s.incidents)} (${s.incidentSource === 'live' ? 'live' : 'from results'})`],
+    ['Incident points', `${num(s.incidents)} (${s.incidentSource === 'live' ? 'live' : 'from results'})`],
   ]
   if (s.qualifyPosition != null) {
     rows.push(['Qualified', `${position(s.qualifyPosition)}${
       s.qualifyBestTimeS ? ` · ${lapTime(s.qualifyBestTimeS)}` : ''
     }`])
   }
-  if (s.startingPosition != null) rows.push(['Started', position(s.startingPosition)])
+  if (s.startingPosition != null) rows.push(['First observed position', position(s.startingPosition)])
   if (s.finishPosition != null) {
     rows.push(['Finished', `${position(s.finishPosition)}${
       s.fieldSize ? ` of ${s.fieldSize}` : ''
@@ -280,7 +295,7 @@ function ResultRows({ session: s }: { session: Session }) {
 function LapChart({ laps, theme }: { laps: Lap[]; theme: Theme }) {
   const option = useMemo(() => {
     const timed = laps.filter((l) => l.lapTimeS != null && l.lapTimeS > 0)
-    const best = Math.min(...timed.map((l) => l.lapTimeS!))
+    const best = timed.length > 0 ? Math.min(...timed.map((l) => l.lapTimeS!)) : null
 
     return {
       grid: baseGrid,
@@ -295,7 +310,7 @@ function LapChart({ laps, theme }: { laps: Lap[]; theme: Theme }) {
             `<strong>${lapTime(l.lapTimeS)}</strong>`,
             l.deltaToBestS != null ? `Δ best ${delta(l.deltaToBestS)}` : '',
             l.isPitLap ? 'Pit lap' : '',
-            l.incidentsOnLap > 0 ? `${l.incidentsOnLap} incident(s)` : '',
+            l.incidentsOnLap > 0 ? `${l.incidentsOnLap} incident points` : '',
           ]
             .filter(Boolean)
             .join('<br/>')
@@ -326,7 +341,7 @@ function LapChart({ laps, theme }: { laps: Lap[]; theme: Theme }) {
           })),
           lineStyle: { color: theme.accent, width: 2 },
           smooth: false,
-          markLine: {
+          markLine: best == null ? undefined : {
             silent: true,
             symbol: 'none',
             data: [{ yAxis: best, label: { formatter: `best ${lapTime(best)}`, fontSize: 10 } }],
@@ -338,6 +353,9 @@ function LapChart({ laps, theme }: { laps: Lap[]; theme: Theme }) {
     }
   }, [laps, theme])
 
+  if (!laps.some((lap) => lap.lapTimeS != null && lap.lapTimeS > 0)) {
+    return <Empty>No timed laps to plot.</Empty>
+  }
   return (
     <>
       <Chart option={option} ariaLabel="Lap times for this session" />
@@ -351,7 +369,7 @@ function LapChart({ laps, theme }: { laps: Lap[]; theme: Theme }) {
   )
 }
 
-function LapTable({ laps, bestLap }: { laps: Lap[]; bestLap: number | null }) {
+function LapTable({ laps, bestLap, units }: { laps: Lap[]; bestLap: number | null; units: Config['units'] }) {
   return (
     <div className="table-wrap">
       <table>
@@ -360,8 +378,8 @@ function LapTable({ laps, bestLap }: { laps: Lap[]; bestLap: number | null }) {
             <th className="no-sort num">Lap</th>
             <th className="no-sort num">Time</th>
             <th className="no-sort num">Δ best</th>
-            <th className="no-sort num">Fuel</th>
-            <th className="no-sort num">Inc</th>
+            <th className="no-sort num">Fuel ({units === 'imperial' ? 'gal' : 'L'})</th>
+            <th className="no-sort num">Inc pts</th>
             <th className="no-sort num">Pos</th>
             <th className="no-sort">Pit</th>
           </tr>
@@ -383,7 +401,7 @@ function LapTable({ laps, bestLap }: { laps: Lap[]; bestLap: number | null }) {
                 {lapTime(l.lapTimeS)}
               </td>
               <td className="num">{delta(l.deltaToBestS)}</td>
-              <td className="num">{l.fuelUsedL != null ? l.fuelUsedL.toFixed(2) : '—'}</td>
+              <td className="num">{l.fuelUsedL != null ? volume(l.fuelUsedL, units, 2, false) : '—'}</td>
               <td className="num">{l.incidentsOnLap || '—'}</td>
               <td className="num">{position(l.position)}</td>
               <td>{l.isPitLap ? 'yes' : ''}</td>
@@ -405,14 +423,14 @@ function EventList({ events }: { events: PositionEvent[] }) {
   const onTrack = events.filter((e) => e.cause === 'OnTrack')
   const made = onTrack.filter((e) => e.toPosition < e.fromPosition).length
   const lost = onTrack.filter((e) => e.toPosition > e.fromPosition).length
-  const attrition = events.length - onTrack.length
+  const otherChanges = events.length - onTrack.length
 
   return (
     <>
       <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(3, 1fr)', marginBottom: 10 }}>
         <Stat label="Passes made" value={String(made)} />
         <Stat label="Times passed" value={String(lost)} />
-        <Stat label="By attrition" value={String(attrition)} note="not counted as passes" />
+        <Stat label="Other/unknown changes" value={String(otherChanges)} note="not counted as on-track passes" />
       </div>
       <EventTable events={events} />
     </>

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 
 import {
   distance,
+  labelForKey,
   hm,
   hms,
   licenceLabel,
@@ -9,6 +10,7 @@ import {
   startOfMonth,
   startOfWeek,
   startOfYear,
+  volume,
 } from './format'
 
 describe('speed', () => {
@@ -33,6 +35,21 @@ describe('distance', () => {
   it('uses kilometres for metric settings and miles for imperial settings', () => {
     expect(distance(16.09344, 'metric')).toBe('16.1 km')
     expect(distance(16.09344, 'imperial')).toBe('10.0 mi')
+  })
+})
+
+describe('volume', () => {
+  it('shows stored litres as gallons when imperial units are selected', () => {
+    expect(volume(3.785411784, 'metric')).toBe('3.79 L')
+    expect(volume(3.785411784, 'imperial')).toBe('1.00 gal')
+    expect(volume(3.785411784, 'imperial', 2, false)).toBe('1.00')
+  })
+})
+
+describe('category labels', () => {
+  it('distinguishes qualifying contexts that occupy separate chart colors', () => {
+    expect(labelForKey('Qualify/OfficialPractice')).toBe('Practice qualifying')
+    expect(labelForKey('Qualify/OfficialRace')).toBe('Race qualifying')
   })
 })
 

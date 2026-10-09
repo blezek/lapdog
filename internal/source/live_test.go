@@ -142,6 +142,19 @@ func TestLiveCloseWithoutConnection(t *testing.T) {
 	}
 }
 
+func TestLiveTreatsSameYAMLUpdateAsNewAfterClose(t *testing.T) {
+	s := &live{}
+	if !s.acceptSessionYAML(7, []byte("old session")) {
+		t.Fatal("first session document was not accepted")
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !s.acceptSessionYAML(7, []byte("new session")) || string(s.lastYAML) != "new session" {
+		t.Fatalf("new connection reused stale YAML: update=%d yaml=%q", s.lastUpdate, s.lastYAML)
+	}
+}
+
 // An absent simulator is not a failure, and a real read failure is not silence.
 //
 // Collapsing both into ErrDisconnected is what hid a genuine mapping bug: the Windows

@@ -65,31 +65,72 @@ func RunHandoff(h HandoffArgs) error {
 		if rollback := rollbackError(err); rollback != nil {
 			return fmt.Errorf("apply failed and rollback failed: %v; rollback: %w", err, rollback)
 		}
-		// Rollback restored the old target. Bring it back so collection resumes
-		// and the persisted failure is visible in the interface.
-		if startErr := startInstalled(h.Target); startErr != nil {
-			return fmt.Errorf("apply failed; rollback succeeded, but the old executable could not restart: %v; restart: %w", err, startErr)
-		}
-		return fmt.Errorf("apply failed; rollback succeeded: %w", err)
+		// Record the failure before starting the old executable, so its startup
+		// cannot miss the reason and automatically attempt the same handoff.
+		return restartOldAfterFailure(h, fmt.Errorf("apply failed; rollback succeeded: %w", err))
 	}
 	if err := startInstalled(h.Target); err != nil {
-		return fmt.Errorf("updated executable installed but could not be started: %w", err)
+		if rollback := restoreBackup(h.Target, h.Backup); rollback != nil {
+			return fmt.Errorf("updated executable could not start: %v; rollback failed: %w", err, rollback)
+		}
+		return restartOldAfterFailure(h, fmt.Errorf("updated executable could not start; old executable restored: %w", err))
 	}
+	return nil
+}
+
+func restartOldAfterFailure(h HandoffArgs, failure error) error {
+	if err := RecordHandoffFailure(h.StatePath, failure); err != nil {
+		// Starting the old executable with an unrecorded acceptance would let it
+		// attempt the same failed replacement again, indefinitely.
+		return fmt.Errorf("%v; could not record failure, old executable was not restarted: %w", failure, err)
+	}
+	if err := startInstalled(h.Target); err != nil {
+		return fmt.Errorf("%v; old executable could not restart: %w", failure, err)
+	}
+	return failure
+}
+
+// restoreBackup keeps the failed replacement recoverable until the old binary
+// has been moved back to its installed path.
+func restoreBackup(target, backup string) error {
+	failed := target + ".failed"
+	if err := os.Remove(failed); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove earlier failed executable: %w", err)
+	}
+	if err := os.Rename(target, failed); err != nil {
+		return fmt.Errorf("move failed executable aside: %w", err)
+	}
+	if err := os.Rename(backup, target); err != nil {
+		if restoreErr := os.Rename(failed, target); restoreErr != nil {
+			return fmt.Errorf("restore old executable: %v; restore failed replacement: %w", err, restoreErr)
+		}
+		return fmt.Errorf("restore old executable: %w", err)
+	}
+	_ = os.Remove(failed)
 	return nil
 }
 
 // RecordHandoffFailure preserves a helper-process failure for the next normal
 // process and the update popdown.
-func RecordHandoffFailure(path string, failure error) {
+func RecordHandoffFailure(path string, failure error) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return fmt.Errorf("read update state: %w", err)
 	}
 	var p persisted
-	if json.Unmarshal(b, &p) != nil {
-		return
+	if err := json.Unmarshal(b, &p); err != nil {
+		return fmt.Errorf("decode update state: %w", err)
+	}
+	// The helper records a failure before restarting the old executable. The
+	// main entrypoint also reports its returned error; that second report must
+	// not turn Pending back on after the old process consumed the failure.
+	if p.Error == failure.Error() {
+		return nil
 	}
 	p.Pending = true
 	p.Error = failure.Error()
-	_ = atomicJSON(path, p)
+	if err := atomicJSON(path, p); err != nil {
+		return fmt.Errorf("save update failure: %w", err)
+	}
+	return nil
 }

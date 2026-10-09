@@ -262,7 +262,7 @@ function LeaderboardTable({
         </thead>
         <tbody>
           {groups.map((group, index) => (
-            <tr key={group.group}>
+            <tr key={group.key}>
               <td>{index + 1}</td>
               <td>{group.group}</td>
               <td className="num">{formatMetric(group.total, metric, units)}</td>

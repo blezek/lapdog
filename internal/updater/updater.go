@@ -169,6 +169,17 @@ func New(opts Options) (*Coordinator, error) {
 			// normal startup again, retry the durable acceptance.
 			if u.state != Failed && u.p.Pending && !equalVersion(u.p.Accepted, opts.Version) {
 				u.p.Pending = false
+				if u.p.Error != "" {
+					// The previous handoff failed and the old executable started
+					// again. A fresh decision is required; automatically retrying
+					// can trap the application in a restart loop.
+					u.p.Accepted = ""
+					u.p.Staged = ""
+					u.state = Failed
+					if err := u.saveLocked(); err != nil {
+						u.lastError = err.Error()
+					}
+				}
 			}
 			if u.state != Failed && u.p.Release != nil && newer(u.p.Release.Version, opts.Version) {
 				u.state = u.releaseStateLocked(opts.Now())
@@ -360,6 +371,10 @@ func (u *Coordinator) Action(ctx context.Context, action string) error {
 		u.mu.Unlock()
 		return err
 	case "later":
+		if u.p.Accepted != "" {
+			u.mu.Unlock()
+			return errors.New("update installation is already accepted")
+		}
 		if rel == nil {
 			u.mu.Unlock()
 			return errors.New("no update is available")
@@ -371,6 +386,10 @@ func (u *Coordinator) Action(ctx context.Context, action string) error {
 		u.mu.Unlock()
 		return err
 	case "skip":
+		if u.p.Accepted != "" {
+			u.mu.Unlock()
+			return errors.New("update installation is already accepted")
+		}
 		if rel == nil {
 			u.mu.Unlock()
 			return errors.New("no update is available")
@@ -383,6 +402,10 @@ func (u *Coordinator) Action(ctx context.Context, action string) error {
 		u.mu.Unlock()
 		return err
 	case "install":
+		if u.p.Accepted != "" {
+			u.mu.Unlock()
+			return errors.New("update installation is already accepted")
+		}
 		if rel == nil || !newer(rel.Version, u.opts.Version) {
 			u.mu.Unlock()
 			return errors.New("no update is available")

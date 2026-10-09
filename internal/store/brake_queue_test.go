@@ -68,6 +68,7 @@ INSERT INTO brake_garage61_queue(queue_key,car_name,track_name,source,queued_at)
         ('g:101:202','Mazda','Spa','manual','2026-10-06T12:00:00Z');
 CREATE TRIGGER brake_garage61_queue_insert AFTER INSERT ON sessions BEGIN SELECT 1; END;
 CREATE TRIGGER brake_garage61_queue_update AFTER UPDATE ON sessions BEGIN SELECT 1; END;
+ALTER TABLE brake_garage61_queue DROP COLUMN rerun_requested;
 UPDATE schema_version SET version=10;`)
 	if err != nil {
 		t.Fatal(err)
@@ -126,5 +127,47 @@ func TestGarageQueuePersistsAndRecoversInterruptedWork(t *testing.T) {
 	queue, err := s.ListGarageQueue()
 	if err != nil || len(queue) != 1 || queue[0].State != "done" {
 		t.Fatalf("done queue=%+v err=%v", queue, err)
+	}
+}
+
+func TestGarageQueuePreservesRequestMadeWhileRunning(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "queue.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	first, err := s.EnqueueGaragePair(67, 523, 101, 202, "Mazda", "Spa", "manual")
+	if err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimNextGarageQueue()
+	if err != nil || claimed == nil || claimed.ID != first.ID || claimed.AttemptCount != 1 {
+		t.Fatalf("first claim=%+v err=%v", claimed, err)
+	}
+	// Two clicks while the first attempt is running should coalesce into one
+	// later attempt, including when they happen within the same second.
+	for range 2 {
+		item, err := s.EnqueueGaragePair(67, 523, 101, 202, "Mazda", "Spa", "manual")
+		if err != nil || item.ID != first.ID || item.State != "running" {
+			t.Fatalf("rerun request=%+v err=%v", item, err)
+		}
+	}
+	if err := s.FinishGarageQueue(first.ID, "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	queue, err := s.ListGarageQueue()
+	if err != nil || len(queue) != 1 || queue[0].State != "queued" || queue[0].FinishedAt != "" {
+		t.Fatalf("finished first attempt lost rerun: %+v err=%v", queue, err)
+	}
+	claimed, err = s.ClaimNextGarageQueue()
+	if err != nil || claimed == nil || claimed.ID != first.ID || claimed.AttemptCount != 2 {
+		t.Fatalf("rerun claim=%+v err=%v", claimed, err)
+	}
+	if err := s.FinishGarageQueue(first.ID, "done", ""); err != nil {
+		t.Fatal(err)
+	}
+	queue, err = s.ListGarageQueue()
+	if err != nil || len(queue) != 1 || queue[0].State != "done" || queue[0].AttemptCount != 2 {
+		t.Fatalf("second attempt did not finish: %+v err=%v", queue, err)
 	}
 }

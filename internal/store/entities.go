@@ -7,6 +7,10 @@ package store
 
 import "fmt"
 
+// A track id identifies a layout. Include the configuration in labels so two
+// layouts with the same venue name remain distinguishable in lists and charts.
+const trackDisplayNameExpr = "COALESCE(s.track_name, 'Unknown track') || CASE WHEN NULLIF(TRIM(s.track_config), '') IS NOT NULL THEN ' · ' || TRIM(s.track_config) ELSE '' END"
+
 // entityDim maps a dimension name onto the columns it selects.
 //
 // Two columns are needed rather than one: the id identifies the entity and the
@@ -24,11 +28,11 @@ var entityDims = map[string]entityDim{
 		idCol:     "s.car_id",
 		nameExpr:  "COALESCE(s.car_name, 'Unknown car')",
 		otherID:   "s.track_id",
-		otherExpr: "COALESCE(s.track_name, 'Unknown track')",
+		otherExpr: trackDisplayNameExpr,
 	},
 	"track": {
 		idCol:     "s.track_id",
-		nameExpr:  "COALESCE(s.track_name, 'Unknown track')",
+		nameExpr:  trackDisplayNameExpr,
 		otherID:   "s.car_id",
 		otherExpr: "COALESCE(s.car_name, 'Unknown car')",
 	},
@@ -125,7 +129,11 @@ ORDER BY SUM(s.driving_seconds) DESC, MAX(` + d.nameExpr + `)`
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	qualifyDuplicateLabels(out, func(r *EntityRow) *string { return &r.Name }, func(r *EntityRow) string { return fmt.Sprint(r.ID) })
+	return out, nil
 }
 
 // EntityStats is the headline panel for one car or track.
@@ -396,7 +404,11 @@ ORDER BY sess.laps DESC, sess.oname`
 		}
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	qualifyDuplicateLabels(out, func(r *PaceRow) *string { return &r.OtherName }, func(r *PaceRow) string { return fmt.Sprint(r.OtherID) })
+	return out, nil
 }
 
 // ProgressionRow is one month's best lap, for the improvement chart.
@@ -691,7 +703,7 @@ func (s *Store) TopCombos(f Filter, limit int) ([]ComboCell, error) {
 WITH combo AS (
   SELECT s.car_id AS ci, s.track_id AS ti,
          MAX(COALESCE(s.car_name, 'Unknown car') || ' / ' ||
-             COALESCE(s.track_name, 'Unknown track')) AS label,
+             ` + trackDisplayNameExpr + `) AS label,
          SUM(s.driving_seconds) AS tot
   FROM sessions s
   WHERE ` + pred + ` AND s.car_id IS NOT NULL AND s.track_id IS NOT NULL
@@ -729,5 +741,11 @@ ORDER BY c.tot DESC, category`
 		}
 		out = append(out, c)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	qualifyDuplicateLabels(out, func(r *ComboCell) *string { return &r.Combo }, func(r *ComboCell) string {
+		return fmt.Sprintf("%d/%d", r.CarPlatformID, r.TrackPlatformID)
+	})
+	return out, nil
 }

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -244,6 +245,97 @@ func TestLaterSkipAndNewerReleasePersistence(t *testing.T) {
 	}
 }
 
+func TestInFlightInstallCannotBeSkippedOrDeferred(t *testing.T) {
+	for _, action := range []string{"skip", "later"} {
+		t.Run(action, func(t *testing.T) {
+			archive := zipBytes(t, map[string][]byte{"lapdog.exe": []byte("new executable")})
+			sum := sha256.Sum256(archive)
+			entered := make(chan struct{})
+			release := make(chan struct{})
+			launched := make(chan struct{}, 1)
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path == "/archive" {
+					close(entered)
+					<-release
+					return response(r, archive), nil
+				}
+				return response(r, []byte(fmt.Sprintf("%x  %s\n", sum, assetName))), nil
+			})}
+			u, err := New(Options{Version: "v1.0.0", GOOS: "windows", GOARCH: "amd64",
+				DataDir: t.TempDir(), Detector: fakeDetector{release: &Release{
+					Version: "v1.1.0", AssetURL: "https://example.test/archive", ChecksumURL: "https://example.test/sums",
+				}}, HTTPClient: client, Launch: func(string, ...string) error {
+					launched <- struct{}{}
+					return errors.New("test launch stop")
+				}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := u.Check(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if err := u.Action(context.Background(), "install"); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-entered:
+			case <-time.After(2 * time.Second):
+				t.Fatal("download never started")
+			}
+			if err := u.Action(context.Background(), action); err == nil {
+				t.Fatalf("%s overrode accepted install", action)
+			}
+			if accepted := u.Snapshot().AcceptedVersion; accepted == nil || *accepted != "v1.1.0" {
+				t.Fatalf("accepted release changed after %s: %+v", action, u.Snapshot())
+			}
+			close(release)
+			select {
+			case <-launched:
+			case <-time.After(2 * time.Second):
+				t.Fatal("accepted installation did not reach handoff")
+			}
+			// Launch signals before resume has persisted its final state. Wait for
+			// the operation to finish before TempDir cleanup runs.
+			u.op.Lock()
+			u.op.Unlock()
+		})
+	}
+}
+
+func TestFailedHandoffRequiresNewConsent(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "update", "state.json")
+	if err := atomicJSON(statePath, persisted{
+		Accepted: "v1.1.0", Staged: filepath.Join(dir, "update", "staged-lapdog.exe"),
+		Pending: true, Error: "apply failed; rollback succeeded: permission denied",
+		Release: &Release{Version: "v1.1.0"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	launched := false
+	u, err := New(Options{Version: "v1.0.0", GOOS: "windows", GOARCH: "amd64",
+		DataDir: dir, Detector: fakeDetector{}, Launch: func(string, ...string) error {
+			launched = true
+			return nil
+		}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := u.Snapshot()
+	if s.State != Failed || s.AcceptedVersion != nil || s.PendingRestart || s.Error == nil || !strings.Contains(*s.Error, "permission denied") {
+		t.Fatalf("failed handoff resumed automatically: %+v", s)
+	}
+	u.resume(context.Background())
+	if launched {
+		t.Fatal("failed handoff launched again without new consent")
+	}
+	var saved persisted
+	data, err := os.ReadFile(statePath)
+	if err != nil || json.Unmarshal(data, &saved) != nil || saved.Accepted != "" || saved.Pending {
+		t.Fatalf("failed handoff state was not durable: %+v err=%v", saved, err)
+	}
+}
+
 func TestManualNetworkErrorIsActionable(t *testing.T) {
 	u, err := New(Options{Version: "v1.0.0", GOOS: "windows", GOARCH: "amd64", DataDir: t.TempDir(), Detector: fakeDetector{err: fmt.Errorf("API rate limit exceeded")}})
 	if err != nil {
@@ -427,13 +519,116 @@ func TestHandoffRestartsRolledBackExecutable(t *testing.T) {
 	rollbackError = func(error) error { return nil }
 	started := ""
 	startInstalled = func(path string) error { started = path; return nil }
-	target := filepath.Join(t.TempDir(), "lapdog.exe")
-	err := RunHandoff(HandoffArgs{PID: 999999, Target: target, Backup: target + ".backup"})
+	dir := t.TempDir()
+	target := filepath.Join(dir, "lapdog.exe")
+	statePath := filepath.Join(dir, "state.json")
+	if err := atomicJSON(statePath, persisted{Accepted: "v1.1.0", Pending: true}); err != nil {
+		t.Fatal(err)
+	}
+	err := RunHandoff(HandoffArgs{PID: 999999, Target: target, Backup: target + ".backup", StatePath: statePath})
 	if err == nil || !strings.Contains(err.Error(), "rollback succeeded") {
 		t.Fatalf("error=%v, want rollback result", err)
 	}
 	if started != target {
 		t.Fatalf("restarted=%q, want %q", started, target)
+	}
+}
+
+func TestHandoffDoesNotRestartOldExecutableWithoutFailureRecord(t *testing.T) {
+	originalApply, originalRollback, originalStart := applyReplacement, rollbackError, startInstalled
+	defer func() {
+		applyReplacement = originalApply
+		rollbackError = originalRollback
+		startInstalled = originalStart
+	}()
+	applyReplacement = func(io.Reader, selfreplace.Options) error { return errors.New("permission denied") }
+	rollbackError = func(error) error { return nil }
+	starts := 0
+	startInstalled = func(string) error { starts++; return nil }
+	dir := t.TempDir()
+	target := filepath.Join(dir, "lapdog.exe")
+	err := RunHandoff(HandoffArgs{PID: 999999, Target: target, Backup: target + ".backup", StatePath: filepath.Join(dir, "missing.json")})
+	if err == nil || !strings.Contains(err.Error(), "could not record failure") || starts != 0 {
+		t.Fatalf("handoff err=%v starts=%d, want failed state save and no restart", err, starts)
+	}
+}
+
+func TestHandoffRestoresOldExecutableWhenNewLaunchFails(t *testing.T) {
+	originalApply, originalRollback, originalStart := applyReplacement, rollbackError, startInstalled
+	defer func() {
+		applyReplacement = originalApply
+		rollbackError = originalRollback
+		startInstalled = originalStart
+	}()
+	dir := t.TempDir()
+	target, backup := filepath.Join(dir, "lapdog.exe"), filepath.Join(dir, "lapdog.backup.exe")
+	statePath := filepath.Join(dir, "state.json")
+	if err := os.WriteFile(target, []byte("old executable"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := atomicJSON(statePath, persisted{Accepted: "v1.1.0", Pending: true}); err != nil {
+		t.Fatal(err)
+	}
+	applyReplacement = func(_ io.Reader, opts selfreplace.Options) error {
+		if opts.TargetPath != target || opts.OldSavePath != backup {
+			t.Fatalf("replacement paths=%+v", opts)
+		}
+		if err := os.Rename(target, backup); err != nil {
+			return err
+		}
+		return os.WriteFile(target, []byte("new executable"), 0o700)
+	}
+	starts := 0
+	startInstalled = func(path string) error {
+		starts++
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if starts == 1 {
+			if string(body) != "new executable" {
+				t.Fatalf("first launch used %q", body)
+			}
+			return errors.New("launch denied")
+		}
+		if string(body) != "old executable" {
+			t.Fatalf("fallback launch used %q", body)
+		}
+		var saved persisted
+		data, err := os.ReadFile(statePath)
+		if err != nil || json.Unmarshal(data, &saved) != nil || !strings.Contains(saved.Error, "launch denied") {
+			t.Fatalf("failure was not durable before fallback launch: %+v err=%v", saved, err)
+		}
+		return nil
+	}
+	err := RunHandoff(HandoffArgs{PID: 999999, Target: target, Backup: backup, StatePath: statePath})
+	if err == nil || !strings.Contains(err.Error(), "old executable restored") || starts != 2 {
+		t.Fatalf("handoff err=%v starts=%d", err, starts)
+	}
+	if body, err := os.ReadFile(target); err != nil || string(body) != "old executable" {
+		t.Fatalf("installed executable=%q err=%v", body, err)
+	}
+}
+
+func TestRepeatedHandoffFailureDoesNotRearmPending(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.json")
+	failure := errors.New("replacement failed")
+	if err := atomicJSON(path, persisted{Error: failure.Error(), Pending: false}); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordHandoffFailure(path, failure); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var saved persisted
+	if err := json.Unmarshal(data, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Pending {
+		t.Fatal("duplicate handoff report rearmed a consumed failure")
 	}
 }
 

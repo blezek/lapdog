@@ -52,6 +52,24 @@ type live struct {
 	loggedVars bool
 }
 
+// clearSessionYAML prevents a later simulator connection from inheriting the
+// previous connection's document or update counter.
+func (s *live) clearSessionYAML() {
+	s.lastYAML = nil
+	s.lastUpdate = 0
+	s.haveYAML = false
+}
+
+func (s *live) acceptSessionYAML(update uint32, yaml []byte) bool {
+	if len(yaml) == 0 || (s.haveYAML && update == s.lastUpdate) {
+		return false
+	}
+	s.lastYAML = yaml
+	s.lastUpdate = update
+	s.haveYAML = true
+	return true
+}
+
 // noteFailure records, or clears, the reason live reading is failing.
 func (s *live) noteFailure(err error) {
 	s.mu.Lock()
@@ -176,6 +194,7 @@ func (s *live) NextContext(ctx context.Context) (Frame, error) {
 		}
 		s.noteFailure(nil)
 		s.conn = conn
+		s.clearSessionYAML()
 		s.loggedVars = false
 		// Deliberately not logged as a connection here. Opening the mapping proves only
 		// that the shared-memory section exists, which is true whenever iRacing is
@@ -207,6 +226,7 @@ func (s *live) NextContext(ctx context.Context) (Frame, error) {
 		}
 		s.conn.Close()
 		s.conn = nil
+		s.clearSessionYAML()
 		if s.loggedVars {
 			// Only worth a line if a connection was actually established; otherwise
 			// this is the ordinary idle path.
@@ -257,13 +277,7 @@ func (s *live) NextContext(ctx context.Context) (Frame, error) {
 	// it actually handed us a string. Reporting a change without new content would
 	// make the collector re-classify the same session on every poll.
 	update := uint32(hdr.SessionInfoUpdate)
-	changed := false
-	if len(yamlBytes) > 0 && (!s.haveYAML || update != s.lastUpdate) {
-		s.lastYAML = yamlBytes
-		s.lastUpdate = update
-		s.haveYAML = true
-		changed = true
-	}
+	changed := s.acceptSessionYAML(update, yamlBytes)
 
 	// Frame time is monotonic seconds since this source started, not the sim's
 	// SessionTime.
@@ -307,8 +321,10 @@ func (s *live) Close() error {
 	if s.conn != nil {
 		err := s.conn.Close()
 		s.conn = nil
+		s.clearSessionYAML()
 		return err
 	}
+	s.clearSessionYAML()
 	return nil
 }
 

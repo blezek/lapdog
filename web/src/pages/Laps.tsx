@@ -10,9 +10,9 @@ import {
 } from '@tanstack/react-table'
 
 import { api, type LapRow } from '../api'
-import { dayShort, delta, label, lapTime, num, position } from '../format'
+import { dayShort, delta, label, lapTime, num, position, volume } from '../format'
 import { useFilter } from '../useFilter'
-import { Card, Empty, ErrorNote, Loading } from '../components/ui'
+import { Card, Empty, ErrorNote, Loading, SortableHeader } from '../components/ui'
 import { Filters } from '../components/Filters'
 
 const PAGE = 250
@@ -28,6 +28,8 @@ const col = createColumnHelper<LapRow>()
  */
 export function Laps() {
   const { filter } = useFilter()
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const units = settings.data?.units ?? 'metric'
   const [page, setPage] = useState(0)
   const [sorting, setSorting] = useState<SortingState>([{ id: 'lapTimeS', desc: false }])
   const [validOnly, setValidOnly] = useState(true)
@@ -66,12 +68,12 @@ export function Laps() {
         meta: { num: true },
       }),
       col.accessor('fuelUsedL', {
-        header: 'Fuel',
-        cell: (c) => (c.getValue() != null ? c.getValue()!.toFixed(2) : '—'),
+        header: `Fuel (${units === 'imperial' ? 'gal' : 'L'})`,
+        cell: (c) => (c.getValue() != null ? volume(c.getValue()!, units, 2, false) : '—'),
         meta: { num: true },
       }),
       col.accessor('incidentsOnLap', {
-        header: 'Inc',
+        header: 'Inc pts',
         cell: (c) => c.getValue() || '—',
         meta: { num: true },
       }),
@@ -81,7 +83,7 @@ export function Laps() {
         meta: { num: true },
       }),
     ],
-    [],
+    [units],
   )
 
   const table = useReactTable({
@@ -96,18 +98,19 @@ export function Laps() {
   const total = query.data?.total ?? 0
   const pages = Math.max(1, Math.ceil(total / PAGE))
 
+  if (settings.isError) return <ErrorNote error={settings.error} />
+  if (!settings.data) return <Loading />
+
   return (
     <>
       <div className="page-head">
         <h1>Laps</h1>
       </div>
       <p className="page-sub">
-        Every lap, across every session. Click a column to sort.
+        Browse laps across sessions. Column sorting applies to the current page of up to {PAGE} laps.
       </p>
 
       <Filters matched={total ? `${num(total)} laps matched` : undefined} />
-
-      {query.isError && <ErrorNote error={query.error} />}
 
       <Card
         title={`Laps ${total ? `— showing ${rows.length} of ${num(total)}` : ''}`}
@@ -122,7 +125,9 @@ export function Laps() {
           </button>
         }
       >
-        {query.isLoading ? (
+        {query.isError ? (
+          <ErrorNote error={query.error} />
+        ) : query.isLoading ? (
           <Loading />
         ) : rows.length === 0 ? (
           <Empty>
@@ -140,15 +145,13 @@ export function Laps() {
                         const isNum = (h.column.columnDef.meta as { num?: boolean })?.num
                         const dir = h.column.getIsSorted()
                         return (
-                          <th
+                          <SortableHeader
                             key={h.id}
-                            className={isNum ? 'num' : undefined}
-                            onClick={h.column.getToggleSortingHandler()}
-                            title="Sort"
-                          >
-                            {flexRender(h.column.columnDef.header, h.getContext())}
-                            {dir === 'asc' ? ' ↑' : dir === 'desc' ? ' ↓' : ''}
-                          </th>
+                            numeric={isNum}
+                            direction={dir}
+                            onSort={() => h.column.toggleSorting()}
+                            label={flexRender(h.column.columnDef.header, h.getContext())}
+                          />
                         )
                       })}
                     </tr>
