@@ -443,7 +443,12 @@ def load_csv_rows(csv_text: str) -> list[TelemetryRow]:
     except (TypeError, ValueError):
       continue
 
-  return [row for row in rows if math.isfinite(row.lap_pct)]
+  return [
+    row for row in rows
+    if all(math.isfinite(value) for value in (
+      row.speed, row.lap_pct, row.brake, row.throttle,
+    ))
+  ]
 
 
 def moving_average(values: list[float], radius: int = 3) -> list[float]:

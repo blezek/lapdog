@@ -12,7 +12,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 
 import { api, type Filter, type PaceRow } from '../api'
-import { delta, hours, lapTime, monthLabel, num, pct } from '../format'
+import { delta, distance, hours, lapTime, monthLabel, num, pct } from '../format'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { Card, Empty, ErrorNote, Loading, Stat } from '../components/ui'
@@ -79,11 +79,11 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
 
       <Filters hide={[dimension]} />
 
-      {list.isError && <ErrorNote error={list.error} />}
-
       <div className="explorer two">
         <div className="session-list">
-          {listState === 'loading' ? (
+          {listState === 'error' ? (
+            <ErrorNote error={list.error} />
+          ) : listState === 'loading' ? (
             <Loading />
           ) : items.length === 0 ? (
             <Empty>Nothing matches this filter.</Empty>
@@ -105,7 +105,7 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
         </div>
 
         <div>
-          {listState === 'loading' ? (
+          {listState === 'error' ? null : listState === 'loading' ? (
             // The list has nothing to show yet, so telling the user to pick
             // an entity is premature — mirror the left pane's loading state
             // instead of asking for a choice before one exists.
@@ -125,6 +125,8 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
   const { filter: urlFilter } = useFilter()
   const filter = pageFilter(urlFilter, dimension)
   const theme = useTheme()
+  const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  const units = settings.data?.units ?? 'metric'
 
   const stats = useQuery({
     queryKey: ['entity', dimension, id, filter],
@@ -152,6 +154,8 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
       ? other
       : (paceRows[0]?.otherId ?? null)
 
+  if (settings.isError) return <ErrorNote error={settings.error} />
+  if (!settings.data) return <Loading />
   if (stats.isError) return <ErrorNote error={stats.error} />
   if (!stats.data) return <Loading />
   const s = stats.data
@@ -166,7 +170,7 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
         <strong style={{ fontSize: 15 }}>{s.name}</strong>
         <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 3 }}>
           {hours(s.drivingHours)} driving · {num(s.sessions)} sessions ·{' '}
-          {num(s.laps)} laps · {num(Math.round(s.distanceKm))} km
+          {num(s.laps)} laps · {distance(s.distanceKm, units)}
         </div>
       </div>
 
@@ -178,11 +182,11 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
               ? '—'
               : `${pct(s.cleanLapPct / 100)} (${num(s.cleanLaps)}/${num(s.timedLaps)})`
           }
-          note="no incident on the lap"
+          note="no incident points on the lap"
         />
         <Stat
-          label="Incident points / 100 km"
-          value={s.incidentPointsPer100Km == null ? '—' : s.incidentPointsPer100Km.toFixed(2)}
+          label={`Incident points / 100 ${units === 'imperial' ? 'mi' : 'km'}`}
+          value={s.incidentPointsPer100Km == null ? '—' : (s.incidentPointsPer100Km * (units === 'imperial' ? 1.609344 : 1)).toFixed(2)}
           note={`${num(s.incidentPoints)} points total`}
         />
         <Stat
@@ -206,7 +210,9 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
           title={`Pace by ${otherLabel(dimension).toLowerCase()}`}
           table={<PaceTable rows={paceRows} dimension={dimension} full />}
         >
-          {viewState(pace, isEmptyArray) === 'loading' ? (
+          {viewState(pace, isEmptyArray) === 'error' ? (
+            <ErrorNote error={pace.error} />
+          ) : viewState(pace, isEmptyArray) === 'loading' ? (
             <Loading />
           ) : paceRows.length === 0 ? (
             <Empty>No timed laps in this range.</Empty>
@@ -349,9 +355,12 @@ function Progression({
       tooltip: {
         trigger: 'axis',
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
-        formatter: (ps: { name: string; value: number }[]) => {
+        formatter: (ps: { name: string; value: number; dataIndex: number }[]) => {
           const p = ps[0]
-          return p ? `${p.name}<br/><strong>${lapTime(p.value)}</strong> best lap` : ''
+          const row = data[ps[0]?.dataIndex ?? -1]
+          return p && row
+            ? `${p.name}<br/><strong>${lapTime(p.value)}</strong> best lap · ${num(row.laps)} timed laps`
+            : ''
         },
       },
       xAxis: {
@@ -437,7 +446,9 @@ function Progression({
           ))}
         </select>
       </div>
-      {viewState(q, isEmptyArray) === 'loading' ? (
+      {viewState(q, isEmptyArray) === 'error' ? (
+        <ErrorNote error={q.error} />
+      ) : viewState(q, isEmptyArray) === 'loading' ? (
         <Loading />
       ) : data.length === 0 ? (
         <Empty>No timed laps here in this range.</Empty>
@@ -491,7 +502,11 @@ function RacecraftPanel({
 
   return (
     <Card title="Racecraft">
-      {loading || r == null || q == null ? (
+      {viewState(rc) === 'error' ? (
+        <ErrorNote error={rc.error} />
+      ) : viewState(quali) === 'error' ? (
+        <ErrorNote error={quali.error} />
+      ) : loading || r == null || q == null ? (
         <Loading />
       ) : (
         <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
@@ -578,7 +593,9 @@ function RivalsPanel({ filter }: { filter: Filter }) {
   // toggle when a distinct table view exists.
   return (
     <Card title="Rivals">
-      {viewState(q, isEmptyArray) === 'loading' ? (
+      {viewState(q, isEmptyArray) === 'error' ? (
+        <ErrorNote error={q.error} />
+      ) : viewState(q, isEmptyArray) === 'loading' ? (
         <Loading />
       ) : rows.length === 0 ? (
         <Empty>

@@ -84,11 +84,14 @@ func CheckLocalFilesystem(dir string) error {
 // It notifies subscribers on every accepted change, which is how a poll-interval
 // adjustment takes effect without restarting the process.
 type Store struct {
-	mu   sync.RWMutex
-	path string
-	cur  Config
-	subs []func(Config)
+	mu       sync.RWMutex
+	updateMu sync.Mutex // keep persistence and notifications in commit order
+	path     string
+	cur      Config
+	subs     []func(Config)
 }
+
+const installerStartupChoice = "installer-startup-choice"
 
 // NewStore loads the config at path, falling back to defaults when the file does
 // not exist.
@@ -96,6 +99,29 @@ func NewStore(path string) (*Store, error) {
 	c, err := Load(path)
 	if err != nil {
 		return nil, err
+	}
+	// The installer records the startup option separately because it must not
+	// overwrite an existing config just to change one setting. Consume that
+	// choice once, then let config.json own the setting on future launches.
+	choicePath := filepath.Join(filepath.Dir(path), installerStartupChoice)
+	choice, err := os.ReadFile(choicePath)
+	if err == nil {
+		switch strings.TrimSpace(string(choice)) {
+		case "0":
+			c.StartWithWindows = false
+		case "1":
+			c.StartWithWindows = true
+		default:
+			return nil, fmt.Errorf("config: invalid installer startup choice in %s", choicePath)
+		}
+		if err := Save(path, c); err != nil {
+			return nil, err
+		}
+		if err := os.Remove(choicePath); err != nil {
+			return nil, fmt.Errorf("config: consume installer startup choice: %w", err)
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, fmt.Errorf("config: read installer startup choice: %w", err)
 	}
 	return &Store{path: path, cur: c}, nil
 }
@@ -115,15 +141,34 @@ func (s *Store) Path() string { return s.path }
 // An invalid configuration is rejected without changing anything and without
 // notifying subscribers, so a bad update cannot leave the process half-applied.
 func (s *Store) Set(c Config) error {
-	if err := c.Validate(); err != nil {
-		return err
-	}
-	if err := Save(s.path, c); err != nil {
-		return err
-	}
+	_, _, err := s.Update(func(Config) (Config, error) { return c, nil })
+	return err
+}
 
+// Update atomically derives a new configuration from the current one. The
+// change callback runs under the store lock and must not call another Store
+// method. Subscribers run after that lock is released and may read or register
+// subscribers. Notifications are serialized with updates, so a subscriber must
+// not call Set or Update, directly or indirectly.
+func (s *Store) Update(change func(Config) (Config, error)) (Config, Config, error) {
+	s.updateMu.Lock()
+	defer s.updateMu.Unlock()
 	s.mu.Lock()
-	s.cur = c
+	before := s.cur
+	next, err := change(before)
+	if err != nil {
+		s.mu.Unlock()
+		return before, before, err
+	}
+	if err := next.Validate(); err != nil {
+		s.mu.Unlock()
+		return before, before, err
+	}
+	if err := Save(s.path, next); err != nil {
+		s.mu.Unlock()
+		return before, before, err
+	}
+	s.cur = next
 	// Copy the subscriber list so it can be walked outside the lock.
 	subs := make([]func(Config), len(s.subs))
 	copy(subs, s.subs)
@@ -131,12 +176,14 @@ func (s *Store) Set(c Config) error {
 
 	// Notify outside the lock so a subscriber may call Get without deadlocking.
 	for _, fn := range subs {
-		fn(c)
+		fn(next)
 	}
-	return nil
+	return before, next, nil
 }
 
-// OnChange registers a callback invoked after each accepted change.
+// OnChange registers a callback invoked after each accepted change. A callback
+// may call Get or OnChange, but must not call Set or Update: notifications are
+// serialized with updates to preserve commit order.
 func (s *Store) OnChange(fn func(Config)) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

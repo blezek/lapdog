@@ -185,7 +185,7 @@ function StackTable({ groups, order }: { groups: GroupTotals[]; order: string[] 
         </thead>
         <tbody>
           {groups.map((g) => (
-            <tr key={g.group}>
+            <tr key={g.key}>
               <td>{g.group}</td>
               <td className="num">{hours(g.total)}</td>
               {order.map((k) => {
@@ -218,6 +218,7 @@ function foldGroups(groups: GroupTotals[], max: number): GroupTotals[] {
   const tail = groups.slice(max - 1)
 
   const other: GroupTotals = {
+    key: 'other',
     group: `Other (${tail.length})`,
     total: 0,
     byCategory: new Map(),

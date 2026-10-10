@@ -82,7 +82,7 @@ func (s *Server) handleGarageJob(w http.ResponseWriter, r *http.Request) {
 			TrackID int  `json:"trackId"`
 			All     bool `json:"all"`
 		}
-		if !s.decodeBrakeRequest(w, r, &input) {
+		if !s.decodeJSONRequest(w, r, &input) {
 			return
 		}
 		if !s.garage.Configured(r.Context()) {

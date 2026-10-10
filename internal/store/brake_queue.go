@@ -98,7 +98,10 @@ func (s *Store) EnqueueGaragePair(carPlatform, trackPlatform, garageCar, garageT
  car_name=excluded.car_name, track_name=excluded.track_name,
  source=excluded.source,
  state=CASE WHEN brake_garage61_queue.state='running' THEN 'running' ELSE 'queued' END,
- queued_at=excluded.queued_at, finished_at=NULL, error=''`,
+ rerun_requested=CASE WHEN brake_garage61_queue.state='running' THEN 1 ELSE 0 END,
+ queued_at=excluded.queued_at,
+ finished_at=CASE WHEN brake_garage61_queue.state='running' THEN brake_garage61_queue.finished_at ELSE NULL END,
+ error=CASE WHEN brake_garage61_queue.state='running' THEN brake_garage61_queue.error ELSE '' END`,
 		key, platformCar, platformTrack, sourceCar, sourceTrack, carName, trackName, source, Now())
 	if err != nil {
 		return GarageQueueItem{}, fmt.Errorf("store: enqueue Garage61 combination: %w", err)
@@ -120,7 +123,7 @@ func (s *Store) EnqueueGaragePair(carPlatform, trackPlatform, garageCar, garageT
 
 func (s *Store) RecoverGarageQueue() error {
 	_, err := s.writer.Exec(`UPDATE brake_garage61_queue SET state='queued', started_at=NULL,
- error='Interrupted before LapDog stopped' WHERE state='running'`)
+ rerun_requested=0, error='Interrupted before LapDog stopped' WHERE state='running'`)
 	if err != nil {
 		return fmt.Errorf("store: recover Garage61 queue: %w", err)
 	}
@@ -129,7 +132,8 @@ func (s *Store) RecoverGarageQueue() error {
 
 func (s *Store) ClaimNextGarageQueue() (*GarageQueueItem, error) {
 	item, err := scanGarageQueue(s.writer.QueryRow(`UPDATE brake_garage61_queue
- SET state='running', started_at=?, finished_at=NULL, attempt_count=attempt_count+1, error=''
+ SET state='running', started_at=?, finished_at=NULL, attempt_count=attempt_count+1,
+ rerun_requested=0, error=''
  WHERE id=(SELECT id FROM brake_garage61_queue WHERE state='queued' ORDER BY queued_at,id LIMIT 1)
  RETURNING `+garageQueueColumns, Now()))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -159,7 +163,12 @@ func (s *Store) FinishGarageQueue(id int64, state, detail string) error {
 	default:
 		return errors.New("store: invalid Garage61 queue result")
 	}
-	result, err := s.writer.Exec(`UPDATE brake_garage61_queue SET state=?,finished_at=?,error=?
+	result, err := s.writer.Exec(`UPDATE brake_garage61_queue SET
+ state=CASE WHEN rerun_requested=1 THEN 'queued' ELSE ? END,
+ started_at=CASE WHEN rerun_requested=1 THEN NULL ELSE started_at END,
+ finished_at=CASE WHEN rerun_requested=1 THEN NULL ELSE ? END,
+ error=CASE WHEN rerun_requested=1 THEN '' ELSE ? END,
+ rerun_requested=0
  WHERE id=? AND state='running'`, state, Now(), detail, id)
 	if err != nil {
 		return fmt.Errorf("store: finish Garage61 queue: %w", err)

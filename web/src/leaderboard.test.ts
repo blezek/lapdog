@@ -10,7 +10,7 @@ function row(
   distanceKm: number,
   cleanLaps = laps,
 ): BreakdownRow {
-  return { group, stack, laps, cleanLaps, distanceKm, drivingHours: 1, sessions: 1 }
+  return { group, groupId: null, groupConfig: null, stack, laps, cleanLaps, distanceKm, drivingHours: 1, sessions: 1 }
 }
 
 describe('rankLeaderboard', () => {
@@ -48,5 +48,17 @@ describe('rankLeaderboard', () => {
 
     const [distance] = rankLeaderboard(rows, 'distance', order)
     expect(distance?.total).toBeCloseTo(16.09344, 4)
+  })
+
+  it('keeps same-name track layouts separate by simulator ID', () => {
+    const rows = [
+      { ...row('Lime Rock Park', 'Race/OfficialRace', 8, 12), groupId: 1, groupConfig: 'Grand Prix' },
+      { ...row('Lime Rock Park', 'Race/OfficialRace', 5, 8), groupId: 2, groupConfig: 'Chicanes' },
+    ]
+    const ranked = rankLeaderboard(rows, 'laps', ['Race/OfficialRace'])
+    expect(ranked.map((group) => [group.key, group.group, group.total])).toEqual([
+      ['id:1', 'Lime Rock Park · Grand Prix', 8],
+      ['id:2', 'Lime Rock Park · Chicanes', 5],
+    ])
   })
 })

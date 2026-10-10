@@ -139,3 +139,24 @@ export function ErrorNote({ error }: { error: unknown }) {
   const msg = error instanceof Error ? error.message : String(error)
   return <Banner kind="bad">{msg}</Banner>
 }
+
+/** SortableHeader keeps table sorting keyboard accessible and announces direction. */
+export function SortableHeader({
+  label,
+  direction,
+  numeric = false,
+  onSort,
+}: {
+  label: ReactNode
+  direction: false | 'asc' | 'desc'
+  numeric?: boolean
+  onSort: () => void
+}) {
+  return (
+    <th className={numeric ? 'num' : undefined} aria-sort={direction === 'asc' ? 'ascending' : direction === 'desc' ? 'descending' : 'none'}>
+      <button type="button" className="table-sort-button" onClick={onSort}>
+        {label}{direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : ''}
+      </button>
+    </th>
+  )
+}

@@ -88,7 +88,7 @@ func OpenTraced(tr Trace) (*Conn, error) {
 		// problem, the second simply that the simulator is closed.
 		tr.note("mapping could not be opened", "err", err, "errno", errnoOf(err),
 			"meaning", "file-not-found normally means iRacing is not running")
-		return nil, fmt.Errorf("%w: %v", ErrNotRunning, err)
+		return nil, mappingOpenError(err, windows.ERROR_FILE_NOT_FOUND)
 	}
 	tr.note("mapping opened", "handle", uintptr(h))
 	// A length of zero maps the whole section, which is what the reference SDK does

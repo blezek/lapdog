@@ -107,6 +107,18 @@ func (f *fakeConfig) Set(c config.Config) error {
 	return nil
 }
 
+func (f *fakeConfig) Update(change func(config.Config) (config.Config, error)) (config.Config, config.Config, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	before := f.c
+	after, err := change(before)
+	if err != nil {
+		return before, before, err
+	}
+	f.c = after
+	return before, after, nil
+}
+
 func intp(v int) *int         { return &v }
 func f64p(v float64) *float64 { return &v }
 func strp(v string) *string   { return &v }
@@ -323,6 +335,14 @@ func TestParseFilterPresetUsesServerCalendar(t *testing.T) {
 	}
 	if today.From != "2026-08-16T05:00:00Z" || today.To != "2026-08-17T04:59:59Z" {
 		t.Errorf("Today = %q / %q, want the August 16 Chicago day", today.From, today.To)
+	}
+
+	lastSeven, err := parseFilterAt(mustValues(t, "range=7"), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lastSeven.From != "2026-08-10T05:00:00Z" || lastSeven.To != "" {
+		t.Errorf("Last 7 days = %q / %q, want August 10 through today", lastSeven.From, lastSeven.To)
 	}
 
 	yesterday, err := parseFilterAt(mustValues(t, "range=yesterday"), now)

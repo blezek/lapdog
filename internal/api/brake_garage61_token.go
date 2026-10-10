@@ -20,7 +20,7 @@ func (s *Server) handleGarageToken(w http.ResponseWriter, r *http.Request) {
 		var input struct {
 			Token string `json:"token"`
 		}
-		if !s.decodeBrakeRequest(w, r, &input) {
+		if !s.decodeJSONRequest(w, r, &input) {
 			return
 		}
 		if err := s.garageToken.Save(input.Token); err != nil {

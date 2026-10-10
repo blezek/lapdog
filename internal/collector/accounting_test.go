@@ -2,10 +2,41 @@ package collector
 
 import (
 	"testing"
+	"time"
 
 	"github.com/blezek/lapdog/internal/irsdk"
 	"github.com/blezek/lapdog/internal/synth"
 )
+
+func TestAccountantKeepsBothPollRatesAtASettingsChange(t *testing.T) {
+	a := NewAccountant(time.Second)
+	add := func(at float64) { a.Add(Sample{T: at, InCar: true, Driving: true}) }
+	add(0)
+	add(1)
+	a.SetInterval(30 * time.Second)
+	add(31)
+	a.SetInterval(time.Second)
+	add(61) // A wait already in progress may still use the old 30-second rate.
+	add(62)
+	if a.Connected != 62 || a.InCar != 62 || a.Driving != 62 {
+		t.Fatalf("after rate changes: connected=%v in-car=%v driving=%v, want 62 each", a.Connected, a.InCar, a.Driving)
+	}
+	add(100) // A genuine stall must still be clamped at the new rate.
+	if a.Connected != 63 || a.Clamped != 1 {
+		t.Fatalf("after stall: connected=%v clamped=%d, want 63 and 1", a.Connected, a.Clamped)
+	}
+}
+
+func TestAccountantDoesNotCreditReplayExitGap(t *testing.T) {
+	a := NewAccountant(time.Second)
+	a.Add(Sample{T: 0, InCar: true, Driving: true})
+	a.Add(Sample{T: 1, InCar: true, Driving: true, Replay: true})
+	a.Add(Sample{T: 2, InCar: true, Driving: true})
+	a.Add(Sample{T: 3, InCar: true, Driving: true})
+	if a.Connected != 1 || a.InCar != 1 || a.Driving != 1 {
+		t.Fatalf("replay boundary: connected=%v in-car=%v driving=%v, want 1 each", a.Connected, a.InCar, a.Driving)
+	}
+}
 
 // rowWith builds a telemetry row with only the fields the accounting reads.
 func rowWith(t *testing.T, inCar, replay bool, loc irsdk.TrkLoc) irsdk.Row {

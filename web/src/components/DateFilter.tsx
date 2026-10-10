@@ -20,6 +20,8 @@ import { monthNames, weekdayNames } from '../locale'
 import { rangePresets, useFilter, type RangeId } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { Chart, tooltipStyle, useElementWidth } from './Chart'
+import { ErrorNote, Loading } from './ui'
+import { calendarCellSize, calendarSpan } from '../calendarLayout'
 
 /** hourOptions is Any plus every hour of the day, for the two hour selects. */
 const hourOptions = Array.from({ length: 24 }, (_, h) => h)
@@ -152,7 +154,7 @@ function DatePanel({ onClose }: { onClose: () => void }) {
         <div className="datepanel-hint">
           {picking
             ? 'Now click the other end of the range.'
-            : 'Click a day you drove, then another, to select a range.'}
+            : 'Highlighted days contain sessions that started then. Click two to select a range.'}
         </div>
       </div>
 
@@ -255,7 +257,7 @@ export function applyDateTimeReset(
 
 /** DebugDateBounds reports the server's own interpretation of the filter. */
 function DebugDateBounds({ filter }: { filter: Filter }) {
-  const { data } = useQuery({
+  const { data, error } = useQuery({
     queryKey: ['filter-bounds', filter],
     queryFn: () => api.filterBounds(filter),
   })
@@ -263,6 +265,7 @@ function DebugDateBounds({ filter }: { filter: Filter }) {
   return (
     <div className="datepanel-section datepanel-debug" aria-label="Resolved date filter bounds">
       <div className="datepanel-heading">Debug: resolved date filter</div>
+      {error && <ErrorNote error={error} />}
       <div className="datepanel-debug-row">
         <span>Beginning</span>
         <code>{data ? (data.beginning || 'No lower bound') : 'Resolving…'}</code>
@@ -276,7 +279,7 @@ function DebugDateBounds({ filter }: { filter: Filter }) {
 }
 
 /**
- * HeatmapPicker is a calendar of driving hours the user clicks to choose dates.
+ * HeatmapPicker is a calendar of driving hours grouped by session start date.
  *
  * The date bounds and the time-of-day and weekday constraints are stripped from the
  * filter it queries: the picker's job is to show the whole span of days available so
@@ -302,7 +305,7 @@ function HeatmapPicker({
     return rest
   }, [filter])
 
-  const { data } = useQuery({
+  const { data, error, isLoading } = useQuery({
     queryKey: ['daily-picker', pickerFilter],
     queryFn: () => api.daily(pickerFilter),
   })
@@ -327,7 +330,11 @@ function HeatmapPicker({
 
   return (
     <div className="datepanel-heatmap" ref={ref}>
-      {rows.length === 0 ? (
+      {error ? (
+        <ErrorNote error={error} />
+      ) : isLoading ? (
+        <Loading />
+      ) : rows.length === 0 ? (
         <div className="datepanel-hint">No sessions match the other filters yet.</div>
       ) : (
         <Chart
@@ -348,22 +355,14 @@ function calendarOption(rows: DailyRow[], theme: Theme, width: number) {
   const data = rows.map((r) => [r.day, Number(r.drivingHours.toFixed(2))])
   const max = Math.max(1, ...rows.map((r) => r.drivingHours))
 
-  const days = rows.map((r) => r.day).sort()
-  const first = days[0] ?? '2020-01-01'
-  const last = days[days.length - 1] ?? first
-  const rangeStart = weekStart(first)
-  const rangeEnd = weekEnd(last)
-  const spanDays = (Date.parse(rangeEnd) - Date.parse(rangeStart)) / 86_400_000 + 1
-  const weeks = Math.max(1, Math.round(spanDays / 7))
-  const usable = Math.max(0, width - 24)
-  const cell = width > 0 ? Math.max(3, Math.min(CellMax, Math.floor(usable / weeks))) : CellMax
-  const years = [...new Set(days.map((d) => d.slice(0, 4)))]
+  const { range, weeks, years } = calendarSpan(rows.map((r) => r.day))
+  const cell = calendarCellSize(width, weeks, CellMax, 24)
 
   return {
     tooltip: {
       ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
       formatter: (p: { value: [string, number] }) =>
-        `${day(p.value[0])}<br/><strong>${p.value[1].toFixed(1)} h</strong> driving`,
+        `${day(p.value[0])}<br/><strong>${p.value[1].toFixed(1)} h</strong> from sessions started this day`,
     },
     visualMap: {
       min: 0,
@@ -374,9 +373,8 @@ function calendarOption(rows: DailyRow[], theme: Theme, width: number) {
     },
     calendar: {
       top: 22,
-      left: 16,
-      right: 8,
-      range: [rangeStart, rangeEnd],
+      left: 'center',
+      range,
       cellSize: [cell, cell],
       splitLine: { show: false },
       itemStyle: { color: 'transparent', borderWidth: 1, borderColor: theme.surface },
@@ -386,20 +384,6 @@ function calendarOption(rows: DailyRow[], theme: Theme, width: number) {
     },
     series: [{ type: 'heatmap', coordinateSystem: 'calendar', data }],
   }
-}
-
-/** weekStart returns the Sunday on or before an ISO date, matching the grid. */
-function weekStart(iso: string): string {
-  const d = new Date(`${iso}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() - d.getUTCDay())
-  return d.toISOString().slice(0, 10)
-}
-
-/** weekEnd returns the Saturday on or after an ISO date. */
-function weekEnd(iso: string): string {
-  const d = new Date(`${iso}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + (6 - d.getUTCDay()))
-  return d.toISOString().slice(0, 10)
 }
 
 /** hourLabel renders an hour as a clock time, e.g. 18 as "18:00". */

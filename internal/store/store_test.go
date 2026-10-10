@@ -1095,6 +1095,229 @@ func TestBreakdownByTrackHonoursFilter(t *testing.T) {
 	}
 }
 
+func TestBreakdownKeepsSameNamedTrackLayoutsSeparate(t *testing.T) {
+	s := openTemp(t)
+	for _, tc := range []struct {
+		key, config string
+		id          int
+	}{
+		{key: "layout-a", config: "Full Course", id: 101},
+		{key: "layout-b", config: "South Course", id: 102},
+	} {
+		rec := minimalSession(tc.key)
+		rec.TrackID = intp(tc.id)
+		rec.TrackName = strp("Virginia International Raceway")
+		rec.TrackConfig = strp(tc.config)
+		rec.CarID = intp(17)
+		rec.CarName = strp("MX-5")
+		rec.DrivingSeconds = 3600
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := s.Breakdown(Filter{}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("same-named track layouts produced %d rows, want 2: %+v", len(rows), rows)
+	}
+	seen := map[int]string{}
+	for _, row := range rows {
+		if row.Group != "Virginia International Raceway" || row.GroupID == nil || row.GroupConfig == nil {
+			t.Fatalf("incomplete track identity: %+v", row)
+		}
+		if row.DrivingHours != 1 {
+			t.Errorf("layout %d driving = %v h, want 1", *row.GroupID, row.DrivingHours)
+		}
+		seen[*row.GroupID] = *row.GroupConfig
+	}
+	if seen[101] != "Full Course" || seen[102] != "South Course" {
+		t.Errorf("layout identities = %v", seen)
+	}
+	trackNames := map[int]string{}
+	entities, err := s.EntityList(Filter{}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entity := range entities {
+		trackNames[entity.ID] = entity.Name
+	}
+	for id, config := range seen {
+		want := "Virginia International Raceway · " + config
+		if trackNames[id] != want {
+			t.Errorf("entity label for track %d = %q, want %q", id, trackNames[id], want)
+		}
+	}
+	facets, err := s.Facets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facets.Tracks) != 2 {
+		t.Fatalf("track facets = %+v, want two layouts", facets.Tracks)
+	}
+	for _, facet := range facets.Tracks {
+		if facet.Name != trackNames[facet.ID] {
+			t.Errorf("facet label for track %d = %q, want %q", facet.ID, facet.Name, trackNames[facet.ID])
+		}
+	}
+	summary, err := s.Summary(Filter{}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(summary) != 2 {
+		t.Fatalf("track summary = %+v, want two layouts", summary)
+	}
+	for _, row := range summary {
+		if row.DrivingHours != 1 {
+			t.Errorf("track summary row = %+v, want one hour per layout", row)
+		}
+	}
+	combos, err := s.TopCombos(Filter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(combos) != 2 {
+		t.Fatalf("combos = %+v, want two layouts", combos)
+	}
+	for _, combo := range combos {
+		want := "MX-5 / " + trackNames[combo.TrackPlatformID]
+		if combo.Combo != want {
+			t.Errorf("combo label = %q, want %q", combo.Combo, want)
+		}
+	}
+}
+
+func TestBreakdownKeepsNamedSessionsWithoutIDsSeparate(t *testing.T) {
+	s := openTemp(t)
+	for _, tc := range []struct {
+		key, car, track, config string
+	}{
+		{"missing-a", "MX-5", "Virginia", "Full"},
+		{"missing-b", "Porsche", "Virginia", "South"},
+		{"missing-c", "MX-5", "Spa", "GP"},
+		{"missing-d", "MX-5", "Virginia", "  "},
+		{"missing-e", "MX-5", "Virginia", ""},
+	} {
+		rec := minimalSession(tc.key)
+		rec.CarName = strp(tc.car)
+		rec.TrackName = strp(tc.track)
+		if tc.config != "" {
+			rec.TrackConfig = strp(tc.config)
+		}
+		rec.DrivingSeconds = 3600
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	carRows, err := s.Breakdown(Filter{}, "car")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(carRows) != 2 {
+		t.Fatalf("cars without IDs = %+v, want two named cars", carRows)
+	}
+	trackRows, err := s.Breakdown(Filter{}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(trackRows) != 4 {
+		t.Fatalf("tracks without IDs = %+v, want four named layouts", trackRows)
+	}
+	for _, row := range trackRows {
+		if row.GroupConfig != nil && strings.TrimSpace(*row.GroupConfig) == "" {
+			t.Errorf("blank layout configuration should be absent: %+v", row)
+		}
+		if row.Group == "Virginia" && row.GroupConfig == nil && row.Sessions != 2 {
+			t.Errorf("unconfigured Virginia layouts = %+v, want both sessions combined", row)
+		}
+	}
+}
+
+func TestSummaryKeepsDifferentTrackIDsWithSameLabelSeparate(t *testing.T) {
+	s := openTemp(t)
+	for _, id := range []int{101, 102} {
+		rec := minimalSession(fmt.Sprintf("track-%d", id))
+		rec.TrackID = intp(id)
+		rec.TrackName = strp("Virginia")
+		rec.TrackConfig = strp("Full")
+		rec.CarID = intp(id)
+		rec.CarName = strp("MX-5")
+		rec.DrivingSeconds = 3600
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.Summary(Filter{}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].Key == rows[1].Key {
+		t.Fatalf("same-label track IDs = %+v, want two distinct labels", rows)
+	}
+	for _, row := range rows {
+		if row.DrivingHours != 1 {
+			t.Errorf("track summary = %+v, want one hour per ID", row)
+		}
+	}
+	carSummary, err := s.Summary(Filter{}, "car")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(carSummary) != 2 || carSummary[0].Key == carSummary[1].Key {
+		t.Fatalf("same-label car IDs = %+v, want two distinct labels", carSummary)
+	}
+	entities, err := s.EntityList(Filter{}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entities) != 2 || entities[0].Name == entities[1].Name {
+		t.Fatalf("same-label track entities = %+v, want distinct labels", entities)
+	}
+	facets, err := s.Facets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facets.Tracks) != 2 || facets.Tracks[0].Name == facets.Tracks[1].Name {
+		t.Fatalf("same-label track facets = %+v, want distinct labels", facets.Tracks)
+	}
+	combos, err := s.TopCombos(Filter{}, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(combos) != 2 || combos[0].Combo == combos[1].Combo {
+		t.Fatalf("same-label combos = %+v, want distinct labels", combos)
+	}
+}
+
+func TestBreakdownTrackNameAndConfigComeFromSameSession(t *testing.T) {
+	s := openTemp(t)
+	for _, tc := range []struct{ key, name, config string }{
+		{"older", "Zolder", "Grand Prix"},
+		{"newer", "Circuit Zolder", "Short"},
+	} {
+		rec := minimalSession(tc.key)
+		rec.TrackID = intp(101)
+		rec.TrackName = strp(tc.name)
+		rec.TrackConfig = strp(tc.config)
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.Breakdown(Filter{}, "track")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].GroupConfig == nil {
+		t.Fatalf("breakdown = %+v, want one named layout", rows)
+	}
+	pair := rows[0].Group + "/" + *rows[0].GroupConfig
+	if pair != "Zolder/Grand Prix" && pair != "Circuit Zolder/Short" {
+		t.Errorf("layout name/config pair %q was never recorded", pair)
+	}
+}
+
 // The outer dimension is an allowlist for the same reason group_by is: it arrives
 // from a query parameter.
 func TestBreakdownRejectsUnknownDimension(t *testing.T) {

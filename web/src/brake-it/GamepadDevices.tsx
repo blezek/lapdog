@@ -79,7 +79,7 @@ export function GamepadDevices({
         {(scanIssue === 'unsupported' || !hasGamepadAPI()) && <p className="brake-list-empty" role="status">This browser does not expose the Gamepad API.</p>}
         {scanIssue === 'blocked' && <p className="brake-list-empty" role="status">This page cannot read gamepads. Check the browser's gamepad permission or the page's embedding policy.</p>}
         {scanIssue === 'failed' && <p className="brake-list-empty" role="status">Controller scan failed. Try refreshing this page.</p>}
-        {hasGamepadAPI() && scanIssue === null && devices.length === 0 && <p className="brake-list-empty" role="status">No controller exposed yet. Press a pedal with this tab visible. If it remains missing, check the device in Windows Game Controllers (joy.cpl).</p>}
+        {hasGamepadAPI() && scanIssue === null && devices.length === 0 && <p className="brake-list-empty" role="status">No controller exposed yet. Press a pedal with this tab visible. If it remains missing, check that your operating system detects the device.</p>}
         <div className="brake-list">
           {devices.map((device) => {
             const configured = configurations.find((item) => item.gamepadId === device.gamepadId)

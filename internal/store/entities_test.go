@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -150,6 +151,13 @@ func TestEntityListRenamedEntityStaysOneRow(t *testing.T) {
 	}
 	if rows[0].Sessions != 2 {
 		t.Errorf("Sessions = %d, want 2", rows[0].Sessions)
+	}
+	facets, err := s.Facets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(facets.Cars) != 1 || facets.Cars[0].ID != 173 || facets.Cars[0].Sessions != 2 {
+		t.Errorf("renamed car facets = %+v, want one option with both sessions", facets.Cars)
 	}
 }
 
@@ -434,6 +442,28 @@ func TestEntityPaceByTrackGroupsByCar(t *testing.T) {
 	}
 	if !names["Porsche 911 GT3 R"] {
 		t.Errorf("Porsche missing from Spa pace rows: %+v", rows)
+	}
+}
+
+func TestEntityPaceDistinguishesSameNamedTrackLayouts(t *testing.T) {
+	s := openTemp(t)
+	for _, id := range []int{101, 102} {
+		rec := minimalSession(fmt.Sprintf("pace-layout-%d", id))
+		rec.CarID = intp(17)
+		rec.CarName = strp("MX-5")
+		rec.TrackID = intp(id)
+		rec.TrackName = strp("Virginia")
+		rec.TrackConfig = strp("Full")
+		if _, err := s.UpsertSession(rec); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows, err := s.EntityPace(Filter{}, "car", 17)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 || rows[0].OtherName == rows[1].OtherName {
+		t.Fatalf("same-named pace layouts = %+v, want distinct names", rows)
 	}
 }
 

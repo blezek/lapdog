@@ -168,7 +168,7 @@ func (s *Server) handleGarageQueue(w http.ResponseWriter, r *http.Request) {
 			TrackID int  `json:"trackId"`
 			All     bool `json:"all"`
 		}
-		if !s.decodeBrakeRequest(w, r, &input) {
+		if !s.decodeJSONRequest(w, r, &input) {
 			return
 		}
 		catalog, err := s.garageCatalog(r.Context())
@@ -262,7 +262,7 @@ func (s *Server) handleGarageCombinationsDelete(w http.ResponseWriter, r *http.R
 	var input struct {
 		Combinations []store.GarageCombinationID `json:"combinations"`
 	}
-	if !s.decodeBrakeRequest(w, r, &input) {
+	if !s.decodeJSONRequest(w, r, &input) {
 		return
 	}
 	s.deleteGarageCombinations(w, input.Combinations)

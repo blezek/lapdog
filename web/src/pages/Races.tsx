@@ -14,7 +14,7 @@ import { dayShort, hm, num, position } from '../format'
 import { positionChange, raceStats } from '../race'
 import { useFilter } from '../useFilter'
 import { Filters } from '../components/Filters'
-import { Card, Empty, ErrorNote, Loading, Stat } from '../components/ui'
+import { Card, Empty, ErrorNote, Loading, SortableHeader, Stat } from '../components/ui'
 
 const LIMIT = 500
 const col = createColumnHelper<Session>()
@@ -41,15 +41,15 @@ export function Races() {
       header: 'Driving', cell: (c) => hm(c.getValue()), meta: { num: true },
     }),
     col.accessor('lapsCompleted', { header: 'Laps', meta: { num: true } }),
-    col.accessor('incidents', { header: 'Inc', meta: { num: true } }),
+    col.accessor('incidents', { header: 'Inc pts', meta: { num: true } }),
     col.accessor('startingPosition', {
-      header: 'Grid', cell: (c) => position(c.getValue()), meta: { num: true },
+      header: 'Start position', cell: (c) => position(c.getValue()), meta: { num: true },
     }),
     col.accessor('finishPosition', {
       header: 'Finish', cell: (c) => position(c.getValue()), meta: { num: true },
     }),
     col.accessor((race) => positionChange(race), {
-      id: 'positionChange', header: 'Grid to finish',
+      id: 'positionChange', header: 'Position change',
     }),
   ], [])
 
@@ -66,27 +66,27 @@ export function Races() {
     <>
       <div className="page-head"><h1>Races</h1></div>
       <p className="page-sub">
-        Race results, time, incidents, and movement from the grid to the finish.
+        Race results, time, incident points, and movement from the first observed position to the finish.
+        Start position is the first player position observed after the race began; it may differ from the official grid.
       </p>
       <Filters matched={query.data ? `${num(total)} races matched` : undefined} hide={['type']} />
 
-      {query.isError && <ErrorNote error={query.error} />}
-      {query.isLoading ? <Loading /> : (
+      {query.isError ? <ErrorNote error={query.error} /> : query.isLoading ? <Loading /> : (
         <>
           <div className="grid kpis race-kpis">
-            <Stat label="Races" value={num(total)} note={total > rows.length ? `${scope} summarized below` : undefined} />
+            <Stat label="Races" value={num(total)} note="total matched" />
             <Stat label="Race time" value={hm(stats.drivingSeconds)} note={scope} />
-            <Stat label="Wins" value={num(stats.wins)} note={`${num(stats.classified)} recorded finishes`} />
-            <Stat label="Podiums" value={num(stats.podiums)} note={`${num(stats.classified)} recorded finishes`} />
+            <Stat label="Wins" value={num(stats.wins)} note={`${num(stats.classified)} recorded finishes in ${scope}`} />
+            <Stat label="Podiums" value={num(stats.podiums)} note={`${num(stats.classified)} recorded finishes in ${scope}`} />
             <Stat
               label="Average finish"
               value={stats.avgFinish == null ? '—' : `P${stats.avgFinish.toFixed(1)}`}
-              note={`${num(stats.classified)} recorded finishes`}
+              note={`${num(stats.classified)} recorded finishes in ${scope}`}
             />
             <Stat
               label="Average positions gained"
               value={stats.avgPositionsGained == null ? '—' : stats.avgPositionsGained.toFixed(1)}
-              note={`${num(stats.positionPairs)} races with grid and finish`}
+              note={`${num(stats.positionPairs)} with start and finish in ${scope}`}
             />
           </div>
 
@@ -101,15 +101,13 @@ export function Races() {
                           const isNum = (header.column.columnDef.meta as { num?: boolean })?.num
                           const direction = header.column.getIsSorted()
                           return (
-                            <th
+                            <SortableHeader
                               key={header.id}
-                              className={isNum ? 'num' : undefined}
-                              onClick={header.column.getToggleSortingHandler()}
-                              title="Sort"
-                            >
-                              {flexRender(header.column.columnDef.header, header.getContext())}
-                              {direction === 'asc' ? ' ↑' : direction === 'desc' ? ' ↓' : ''}
-                            </th>
+                              numeric={isNum}
+                              direction={direction}
+                              onSort={() => header.column.toggleSorting()}
+                              label={flexRender(header.column.columnDef.header, header.getContext())}
+                            />
                           )
                         })}
                       </tr>

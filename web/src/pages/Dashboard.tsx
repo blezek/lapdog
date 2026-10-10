@@ -42,6 +42,7 @@ import { Filters } from '../components/Filters'
 import { brakeApi } from '../brake-it/api'
 import { StackedByCategory } from '../components/StackedByCategory'
 import { isEmptyArray, keepPrevious, viewState } from '../query'
+import { calendarCellSize, calendarSpan } from '../calendarLayout'
 
 export function Dashboard() {
   const { filter } = useFilter()
@@ -105,7 +106,7 @@ export function Dashboard() {
       {totals.isError && <ErrorNote error={totals.error} />}
 
       <div className="grid kpis">
-        {totals.isLoading || !totals.data ? (
+        {totals.isError && !totals.data ? null : totals.isLoading || !totals.data ? (
           <Loading />
         ) : (
           <>
@@ -118,9 +119,9 @@ export function Dashboard() {
             />
             <Stat label="Laps" value={num(totals.data.laps)} />
             <Stat
-              label="Incidents / hour"
+              label="Incident points / hour"
               value={totals.data.incidentsPerHour.toFixed(2)}
-              note={`${num(totals.data.incidents)} total`}
+              note={`${num(totals.data.incidents)} points total`}
             />
             <Stat
               label="Passes / passed"
@@ -133,10 +134,12 @@ export function Dashboard() {
 
       <div className="grid" style={{ marginBottom: 14 }}>
         <Card
-          title="Driving hours per day"
+          title="Driving hours by session start day"
           table={<DailyTable rows={daily.data ?? []} />}
         >
-          {viewState(daily, isEmptyArray) === 'loading' ? (
+          {viewState(daily, isEmptyArray) === 'error' ? (
+            <ErrorNote error={daily.error} />
+          ) : viewState(daily, isEmptyArray) === 'loading' ? (
             <Loading />
           ) : viewState(daily, isEmptyArray) === 'empty' ? (
             <Empty>No sessions in this range.</Empty>
@@ -152,7 +155,9 @@ export function Dashboard() {
           actions={<Link to="/brake-it/garage61">Prepare a combination</Link>}
           table={<ComboTable cells={combos.data ?? []} />}
         >
-          {viewState(combos, isEmptyArray) === 'loading' ? (
+          {viewState(combos, isEmptyArray) === 'error' ? (
+            <ErrorNote error={combos.error} />
+          ) : viewState(combos, isEmptyArray) === 'loading' ? (
             <Loading />
           ) : viewState(combos, isEmptyArray) === 'empty' ? (
             <Empty>No sessions in this range.</Empty>
@@ -171,7 +176,9 @@ export function Dashboard() {
           title="Driving hours by category"
           table={<CategoryTable rows={byCategory.data ?? []} />}
         >
-          {viewState(byCategory, isEmptyArray) === 'loading' ? (
+          {viewState(byCategory, isEmptyArray) === 'error' ? (
+            <ErrorNote error={byCategory.error} />
+          ) : viewState(byCategory, isEmptyArray) === 'loading' ? (
             <Loading />
           ) : viewState(byCategory, isEmptyArray) === 'empty' ? (
             <Empty>No sessions in this range.</Empty>
@@ -181,7 +188,9 @@ export function Dashboard() {
         </Card>
 
         <Card title="Driving hours per month" table={<MonthTable rows={byMonth.data ?? []} />}>
-          {viewState(byMonth, isEmptyArray) === 'loading' ? (
+          {viewState(byMonth, isEmptyArray) === 'error' ? (
+            <ErrorNote error={byMonth.error} />
+          ) : viewState(byMonth, isEmptyArray) === 'loading' ? (
             <Loading />
           ) : viewState(byMonth, isEmptyArray) === 'empty' ? (
             <Empty>No sessions in this range.</Empty>
@@ -401,42 +410,26 @@ function RatingLine({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [points],
   )
-  const chartedPoints = useMemo(
-    () => points.filter((point) => point.discipline != null && pick(point) != null),
-    // See the grouping memo above: the selected field is fixed for this component.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [points],
-  )
-
   const colours = groups.map((group) => ({
     label: group.discipline,
     colour: seriesColour(theme, ratingDisciplines.indexOf(group.discipline)),
   }))
 
   const option = useMemo(() => {
-    // All observations share one category axis. A null means this session belongs
-    // to another licence; connectNulls joins only the observations from the same
-    // discipline instead of drawing a false zero between them.
-    const valueAt = new Map(chartedPoints.map((point, index) => [point, index]))
     return {
       grid: baseGrid,
       tooltip: {
         trigger: 'axis',
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
-        formatter: (ps: { name: string; value: number | null; seriesName: string }[]) => {
-          const present = ps.filter((p) => p.value != null)
-          if (present.length === 0) return ''
-          return `${present[0]?.name}${present
-            .map(
-              (p) =>
-                `<br/>${p.seriesName}: <strong>${format(p.value as number)}</strong> ${label}`,
-            )
+        formatter: (ps: { value: [string, number]; seriesName: string }[]) => {
+          if (ps.length === 0) return ''
+          return `${dateTime(ps[0]!.value[0])}${ps
+            .map((p) => `<br/>${p.seriesName}: <strong>${format(p.value[1])}</strong> ${label}`)
             .join('')}`
         },
       },
       xAxis: {
-        type: 'category',
-        data: chartedPoints.map((p) => day(p.startedAt)),
+        type: 'time',
         ...axisStyle(theme.textMuted, theme.baseline),
       },
       // scale: true keeps zero out of the range. An iRating sits in the thousands
@@ -456,14 +449,10 @@ function RatingLine({
           theme,
           ratingDisciplines.indexOf(group.discipline),
         )
-        const indices = new Set(group.points.map((point) => valueAt.get(point)))
         return {
           name: group.discipline,
           type: 'line',
-          data: chartedPoints.map((point, index) =>
-            indices.has(index) ? (pick(point) as number) : null,
-          ),
-          connectNulls: true,
+          data: group.points.map((point) => [point.startedAt, pick(point)]),
           smooth: false,
           // A rating is observed once per session, and two years of practice is over
           // a thousand observations. Beyond a few dozen the markers merge into a band
@@ -478,7 +467,7 @@ function RatingLine({
     }
   },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [chartedPoints, groups, theme, label],
+    [groups, theme, label],
   )
 
   if (groups.length === 0) return <Empty>No classified {label} recorded in this range.</Empty>
@@ -620,13 +609,7 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
     // emptiness — which reads as nine months of not driving rather than as a
     // ninety-day window. Padding the ends to whole weeks keeps the grid from
     // starting or finishing mid-column.
-    const days = rows.map((r) => r.day).sort()
-    const first = days[0] ?? '2020-01-01'
-    const last = days[days.length - 1] ?? first
-    const rangeStart = weekStart(first)
-    const rangeEnd = weekEnd(last)
-    const range = [rangeStart, rangeEnd]
-    const years = [...new Set(days.map((d) => d.slice(0, 4)))]
+    const { range, years, weeks } = calendarSpan(rows.map((r) => r.day))
 
     // Cell size is capped, not fixed.
     //
@@ -637,16 +620,13 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
     // down to whatever makes the range fit, and stay at the preferred size whenever
     // there is room. The gutter is reserved on both sides so centring cannot push
     // the weekday labels off the edge.
-    const spanDays = (Date.parse(rangeEnd) - Date.parse(rangeStart)) / 86_400_000 + 1
-    const weeks = Math.max(1, Math.round(spanDays / 7))
-    const usable = Math.max(0, width - LabelGutter * 2)
-    const cell = width > 0 ? Math.max(3, Math.min(CellMax, Math.floor(usable / weeks))) : CellMax
+    const cell = calendarCellSize(width, weeks, CellMax, LabelGutter * 2)
 
     return {
       tooltip: {
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
         formatter: (p: { value: [string, number] }) =>
-          `${day(p.value[0])}<br/><strong>${p.value[1].toFixed(1)} h</strong> driving`,
+          `${day(p.value[0])}<br/><strong>${p.value[1].toFixed(1)} h</strong> from sessions started this day`,
       },
       visualMap: {
         min: 0,
@@ -714,7 +694,7 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
       <Chart
         option={option}
         className="chart calendar"
-        ariaLabel="Calendar heatmap of driving hours per day"
+        ariaLabel="Calendar heatmap of driving hours grouped by session start date"
       />
     </div>
   )
@@ -976,7 +956,7 @@ function CategoryTable({ rows }: { rows: SummaryRow[] }) {
             <th className="no-sort num">Driving</th>
             <th className="no-sort num">Sessions</th>
             <th className="no-sort num">Laps</th>
-            <th className="no-sort num">Incidents</th>
+            <th className="no-sort num">Incident points</th>
           </tr>
         </thead>
         <tbody>
@@ -1061,10 +1041,10 @@ function MonthTable({ rows }: { rows: SummaryRow[] }) {
   )
 }
 
-/* ------------------------------------------------------------ grid to finish */
+/* ------------------------------------------------------------ start to finish */
 
 /**
- * GridToFinish shows where each race started and where it ended.
+ * GridToFinish shows the first observed position after the race began and the finish.
  *
  * Before-and-after per item, so the form is a dumbbell in one hue at two shades —
  * not two series in different colours, which would imply they are unrelated
@@ -1089,13 +1069,13 @@ function GridToFinish() {
   const rows = useMemo(
     () =>
       (races.data?.items ?? [])
-        .filter((s) => s.qualifyPosition != null && s.finishPosition != null)
+        .filter((s) => (s.startingPosition ?? 0) > 0 && (s.finishPosition ?? 0) > 0)
         .reverse(),
     [races.data],
   )
 
   const option = useMemo(() => {
-    const start = rows.map((s) => s.qualifyPosition!)
+    const start = rows.map((s) => s.startingPosition!)
     const end = rows.map((s) => s.finishPosition!)
     return {
       grid: { ...baseGrid, top: 24 },
@@ -1109,7 +1089,7 @@ function GridToFinish() {
           return [
             `<strong>${s.trackName ?? 'Unknown'}</strong>`,
             `${dayShort(s.startedAt)} · ${s.carName ?? ''}`,
-            `Grid ${position(s.qualifyPosition)} → Finish ${position(s.finishPosition)}`,
+            `First observed ${position(s.startingPosition)} → Finish ${position(s.finishPosition)}`,
             s.fieldSize ? `Field of ${s.fieldSize}` : '',
           ]
             .filter(Boolean)
@@ -1132,17 +1112,33 @@ function GridToFinish() {
       },
       series: [
         {
-          // The connecting stem, drawn as a custom mark so it reads as one item
-          // per race rather than as two independent series.
+          // Draw the stem and both endpoints as one race mark. The line series
+          // below carry tooltip data but have no symbols: ECharts' line symbols
+          // can inherit a white fill even when itemStyle specifies an accent.
           type: 'custom',
           renderItem: (params: { dataIndex: number }, apiRef: any) => {
             const i = params.dataIndex
             const from = apiRef.coord([i, start[i]])
             const to = apiRef.coord([i, end[i]])
             return {
-              type: 'line',
-              shape: { x1: from[0], y1: from[1], x2: to[0], y2: to[1] },
-              style: { stroke: theme.line, lineWidth: 2 },
+              type: 'group',
+              children: [
+                {
+                  type: 'line',
+                  shape: { x1: from[0], y1: from[1], x2: to[0], y2: to[1] },
+                  style: { stroke: theme.textMuted, opacity: 0.8, lineWidth: 2 },
+                },
+                {
+                  type: 'circle',
+                  shape: { cx: from[0], cy: from[1], r: 4.5 },
+                  style: { fill: theme.surface, stroke: theme.accent, lineWidth: 2 },
+                },
+                {
+                  type: 'circle',
+                  shape: { cx: to[0], cy: to[1], r: 4.5 },
+                  style: { fill: theme.accent, stroke: theme.accent },
+                },
+              ],
             }
           },
           data: rows.map((_, i) => i),
@@ -1150,47 +1146,42 @@ function GridToFinish() {
         },
         {
           type: 'line',
-          name: 'Grid',
+          name: 'Start position',
           data: start,
-          symbolSize: 9,
+          symbol: 'none',
           lineStyle: { width: 0 },
-          itemStyle: {
-            color: theme.surface,
-            borderColor: theme.accent,
-            borderWidth: 2,
-          },
         },
         {
           type: 'line',
           name: 'Finish',
           data: end,
-          symbolSize: 9,
+          symbol: 'none',
           lineStyle: { width: 0 },
-          itemStyle: { color: theme.accent },
         },
       ],
     }
   }, [rows, theme])
 
   return (
-    <Card title="Grid to finish, most recent races" table={<GridTable rows={rows} />}>
-      {viewState(races) === 'loading' ? (
+    <Card title="Start position to finish, latest 40 human races" table={<GridTable rows={rows} />}>
+      {viewState(races) === 'error' ? (
+        <ErrorNote error={races.error} />
+      ) : viewState(races) === 'loading' ? (
         <Loading />
       ) : rows.length === 0 ? (
-        <Empty>No races with a qualifying result in this range.</Empty>
+        <Empty>No races with a recorded start position and finish among the latest 40 human races in this range.</Empty>
       ) : (
         <>
           <Chart
             option={option}
             className="chart"
-            ariaLabel="Grid position and finishing position for recent races"
+            ariaLabel="First observed position after the race began and finishing position for recent races"
           />
-          <Legend
-            items={[
-              { label: 'Grid', colour: theme.line },
-              { label: 'Finish', colour: theme.accent },
-            ]}
-          />
+          <div className="legend">
+            <span><i className="position-key start" />Start position</span>
+            <span><i className="position-key finish" />Finish</span>
+          </div>
+          <p className="chart-explain">Start position is the first position observed after the race began; it may differ from the official grid.</p>
         </>
       )}
     </Card>
@@ -1205,7 +1196,7 @@ function GridTable({ rows }: { rows: import('../api').Session[] }) {
           <tr>
             <th className="no-sort">Date</th>
             <th className="no-sort">Track</th>
-            <th className="no-sort num">Grid</th>
+            <th className="no-sort num">Start position</th>
             <th className="no-sort num">Finish</th>
             <th className="no-sort num">Change</th>
             <th className="no-sort num">Field</th>
@@ -1214,12 +1205,12 @@ function GridTable({ rows }: { rows: import('../api').Session[] }) {
         </thead>
         <tbody>
           {[...rows].reverse().map((s) => {
-            const change = (s.qualifyPosition ?? 0) - (s.finishPosition ?? 0)
+            const change = (s.startingPosition ?? 0) - (s.finishPosition ?? 0)
             return (
               <tr key={s.id}>
                 <td>{dayShort(s.startedAt)}</td>
                 <td>{s.trackName ?? '—'}</td>
-                <td className="num">{position(s.qualifyPosition)}</td>
+                <td className="num">{position(s.startingPosition)}</td>
                 <td className="num">{position(s.finishPosition)}</td>
                 <td className="num">{change > 0 ? `+${change}` : change === 0 ? '0' : change}</td>
                 <td className="num">{s.fieldSize ?? '—'}</td>
@@ -1231,27 +1222,6 @@ function GridTable({ rows }: { rows: import('../api').Session[] }) {
       </table>
     </div>
   )
-}
-
-/* ------------------------------------------------------------------ helpers */
-
-/**
- * weekStart returns the Sunday on or before an ISO date.
- *
- * Sunday because the heatmap starts its week there, so the grid begins on a full
- * column rather than part way down one.
- */
-function weekStart(iso: string): string {
-  const d = new Date(`${iso}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() - d.getUTCDay())
-  return d.toISOString().slice(0, 10)
-}
-
-/** weekEnd returns the Saturday on or after an ISO date. */
-function weekEnd(iso: string): string {
-  const d = new Date(`${iso}T00:00:00Z`)
-  d.setUTCDate(d.getUTCDate() + (6 - d.getUTCDay()))
-  return d.toISOString().slice(0, 10)
 }
 
 /**

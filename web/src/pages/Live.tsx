@@ -2,10 +2,10 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api, type Config, type LiveFrame, type LiveResponse } from '../api'
-import { hms, lapTime, num, pct, speed } from '../format'
+import { hms, lapTime, num, pct, speed, volume } from '../format'
 import { keepPrevious } from '../query'
 import { idleReasonFor, pollMs, viewFor } from '../live'
-import { Card, Loading, Stat } from '../components/ui'
+import { Card, ErrorNote, Loading, Stat } from '../components/ui'
 
 /**
  * Live answers "is LapDog reading telemetry right now, and what is it seeing".
@@ -40,7 +40,11 @@ export function Live() {
         instant.
       </p>
 
-      {!query.data || !config.data ? (
+      {query.isError && !query.data ? (
+        <ErrorNote error={query.error} />
+      ) : config.isError && !config.data ? (
+        <ErrorNote error={config.error} />
+      ) : !query.data || !config.data ? (
         <Loading />
       ) : (
         <LiveBody res={query.data} now={now} units={config.data.units} />
@@ -236,8 +240,8 @@ export function LiveBands({
       <div className="grid kpis">
         <Stat label="Speed" value={f(frame.speed) == null ? '—' : speed(frame.speed as number, units)} />
         <Stat label="Gear" value={gearLabel(f(frame.gear))} />
-        <Stat label="Fuel" value={f(frame.fuelLevel) == null ? '—' : `${num(frame.fuelLevel as number)} L`} />
-        <Stat label="Incidents" value={intOrDash(f(frame.incidents))} />
+        <Stat label="Fuel" value={f(frame.fuelLevel) == null ? '—' : volume(frame.fuelLevel as number, units, 1)} />
+        <Stat label="Incident points" value={intOrDash(f(frame.incidents))} />
       </div>
 
       {/*

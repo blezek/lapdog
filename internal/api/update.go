@@ -1,7 +1,6 @@
 package api
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 
@@ -37,10 +36,7 @@ func (s *Server) handleUpdateAction(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Action string `json:"action"`
 	}
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&body); err != nil {
-		s.fail(w, http.StatusBadRequest, err)
+	if !s.decodeJSONRequest(w, r, &body) {
 		return
 	}
 	if err := s.updates.Action(r.Context(), body.Action); err != nil {

@@ -221,18 +221,30 @@ type SummaryRow struct {
 	Incidents      int     `json:"incidents"`
 }
 
-// groupByExpr maps an allowlisted grouping name to its SQL expression.
+// groupByExpr maps an allowlisted grouping name to its label and identity.
 //
 // This is an allowlist rather than interpolation on purpose: group_by arrives
 // from an HTTP query parameter, and interpolating it would be SQL injection.
-var groupByExpr = map[string]string{
-	"type":        "s.session_type",
-	"context":     "s.event_context",
-	"typecontext": "s.session_type || '/' || s.event_context",
-	"track":       "COALESCE(s.track_name, 'Unknown')",
-	"car":         "COALESCE(s.car_name, 'Unknown')",
-	"week":        "strftime('%Y-W%W', s.started_at, 'localtime')",
-	"month":       "strftime('%Y-%m', s.started_at, 'localtime')",
+type summaryDimension struct {
+	labelExpr string
+	idExpr    string
+	groupExpr string
+}
+
+var groupByExpr = map[string]summaryDimension{
+	"type":        {"s.session_type", "NULL", "s.session_type"},
+	"context":     {"s.event_context", "NULL", "s.event_context"},
+	"typecontext": {"s.session_type || '/' || s.event_context", "NULL", "s.session_type || '/' || s.event_context"},
+	"track": {
+		"MAX(" + trackDisplayNameExpr + ")", "s.track_id",
+		"s.track_id, CASE WHEN s.track_id IS NULL THEN " + trackDisplayNameExpr + " END",
+	},
+	"car": {
+		"MAX(COALESCE(s.car_name, 'Unknown'))", "s.car_id",
+		"s.car_id, CASE WHEN s.car_id IS NULL THEN COALESCE(s.car_name, 'Unknown') END",
+	},
+	"week":  {"strftime('%Y-W%W', s.started_at, 'localtime')", "NULL", "strftime('%Y-W%W', s.started_at, 'localtime')"},
+	"month": {"strftime('%Y-%m', s.started_at, 'localtime')", "NULL", "strftime('%Y-%m', s.started_at, 'localtime')"},
 }
 
 // GroupByNames returns the allowlisted grouping names, for error messages and
@@ -253,18 +265,26 @@ func (s *Store) Summary(f Filter, groupBy string) ([]SummaryRow, error) {
 	}
 	pred, args := f.where()
 
+	// A simulator track ID identifies a layout even if two IDs render the
+	// same label. The window count adds an ID only for ambiguous labels.
+	// Other dimensions have no ID in this query and keep their prior grouping.
 	q := `
-SELECT ` + expr + ` AS k,
-       SUM(s.connected_seconds) / 3600.0,
-       SUM(s.in_car_seconds) / 3600.0,
-       SUM(s.driving_seconds) / 3600.0,
-       COUNT(*),
-       SUM(s.laps_completed),
-       SUM(s.incidents)
-FROM sessions s
-WHERE ` + pred + `
-GROUP BY k
-ORDER BY k`
+WITH grouped AS (
+  SELECT ` + expr.idExpr + ` AS id, ` + expr.labelExpr + ` AS label,
+         SUM(s.connected_seconds) / 3600.0 AS connected,
+         SUM(s.in_car_seconds) / 3600.0 AS in_car,
+         SUM(s.driving_seconds) / 3600.0 AS driving,
+         COUNT(*) AS sessions, SUM(s.laps_completed) AS laps,
+         SUM(s.incidents) AS incidents
+  FROM sessions s
+  WHERE ` + pred + `
+  GROUP BY ` + expr.groupExpr + `
+)
+SELECT CASE WHEN id IS NOT NULL AND COUNT(*) OVER (PARTITION BY label) > 1
+            THEN label || ' · #' || id ELSE label END,
+       connected, in_car, driving, sessions, laps, incidents
+FROM grouped
+ORDER BY 1`
 
 	rows, err := s.reader.Query(q, args...)
 	if err != nil {
@@ -289,6 +309,11 @@ ORDER BY k`
 type BreakdownRow struct {
 	// Group is the outer dimension, such as a car or a track.
 	Group string `json:"group"`
+	// GroupID distinguishes cars and track layouts that share a display name.
+	// Car classes have no stable ID in the recorded session data.
+	GroupID *int `json:"groupId"`
+	// GroupConfig names a track layout when the simulator supplied it.
+	GroupConfig *string `json:"groupConfig"`
 	// Stack is the session type and event context pair, the same category the rest
 	// of the interface uses.
 	Stack string `json:"stack"`
@@ -300,15 +325,39 @@ type BreakdownRow struct {
 	DistanceKm   float64 `json:"distanceKm"`
 }
 
-// breakdownExpr maps an allowlisted outer dimension to its SQL expression.
+// breakdownExpr maps an allowlisted outer dimension to its SQL expressions.
 //
 // An allowlist for the same reason Summary uses one: the value arrives from a query
 // parameter and interpolating it would be SQL injection.
-var breakdownExpr = map[string]string{
-	"car":      "COALESCE(s.car_name, 'Unknown')",
-	"track":    "COALESCE(s.track_name, 'Unknown')",
-	"league":   "CASE WHEN s.league_id = 0 THEN 'Not a league' ELSE CAST(s.league_id AS TEXT) END",
-	"carclass": "COALESCE(s.car_class_name, 'Unknown')",
+type breakdownDimension struct {
+	nameExpr   string
+	idExpr     string
+	configExpr string
+	groupExpr  string
+}
+
+// Taking MAX of the JSON tuple chooses one recorded name/configuration pair.
+// Independent MAX expressions can invent a combination that never existed.
+const trackLabelTupleExpr = "json_array(COALESCE(s.track_name, 'Unknown'), NULLIF(TRIM(s.track_config), ''))"
+
+var breakdownExpr = map[string]breakdownDimension{
+	"car": {
+		nameExpr: "MAX(COALESCE(s.car_name, 'Unknown'))", idExpr: "s.car_id",
+		configExpr: "NULL", groupExpr: "s.car_id, CASE WHEN s.car_id IS NULL THEN COALESCE(s.car_name, 'Unknown') END",
+	},
+	"track": {
+		nameExpr: "json_extract(MAX(" + trackLabelTupleExpr + "), '$[0]')", idExpr: "s.track_id",
+		configExpr: "json_extract(MAX(" + trackLabelTupleExpr + "), '$[1]')",
+		groupExpr:  "s.track_id, CASE WHEN s.track_id IS NULL THEN " + trackDisplayNameExpr + " END",
+	},
+	"league": {
+		nameExpr: "CASE WHEN s.league_id = 0 THEN 'Not a league' ELSE CAST(s.league_id AS TEXT) END",
+		idExpr:   "s.league_id", configExpr: "NULL", groupExpr: "s.league_id",
+	},
+	"carclass": {
+		nameExpr: "COALESCE(s.car_class_name, 'Unknown')", idExpr: "NULL",
+		configExpr: "NULL", groupExpr: "COALESCE(s.car_class_name, 'Unknown')",
+	},
 }
 
 // BreakdownNames returns the allowlisted outer dimensions.
@@ -334,7 +383,9 @@ func (s *Store) Breakdown(f Filter, by string) ([]BreakdownRow, error) {
 	pred, args := f.where()
 
 	q := `
-SELECT ` + expr + ` AS grp,
+SELECT ` + expr.nameExpr + ` AS grp,
+       ` + expr.idExpr + ` AS gid,
+       ` + expr.configExpr + ` AS cfg,
        s.session_type || '/' || s.event_context AS stack,
        SUM(s.driving_seconds) / 3600.0,
        COUNT(*),
@@ -347,8 +398,8 @@ SELECT ` + expr + ` AS grp,
        SUM(s.laps_completed * COALESCE(s.track_length_km, 0))
 FROM sessions s
 WHERE ` + pred + `
-GROUP BY grp, stack
-ORDER BY grp, stack`
+GROUP BY ` + expr.groupExpr + `, stack
+ORDER BY grp, gid, stack`
 
 	rows, err := s.reader.Query(q, args...)
 	if err != nil {
@@ -359,7 +410,7 @@ ORDER BY grp, stack`
 	out := []BreakdownRow{}
 	for rows.Next() {
 		var r BreakdownRow
-		if err := rows.Scan(&r.Group, &r.Stack, &r.DrivingHours, &r.Sessions, &r.Laps,
+		if err := rows.Scan(&r.Group, &r.GroupID, &r.GroupConfig, &r.Stack, &r.DrivingHours, &r.Sessions, &r.Laps,
 			&r.CleanLaps, &r.DistanceKm); err != nil {
 			return nil, fmt.Errorf("store: scan breakdown row: %w", err)
 		}
@@ -594,9 +645,9 @@ type Facets struct {
 func (s *Store) Facets() (Facets, error) {
 	var f Facets
 
-	idNameCount := func(idCol, nameCol string, skipZero bool) ([]Facet, error) {
-		q := `SELECT ` + idCol + `, COALESCE(` + nameCol + `, 'Unknown'), COUNT(*)
-		      FROM sessions WHERE ` + idCol + ` IS NOT NULL`
+	idNameCount := func(idCol, nameExpr string, skipZero bool) ([]Facet, error) {
+		q := `SELECT ` + idCol + `, MAX(` + nameExpr + `), COUNT(*)
+		      FROM sessions s WHERE ` + idCol + ` IS NOT NULL`
 		if skipZero {
 			q += ` AND ` + idCol + ` <> 0`
 		}
@@ -614,7 +665,11 @@ func (s *Store) Facets() (Facets, error) {
 			}
 			out = append(out, x)
 		}
-		return out, rows.Err()
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		qualifyDuplicateLabels(out, func(x *Facet) *string { return &x.Name }, func(x *Facet) string { return fmt.Sprint(x.ID) })
+		return out, nil
 	}
 
 	distinct := func(col string) ([]string, error) {
@@ -635,14 +690,14 @@ func (s *Store) Facets() (Facets, error) {
 	}
 
 	var err error
-	if f.Tracks, err = idNameCount("track_id", "track_name", false); err != nil {
+	if f.Tracks, err = idNameCount("track_id", trackDisplayNameExpr, false); err != nil {
 		return Facets{}, fmt.Errorf("store: track facets: %w", err)
 	}
-	if f.Cars, err = idNameCount("car_id", "car_name", false); err != nil {
+	if f.Cars, err = idNameCount("car_id", "COALESCE(s.car_name, 'Unknown')", false); err != nil {
 		return Facets{}, fmt.Errorf("store: car facets: %w", err)
 	}
 	// League 0 means "not a league session", so it is not a filter option.
-	if f.Leagues, err = idNameCount("league_id", "CAST(league_id AS TEXT)", true); err != nil {
+	if f.Leagues, err = idNameCount("league_id", "CAST(s.league_id AS TEXT)", true); err != nil {
 		return Facets{}, fmt.Errorf("store: league facets: %w", err)
 	}
 	if f.SessionTypes, err = distinct("session_type"); err != nil {

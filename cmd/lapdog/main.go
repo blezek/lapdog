@@ -71,7 +71,9 @@ func run() (runErr error) {
 			return err
 		}
 		if err := updater.RunHandoff(handoff); err != nil {
-			updater.RecordHandoffFailure(handoff.StatePath, err)
+			if recordErr := updater.RecordHandoffFailure(handoff.StatePath, err); recordErr != nil {
+				return errors.Join(err, fmt.Errorf("record update failure: %w", recordErr))
+			}
 			return err
 		}
 		return nil

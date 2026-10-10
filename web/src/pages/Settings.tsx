@@ -141,6 +141,9 @@ export function Settings() {
       <p className="page-sub">Changes save immediately.</p>
 
       {failed && <Banner kind="bad">{failed}</Banner>}
+      {status.isError && <ErrorNote error={status.error} />}
+      {identity.isError && <ErrorNote error={identity.error} />}
+      {captureReindex.isError && <ErrorNote error={captureReindex.error} />}
       {restart.length > 0 && (
         <Banner kind="warn">
           Saved. Changing <strong>{restart.join(', ')}</strong> takes effect the next
@@ -285,7 +288,7 @@ export function Settings() {
               type="button"
               className="control"
               disabled={
-                status.data?.connected === true ||
+                !status.data || status.data.connected ||
                 captureReindex.data?.state === 'running' ||
                 startReindex.isPending
               }
@@ -376,7 +379,10 @@ export function Settings() {
         </div>
 
         <div className="setting">
-          <div className="setting-label">Units</div>
+          <div className="setting-label">
+            Units
+            <span className="setting-hint">Speed, distance, and fuel in the interface. Exports retain the database's original units.</span>
+          </div>
           <div className="setting-control">
             <select
               value={c.units}
@@ -415,14 +421,14 @@ export function Settings() {
             iRacing
             <span className="setting-hint">
               {status.data
-                ? `Reading every ${status.data.intervalSeconds}s · incidents from ${
+                ? `Reading every ${status.data.intervalSeconds}s · incident points from ${
                     status.data.incidentSource || 'results'
                   } · ${num(status.data.sessionsRecorded)} session(s) recorded this run`
                 : 'Unknown'}
             </span>
           </div>
           <div className="setting-control">
-            {status.data?.connected ? 'Connected' : 'Not connected'}
+            {status.data ? (status.data.connected ? 'Connected' : 'Not connected') : 'Unknown'}
           </div>
         </div>
 
@@ -453,7 +459,7 @@ export function Settings() {
               exactly that reading — a label must not claim more than it knows.
           */}
           <div className="setting-control">
-            {status.data?.telemetry.available ? 'Supported' : 'Not supported'}
+            {status.data ? (status.data.telemetry.available ? 'Supported' : 'Not supported') : 'Unknown'}
           </div>
         </div>
 
@@ -485,7 +491,7 @@ export function Settings() {
             iRacing driver
             <span className="setting-hint mono">
               {identity.data?.userId == null
-                ? 'not yet recorded'
+                ? (identity.isError ? 'unknown' : 'not yet recorded')
                 : `customer #${identity.data.userId}`}
             </span>
             <span className="setting-hint">

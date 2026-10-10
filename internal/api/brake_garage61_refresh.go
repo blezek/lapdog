@@ -49,7 +49,7 @@ func (s *Server) handleGarageSnooze(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Until string `json:"until"`
 	}
-	if !s.decodeBrakeRequest(w, r, &input) {
+	if !s.decodeJSONRequest(w, r, &input) {
 		return
 	}
 	now := time.Now().UTC()

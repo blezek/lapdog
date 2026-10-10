@@ -137,6 +137,14 @@
 .brake-chart .live-accelerator { stroke: var(--brake-green); stroke-width: 3; }
 .brake-chart .live-brake { stroke: var(--brake-red); stroke-width: 3; }
 .brake-chart .progress { stroke: var(--brake-text); stroke-width: 2; }
+.brake-trace-legend { display: flex; flex-wrap: wrap; gap: 8px 18px; margin-top: 8px; color: var(--brake-muted); font-size: 12px; }
+.brake-trace-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.brake-trace-legend i { display: inline-block; width: 20px; border-radius: 3px; }
+.brake-trace-legend .target { border-top: 5px solid; opacity: .42; }
+.brake-trace-legend .actual { border-top: 3px solid; }
+.brake-trace-legend .accelerator { border-color: var(--brake-green); }
+.brake-trace-legend .brake { border-color: var(--brake-red); }
+.brake-trace-legend .tolerance { height: 9px; background: color-mix(in srgb, var(--brake-red) 15%, transparent); border: 1px solid color-mix(in srgb, var(--brake-red) 38%, transparent); }
 .brake-trace-editor { margin-top: 4px; }
 .brake-trace-editor > header { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin-bottom: 10px; }
 .brake-trace-editor > header > div { display: grid; gap: 3px; }

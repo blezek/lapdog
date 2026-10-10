@@ -116,6 +116,8 @@ export interface SummaryRow {
 
 export interface BreakdownRow {
   group: string
+  groupId: number | null
+  groupConfig: string | null
   stack: string
   drivingHours: number
   sessions: number
