@@ -77,6 +77,9 @@ func NewSegment(info *sessionyaml.Info, sessionNum int, startedAt time.Time, int
 	}
 	g.Key = store.SessionKey(g.SubsessionID, sessionNum, startedAt)
 	g.ApplyInfo(info)
+	if g.IsSpectator() {
+		g.Key += ":spectator"
+	}
 	return g
 }
 
@@ -134,7 +137,7 @@ func (g *Segment) ApplyInfo(info *sessionyaml.Info) {
 		g.carClassName = strPtrIfSet(me.CarClassShortName)
 	}
 
-	if r, ok := info.MyResult(g.SessionNum); ok {
+	if r, ok := info.MyResult(g.SessionNum); ok && !g.IsSpectator() {
 		g.finishPosition = intPtr(r.Position)
 		g.finishClassPosition = intPtr(r.ClassPosition)
 		// The YAML incident count is only authoritative when no live variable is
@@ -143,7 +146,7 @@ func (g *Segment) ApplyInfo(info *sessionyaml.Info) {
 			g.incidents = r.Incidents
 		}
 	}
-	if q, ok := info.MyQualifyResult(); ok {
+	if q, ok := info.MyQualifyResult(); ok && !g.IsSpectator() {
 		g.qualifyPosition = intPtr(q.Position)
 		g.qualifyClassPosition = intPtr(q.ClassPosition)
 		if q.FastestTime > 0 {
@@ -159,6 +162,10 @@ func (g *Segment) ApplyInfo(info *sessionyaml.Info) {
 	// move after almost every official race, so they are recorded per session rather
 	// than as a single current value — that is what turns them into a progression.
 	g.identity = info.MyIdentity()
+	if g.IsSpectator() {
+		// Retain identity without presenting a spectator visit as a rating observation.
+		g.identity = sessionyaml.Identity{UserID: g.identity.UserID}
+	}
 
 	if raw, err := classifySourceJSON(info); err == nil {
 		g.sourceJSON = raw
@@ -228,6 +235,9 @@ func (g *Segment) End(at time.Time) {
 	t := at
 	g.endedAt = &t
 }
+
+// IsSpectator includes both watching and driving a ghost car in a spectator visit.
+func (g *Segment) IsSpectator() bool { return g.Class.SessionType == classify.TypeSpectator }
 
 // IsRace reports whether position events should be recorded.
 func (g *Segment) IsRace() bool { return g.Class.SessionType == classify.TypeRace }

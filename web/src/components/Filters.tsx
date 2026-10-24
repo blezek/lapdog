@@ -74,7 +74,7 @@ export function Filters({
             allLabel="All session types"
             param="type"
             selected={(state.sessionType ?? []).map(String)}
-            options={(facets?.sessionTypes ?? []).map((value) => ({ value, label: value }))}
+            options={(facets?.sessionTypes ?? []).map((value) => ({ value, label: value === 'Spectator' ? label(value, '') : value }))}
             toggle={toggleIn}
             clear={() => update({ type: undefined })}
             open={openMenu === 'type'}

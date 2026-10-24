@@ -114,6 +114,13 @@ func quoteIdentityScalars(b []byte) ([]byte, bool) {
 	return []byte(strings.Join(lines, "\n")), changed
 }
 
+// IsSpectator reports only an explicitly identified local spectator. An absent
+// flag or missing local driver does not establish spectator participation.
+func (i *Info) IsSpectator() bool {
+	me, ok := i.Me()
+	return ok && me.IsSpectator != nil && *me.IsSpectator != 0
+}
+
 // Me returns the local driver's entry, matched on DriverCarIdx.
 func (i *Info) Me() (Driver, bool) {
 	for _, d := range i.DriverInfo.Drivers {
@@ -225,7 +232,7 @@ func (i *Info) FieldSize(sessionNum int) int {
 	}
 	n := 0
 	for _, d := range i.DriverInfo.Drivers {
-		if d.IsSpectator == 0 {
+		if d.IsSpectator == nil || *d.IsSpectator == 0 {
 			n++
 		}
 	}

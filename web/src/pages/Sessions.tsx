@@ -192,6 +192,10 @@ function Detail({ id }: { id: number }) {
         </div>
       </div>
 
+      {s.sessionType === 'Spectator' && (
+        <p className="page-sub">Watching adds connected time only. Driving here is ghost driving, not race participation. Lap times appear only when reported by the simulator.</p>
+      )}
+
       {/* The three counters, side by side, because the difference between them is
           the point: connected includes the garage, in-car includes the pit box. */}
       <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>

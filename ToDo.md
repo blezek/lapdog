@@ -189,3 +189,16 @@ On a database that predates the migration the panels are **absent** rather than 
 - **No git remote.** Everything is local only, and the CI workflow has never actually run — it is verified to parse and `make ci` passes, nothing more.
 - **Re-test an installer upgrade while LapDog is running.** The first Windows attempt failed to replace the live executable because the installer searched for a visible window titled `LapDog`; a tray application has no such window. It now closes LapDog through the tray library's hidden window and waits for the process to finish flushing before replacement. Confirm that the running app exits, the file is replaced and the finish-page launch starts the new version.
 - **Server-side collection** is parked in `docs/server-design-brainstorming.md`. No action pending.
+
+## Spectating and ghost-driving telemetry verification
+
+Capture a real iRacing spectator visit covering watching, Test Drive in the pit
+box, ghost driving, returning to watching, replay playback, and reconnecting.
+Verify the local DriverInfo entry's IsSpectator, IsOnTrack, IsOnTrackCar,
+PlayerCarIdx and CarIdxTrackSurface against each action. Confirm watching adds
+only connected time, ghost driving is separate from competitive Race statistics,
+and replay adds no time. Check whether Lap and LapLastLapTime report usable
+local ghost laps; do not infer laps from another car. The implementation is
+covered by synthetic telemetry tests; these live flag combinations remain
+unverified. Also verify changing from spectator to competitor in one event
+keeps separate records.

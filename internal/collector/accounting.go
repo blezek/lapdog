@@ -182,6 +182,22 @@ func SampleFrom(row irsdk.Row) (Sample, bool) {
 	return Sample{InCar: inCar, Driving: driving, Replay: replay}, true
 }
 
+// SpectatorSampleFrom requires both local on-track flags before considering
+// driving. Watching remains recordable without a player car index. When the
+// local client is on track, ordinary player-index/surface checks still apply.
+func SpectatorSampleFrom(row irsdk.Row) (Sample, bool) {
+	onTrack, haveTrack := row.Bool("IsOnTrack")
+	inCar, haveCar := row.Bool("IsOnTrackCar")
+	replay, haveReplay := row.Bool("IsReplayPlaying")
+	if !haveTrack || !haveCar || !haveReplay {
+		return Sample{}, false
+	}
+	if !onTrack || !inCar {
+		return Sample{Replay: replay}, true
+	}
+	return SampleFrom(row)
+}
+
 // NotDrivingReason explains why driving time is not accruing.
 //
 // It exists because "zero driving seconds" is indistinguishable from a bug
