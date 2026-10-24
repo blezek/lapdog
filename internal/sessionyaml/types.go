@@ -119,6 +119,6 @@ type Driver struct {
 	LicString          string `yaml:"LicString" json:"LicString"`
 	LicLevel           int    `yaml:"LicLevel" json:"LicLevel"`
 	LicSubLevel        int    `yaml:"LicSubLevel" json:"LicSubLevel"`
-	IsSpectator        int    `yaml:"IsSpectator" json:"IsSpectator"`
+	IsSpectator        *int   `yaml:"IsSpectator" json:"IsSpectator"`
 	CarIsAI            *int   `yaml:"CarIsAI" json:"CarIsAI,omitempty"`
 }

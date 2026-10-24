@@ -168,6 +168,7 @@ export function position(p: number | null | undefined): string {
  * the two fields separately.
  */
 export function label(sessionType: string, eventContext: string): string {
+  if (sessionType === 'Spectator') return 'Spectating / ghost driving'
   if (eventContext === 'Offline') return 'Offline Testing'
   if (sessionType === 'TimeTrial') return 'Time Trial'
 

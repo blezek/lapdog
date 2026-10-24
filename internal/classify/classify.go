@@ -22,6 +22,7 @@ const (
 	TypeWarmup      SessionType = "Warmup"
 	TypeTimeTrial   SessionType = "TimeTrial"
 	TypeOfflineTest SessionType = "OfflineTest"
+	TypeSpectator   SessionType = "Spectator"
 	TypeUnknown     SessionType = "Unknown"
 )
 
@@ -135,6 +136,9 @@ func Classify(info *sessionyaml.Info, sessionNum int) Result {
 		RawSessionType:  raw,
 	}
 	res.EventContext = context(info, st, aiCount)
+	if info.IsSpectator() {
+		res.SessionType = TypeSpectator
+	}
 	return res
 }
 
@@ -170,6 +174,9 @@ func context(info *sessionyaml.Info, st SessionType, aiCount int) EventContext {
 // Label renders the pair as the string the UI shows. Labels are computed, never
 // stored, so the rules can change without a data migration.
 func Label(t SessionType, c EventContext) string {
+	if t == TypeSpectator {
+		return "Spectating / ghost driving"
+	}
 	if c == ContextOffline {
 		return "Offline Testing"
 	}

@@ -382,8 +382,9 @@ func (c *Collector) handle(f source.Frame) error {
 
 	// A change in either identity component starts a new segment. Both matter:
 	// SessionNum advances through practice, qualify and race within one subsession,
-	// and SubSessionID changes when the driver joins a different event.
-	if c.seg != nil && (c.seg.SessionNum != sessionNum || c.seg.SubsessionID != subsession) {
+	// and SubSessionID changes when the driver joins a different event. Switching
+	// spectator participation also starts a segment so race totals stay separate.
+	if c.seg != nil && (c.seg.SessionNum != sessionNum || c.seg.SubsessionID != subsession || c.seg.IsSpectator() != c.info.IsSpectator()) {
 		c.closeSegmentLocked()
 	}
 
@@ -411,6 +412,9 @@ func (c *Collector) handle(f source.Frame) error {
 	captureStarted := c.syncCapture(f)
 
 	sample, ok := SampleFrom(f.Row)
+	if c.seg.IsSpectator() {
+		sample, ok = SpectatorSampleFrom(f.Row)
+	}
 	if !ok {
 		return nil
 	}
@@ -428,8 +432,12 @@ func (c *Collector) handle(f source.Frame) error {
 		}
 	}
 
-	c.observeIncidents(f)
-	c.observeLaps(f)
+	if !c.seg.IsSpectator() || (sample.InCar && !sample.Replay) {
+		c.observeIncidents(f)
+		c.observeLaps(f)
+	} else {
+		c.lapDet.Reset()
+	}
 	c.observePositions(f)
 	c.observeStartingPosition(f)
 
@@ -490,6 +498,9 @@ func (c *Collector) openSegment(f source.Frame, sessionNum int) error {
 	// Refuse the session outright if a required variable is absent, rather than
 	// recording data that would be wrong.
 	need := append([]string(nil), RequiredCoreVars...)
+	if seg.IsSpectator() {
+		need = []string{"SessionNum", "IsOnTrack", "IsOnTrackCar", "IsReplayPlaying"}
+	}
 	if seg.IsRace() {
 		need = append(need, RequiredRaceVars...)
 	}
@@ -723,6 +734,15 @@ func (c *Collector) recordLiveFrame(f source.Frame, sample Sample) {
 		Driving: sample.Driving,
 		Replay:  sample.Replay,
 		Reason:  NotDrivingReasonFrom(f.Row),
+	}
+	if c.seg.IsSpectator() && !sample.InCar {
+		if !sample.Replay {
+			lf.Reason = "spectating"
+		}
+		c.mu.Lock()
+		c.lastFrame = lf
+		c.mu.Unlock()
+		return
 	}
 	if v, ok := f.Row.Int("Lap"); ok {
 		n := int(v)

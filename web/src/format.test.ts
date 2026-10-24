@@ -47,6 +47,11 @@ describe('volume', () => {
 })
 
 describe('category labels', () => {
+  it('keeps spectator visits distinct from races and offline tests', () => {
+    for (const context of ['OfficialRace', 'Hosted', 'League', 'Offline']) {
+      expect(labelForKey(`Spectator/${context}`)).toBe('Spectating / ghost driving')
+    }
+  })
   it('distinguishes qualifying contexts that occupy separate chart colors', () => {
     expect(labelForKey('Qualify/OfficialPractice')).toBe('Practice qualifying')
     expect(labelForKey('Qualify/OfficialRace')).toBe('Race qualifying')

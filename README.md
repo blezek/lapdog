@@ -379,3 +379,19 @@ log opens. Unhandled panics and runtime fatal errors also append to
 `%LOCALAPPDATA%\lapdog\lapdog-crash.log`. Errors before the logs open print to
 the attached console. These flags require a build containing the console
 diagnostics change; older releases do not implement them.
+
+### Spectating and ghost driving
+
+When the local driver's session data explicitly reports `IsSpectator`, LapDog
+records the visit as **Spectating / ghost driving**, outside competitive race
+counts and results. Watching adds connected time only; entering Test Drive can
+add in-car and driving time when the local telemetry supports it. Replay time
+remains excluded. Lap times are recorded only from reported local lap telemetry
+while in the ghost car. Spectator and competitor visits to the same online event
+have separate records, including after reconnects.
+
+These paths have synthetic regression coverage; real spectator/ghost telemetry
+still needs the Windows capture procedure in `ToDo.md`. Older recordings are not
+automatically rewritten. The existing reclassification command can relabel rows
+whose saved provenance identifies a spectator, but cannot recover time or laps
+that were incorrectly attributed before this change.

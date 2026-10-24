@@ -2,9 +2,10 @@ package collector
 
 import "github.com/blezek/lapdog/internal/irsdk"
 
-// RequiredCoreVars are the telemetry variables the collector needs in every
-// session. All are confirmed present in
-// documentation/telemetry_11_23_15.pdf, Appendix A.
+// RequiredCoreVars are the telemetry variables needed in participant sessions.
+// Spectator visits require only the local activity flags and session number at
+// entry; ghost-driving samples and laps still need their own telemetry. These
+// variables are documented in documentation/telemetry_11_23_15.pdf, Appendix A.
 //
 // If any is absent the session is not recorded and the omission is logged and
 // surfaced in the interface. Recording wrong data is worse than recording none.
