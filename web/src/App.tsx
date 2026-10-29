@@ -8,7 +8,7 @@ import { Icon } from './components/ui'
 import { Brand } from './components/Brand'
 import { SplashScreen } from './components/SplashScreen'
 import { UpdatePopdown } from './components/UpdatePopdown'
-import { hm } from './format'
+import { DurationProvider, useDuration } from './duration'
 import { filterParams } from './useFilter'
 import { buildIdentity, shouldOpenUpdate } from './update'
 
@@ -44,10 +44,14 @@ const nav = [
 
 export function App() {
   const location = useLocation()
-  if (location.pathname === '/brake-it' || location.pathname.startsWith('/brake-it/')) {
-    return <BrakeItApp />
-  }
-  return <LapDogApp />
+  const config = useQuery({ queryKey: ['settings'], queryFn: api.settings })
+  return (
+    <DurationProvider config={config.data}>
+      {location.pathname === '/brake-it' || location.pathname.startsWith('/brake-it/')
+        ? <BrakeItApp />
+        : <LapDogApp />}
+    </DurationProvider>
+  )
 }
 
 function LapDogApp() {
@@ -158,6 +162,7 @@ function LapDogApp() {
  * alone must never carry meaning.
  */
 function ConnectionStatus() {
+  const duration = useDuration()
   const { data: status } = useQuery({
     queryKey: ['status'],
     queryFn: api.status,
@@ -184,7 +189,7 @@ function ConnectionStatus() {
           <>
             <br />
             {status.sessionLabel}
-            {status.drivingSeconds > 0 && ` · ${hm(status.drivingSeconds)}`}
+            {status.drivingSeconds > 0 && ` · ${duration.seconds(status.drivingSeconds)}`}
           </>
         )}
       </span>

@@ -10,7 +10,8 @@ import { useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api, type Filter } from '../api'
-import { hours, labelForKey, num } from '../format'
+import { labelForKey, num } from '../format'
+import { useDuration } from '../duration'
 import { useTheme, type Theme } from '../theme'
 import {
   categoryColour,
@@ -89,6 +90,7 @@ function StackChart({
   order: string[]
   theme: Theme
 }) {
+  const duration = useDuration()
   const option = useMemo(() => {
     // A category axis draws its first entry at the bottom, so reversing the
     // descending order puts the largest bar at the top — the conventional direction
@@ -97,7 +99,7 @@ function StackChart({
 
     return {
       // Long names need room; the total label needs a little on the right.
-      grid: { ...baseGrid, left: 8, right: 54 },
+      grid: { ...baseGrid, left: 8, right: duration.isClock ? 90 : 54 },
       tooltip: {
         trigger: 'axis',
         axisPointer: { type: 'shadow' },
@@ -105,25 +107,29 @@ function StackChart({
         formatter: (ps: { dataIndex: number }[]) => {
           const g = ordered[ps[0]?.dataIndex ?? 0]
           if (!g) return ''
-          const lines = [`<strong>${g.group}</strong>`, `${hours(g.total)} driving`]
+          const lines = [`<strong>${g.group}</strong>`, `${duration.hours(g.total)} driving`]
           for (const k of order) {
             const v = g.byCategory.get(k) ?? 0
             if (v <= 0) continue
             lines.push(
               `<span style="display:inline-block;width:8px;height:8px;border-radius:2px;` +
                 `background:${categoryColour(theme, order, k)};margin-right:5px"></span>` +
-                `${labelForKey(k)} ${v.toFixed(1)} h`,
+                `${labelForKey(k)} ${duration.hours(v)}`,
             )
           }
           lines.push(`${num(g.sessions)} sessions · ${num(g.laps)} laps`)
           return lines.join('<br/>')
         },
       },
-      // No axis name: the card title already says these are driving hours, and the
+      // No axis name: the card title already says this is driving time, and the
       // name was overflowing the plot area and being clipped mid-word.
       xAxis: {
         type: 'value',
         ...valueAxisStyle(theme.textMuted, theme.line),
+        ...(duration.isClock ? {
+          splitNumber: 3,
+          axisLabel: { color: theme.textMuted, hideOverlap: true, formatter: (value: number) => duration.hours(value, 1, false) },
+        } : {}),
       },
       yAxis: {
         type: 'category',
@@ -153,7 +159,7 @@ function StackChart({
                 show: true,
                 position: 'right',
                 formatter: (p: { dataIndex: number }) =>
-                  (ordered[p.dataIndex]?.total ?? 0).toFixed(1),
+                  duration.hours(ordered[p.dataIndex]?.total ?? 0, 1, false),
                 color: theme.textSecondary,
                 fontSize: 11,
               }
@@ -162,12 +168,13 @@ function StackChart({
         }
       }),
     }
-  }, [groups, order, theme])
+  }, [groups, order, theme, duration])
 
-  return <Chart option={option} className="chart tall" ariaLabel="Driving hours per group, split by session category" />
+  return <Chart option={option} className="chart tall" ariaLabel="Driving time per group, split by session category" />
 }
 
 function StackTable({ groups, order }: { groups: GroupTotals[]; order: string[] }) {
+  const duration = useDuration()
   return (
     <div className="table-wrap">
       <table>
@@ -187,12 +194,12 @@ function StackTable({ groups, order }: { groups: GroupTotals[]; order: string[] 
           {groups.map((g) => (
             <tr key={g.key}>
               <td>{g.group}</td>
-              <td className="num">{hours(g.total)}</td>
+              <td className="num">{duration.hours(g.total)}</td>
               {order.map((k) => {
                 const v = g.byCategory.get(k) ?? 0
                 return (
                   <td key={k} className="num">
-                    {v > 0 ? v.toFixed(1) : '—'}
+                    {v > 0 ? duration.hours(v, 1, false) : '—'}
                   </td>
                 )
               })}

@@ -25,6 +25,7 @@ import {
   licenceLabel,
 } from '../format'
 import { monthNames, weekdayNames } from '../locale'
+import { useDuration } from '../duration'
 import { useFilter } from '../useFilter'
 import { seriesColour, useTheme, type Theme } from '../theme'
 import { ratingDisciplines, ratingSeries } from '../ratings'
@@ -47,6 +48,7 @@ import { calendarCellSize, calendarSpan } from '../calendarLayout'
 export function Dashboard() {
   const { filter } = useFilter()
   const theme = useTheme()
+  const duration = useDuration()
 
   const totals = useQuery({
     queryKey: ['totals', filter],
@@ -110,11 +112,11 @@ export function Dashboard() {
           <Loading />
         ) : (
           <>
-            <Stat label="Driving" value={hours(totals.data.drivingHours)} />
+            <Stat label="Driving" value={duration.hours(totals.data.drivingHours)} />
             <Stat
               label="Utilisation"
               value={pct(totals.data.utilisation)}
-              note={`of ${hours(totals.data.connectedHours, 0)} connected`}
+              note={`of ${duration.hours(totals.data.connectedHours, 0)} connected`}
               meter={totals.data.utilisation}
             />
             <Stat label="Laps" value={num(totals.data.laps)} />
@@ -134,7 +136,7 @@ export function Dashboard() {
 
       <div className="grid" style={{ marginBottom: 14 }}>
         <Card
-          title="Driving hours by session start day"
+          title="Driving time by session start day"
           table={<DailyTable rows={daily.data ?? []} />}
         >
           {viewState(daily, isEmptyArray) === 'error' ? (
@@ -173,7 +175,7 @@ export function Dashboard() {
 
       <div className="grid two-col">
         <Card
-          title="Driving hours by category"
+          title="Driving time by category"
           table={<CategoryTable rows={byCategory.data ?? []} />}
         >
           {viewState(byCategory, isEmptyArray) === 'error' ? (
@@ -187,7 +189,7 @@ export function Dashboard() {
           )}
         </Card>
 
-        <Card title="Driving hours per month" table={<MonthTable rows={byMonth.data ?? []} />}>
+        <Card title="Driving time per month" table={<MonthTable rows={byMonth.data ?? []} />}>
           {viewState(byMonth, isEmptyArray) === 'error' ? (
             <ErrorNote error={byMonth.error} />
           ) : viewState(byMonth, isEmptyArray) === 'loading' ? (
@@ -209,13 +211,14 @@ export function Dashboard() {
 
 /** AllTimeStats is a compact lifetime summary that never follows dashboard filters. */
 function AllTimeStats({ totals }: { totals: Totals }) {
+  const duration = useDuration()
   return (
     <section className="all-time-stats" aria-label="All-time statistics">
       <span className="all-time-title">All time</span>
       <dl>
         <div>
           <dt>Driving</dt>
-          <dd>{hours(totals.drivingHours)}</dd>
+          <dd>{duration.hours(totals.drivingHours)}</dd>
         </div>
         <div>
           <dt>Laps</dt>
@@ -546,10 +549,10 @@ function CarAndTrackBreakdown() {
 
   const carTitle = oneCar
     ? 'Where this car was driven, by track'
-    : 'Driving hours by car, split by category'
+    : 'Driving time by car, split by category'
   const trackTitle = oneTrack
     ? 'What was driven at this track, by car'
-    : 'Driving hours by track, split by category'
+    : 'Driving time by track, split by category'
 
   return (
     <div className="grid two-col" style={{ marginBottom: 14 }}>
@@ -596,10 +599,11 @@ const CellMax = 17
 const LabelGutter = 42
 
 function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
+  const duration = useDuration()
   const [wrap, width] = useElementWidth<HTMLDivElement>()
 
   const option = useMemo(() => {
-    const data = rows.map((r) => [r.day, Number(r.drivingHours.toFixed(2))])
+    const data = rows.map((r) => [r.day, r.drivingHours])
     const max = Math.max(1, ...rows.map((r) => r.drivingHours))
 
     // The range follows the data, not the calendar year.
@@ -626,7 +630,7 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
       tooltip: {
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
         formatter: (p: { value: [string, number] }) =>
-          `${day(p.value[0])}<br/><strong>${p.value[1].toFixed(1)} h</strong> from sessions started this day`,
+          `${day(p.value[0])}<br/><strong>${duration.hours(p.value[1])}</strong> from sessions started this day`,
       },
       visualMap: {
         min: 0,
@@ -641,7 +645,7 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
         // Setting them the intuitive way round produces a thin vertical sliver.
         itemWidth: 11,
         itemHeight: 90,
-        text: [`${max.toFixed(1)} h`, '0'],
+        text: [duration.hours(max), '0'],
         textStyle: { color: theme.textMuted, fontSize: 10 },
         inRange: { color: theme.seq },
       },
@@ -687,20 +691,21 @@ function CalendarHeatmap({ rows, theme }: { rows: DailyRow[]; theme: Theme }) {
       },
       series: [{ type: 'heatmap', coordinateSystem: 'calendar', data }],
     }
-  }, [rows, theme, width])
+  }, [rows, theme, width, duration])
 
   return (
     <div ref={wrap}>
       <Chart
         option={option}
         className="chart calendar"
-        ariaLabel="Calendar heatmap of driving hours grouped by session start date"
+        ariaLabel="Calendar heatmap of driving time grouped by session start date"
       />
     </div>
   )
 }
 
 function DailyTable({ rows }: { rows: DailyRow[] }) {
+  const duration = useDuration()
   const recent = [...rows].reverse().slice(0, 40)
   return (
     <div className="table-wrap">
@@ -715,7 +720,7 @@ function DailyTable({ rows }: { rows: DailyRow[] }) {
           {recent.map((r) => (
             <tr key={r.day}>
               <td>{day(r.day)}</td>
-              <td className="num">{hours(r.drivingHours)}</td>
+              <td className="num">{duration.hours(r.drivingHours)}</td>
             </tr>
           ))}
         </tbody>
@@ -738,6 +743,7 @@ function DailyTable({ rows }: { rows: DailyRow[] }) {
  * ceiling does not apply here and every category keeps its own column.
  */
 export function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Theme }) {
+  const duration = useDuration()
   const option = useMemo(() => {
     // Reverse the store's descending ranking once: category axes start at the
     // bottom. Labels, cell coordinates and tooltips share this display order.
@@ -767,7 +773,7 @@ export function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Them
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
         formatter: (p: { value: [number, number, number] }) =>
           `${rows[p.value[1]]}<br/>${labelForKey(cols[p.value[0]] ?? '')}` +
-          `<br/><strong>${hours(p.value[2])}</strong> driving`,
+          `<br/><strong>${duration.hours(p.value[2])}</strong> driving`,
       },
       visualMap: {
         min: 0,
@@ -780,7 +786,7 @@ export function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Them
         // and itemWidth as its thickness, and swaps them for horizontal orientation.
         itemWidth: 11,
         itemHeight: 90,
-        text: [hours(max), '0'],
+        text: [duration.hours(max), '0'],
         textStyle: { color: theme.textMuted, fontSize: 10 },
         inRange: { color: theme.seq },
       },
@@ -807,18 +813,19 @@ export function ComboHeatmap({ cells, theme }: { cells: ComboCell[]; theme: Them
         },
       ],
     }
-  }, [cells, theme])
+  }, [cells, theme, duration])
 
   return (
     <Chart
       option={option}
       className="chart tall"
-      ariaLabel="Driving hours per car and track pairing, split by session category"
+      ariaLabel="Driving time per car and track pairing, split by session category"
     />
   )
 }
 
 function ComboTable({ cells }: { cells: ComboCell[] }) {
+  const duration = useDuration()
   // One row per pairing, with its categories listed, so nothing the heatmap encodes
   // only as colour is unavailable as a number.
   const byCombo = new Map<string, { total: number; parts: ComboCell[]; label: string; carPlatformId: number; trackPlatformId: number }>()
@@ -845,11 +852,11 @@ function ComboTable({ cells }: { cells: ComboCell[] }) {
           {ordered.map(([key, e]) => (
             <tr key={key}>
               <td>{e.label}</td>
-              <td className="num">{hours(e.total)}</td>
+              <td className="num">{duration.hours(e.total)}</td>
               <td>
                 {[...e.parts]
                   .sort((a, b) => b.hours - a.hours)
-                  .map((p) => `${labelForKey(p.category)} ${hours(p.hours)}`)
+                  .map((p) => `${labelForKey(p.category)} ${duration.hours(p.hours)}`)
                   .join(' · ')}
               </td>
               <td>{e.parts.some((part) => /^(Race|Practice)\//.test(part.category)) && <Link to={`/brake-it/garage61?carPlatformId=${e.carPlatformId}&trackPlatformId=${e.trackPlatformId}`}>Prepare scenario</Link>}</td>
@@ -871,6 +878,7 @@ function ComboTable({ cells }: { cells: ComboCell[] }) {
  * the tail folds into "Other" rather than generating a ninth hue.
  */
 function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
+  const duration = useDuration()
   const folded = useMemo(() => foldTail(rows, 8), [rows])
   // Colour is keyed to the category itself via the canonical order, so a filter that
   // reorders the bars never repaints the survivors.
@@ -884,11 +892,18 @@ function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
         trigger: 'item',
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
         formatter: (p: { name: string; value: number; dataIndex: number }) =>
-          `${p.name}<br/><strong>${p.value.toFixed(1)} h</strong> · ${
+          `${p.name}<br/><strong>${duration.hours(sorted[p.dataIndex]?.drivingHours ?? p.value)}</strong> · ${
             sorted[p.dataIndex]?.sessions ?? 0
           } sessions`,
       },
-      xAxis: { type: 'value', ...valueAxisStyle(theme.textMuted, theme.line) },
+      xAxis: {
+        type: 'value',
+        ...valueAxisStyle(theme.textMuted, theme.line),
+        ...(duration.isClock ? {
+          splitNumber: 3,
+          axisLabel: { color: theme.textMuted, hideOverlap: true, formatter: (value: number) => duration.hours(value, 1, false) },
+        } : {}),
+      },
       yAxis: {
         type: 'category',
         data: sorted.map((r) => labelForKey(r.key)),
@@ -919,18 +934,19 @@ function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
           label: {
             show: true,
             position: 'right',
-            formatter: (p: { value: number }) => `${p.value.toFixed(1)}`,
+            formatter: (p: { dataIndex: number; value: number }) =>
+              duration.hours(sorted[p.dataIndex]?.drivingHours ?? p.value, 1, false),
             color: theme.textSecondary,
             fontSize: 11,
           },
         },
       ],
     }
-  }, [folded, theme])
+  }, [folded, canonical, theme, duration])
 
   return (
     <>
-      <Chart option={option} ariaLabel="Driving hours by session category" />
+      <Chart option={option} ariaLabel="Driving time by session category" />
       {/* The legend uses the same colourIndex as the bars. It previously indexed
           the unsorted list while the bars indexed the sorted one, so the swatches
           named the wrong colours. */}
@@ -946,6 +962,7 @@ function CategoryBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
 
 
 function CategoryTable({ rows }: { rows: SummaryRow[] }) {
+  const duration = useDuration()
   const sorted = [...rows].sort((a, b) => b.drivingHours - a.drivingHours)
   return (
     <div className="table-wrap">
@@ -963,7 +980,7 @@ function CategoryTable({ rows }: { rows: SummaryRow[] }) {
           {sorted.map((r) => (
             <tr key={r.key}>
               <td>{labelForKey(r.key)}</td>
-              <td className="num">{hours(r.drivingHours)}</td>
+              <td className="num">{duration.hours(r.drivingHours)}</td>
               <td className="num">{num(r.sessions)}</td>
               <td className="num">{num(r.laps)}</td>
               <td className="num">{num(r.incidents)}</td>
@@ -982,6 +999,7 @@ function CategoryTable({ rows }: { rows: SummaryRow[] }) {
  * categorical palette. One series needs no legend — the title names it.
  */
 function MonthBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
+  const duration = useDuration()
   const option = useMemo(() => {
     const sorted = [...rows].sort((a, b) => a.key.localeCompare(b.key))
     return {
@@ -989,10 +1007,10 @@ function MonthBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
       tooltip: {
         trigger: 'axis',
         ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
-        formatter: (ps: { name: string; value: number }[]) => {
+        formatter: (ps: { name: string; value: number; dataIndex: number }[]) => {
           const p = ps[0]
           if (!p) return ''
-          return `${p.name}<br/><strong>${p.value.toFixed(1)} h</strong> driving`
+          return `${p.name}<br/><strong>${duration.hours(sorted[p.dataIndex]?.drivingHours ?? p.value)}</strong> driving`
         },
       },
       xAxis: {
@@ -1000,7 +1018,11 @@ function MonthBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
         data: sorted.map((r) => monthLabel(r.key)),
         ...axisStyle(theme.textMuted, theme.baseline),
       },
-      yAxis: { type: 'value', ...valueAxisStyle(theme.textMuted, theme.line) },
+      yAxis: {
+        type: 'value',
+        ...valueAxisStyle(theme.textMuted, theme.line),
+        ...(duration.isClock ? { axisLabel: { color: theme.textMuted, formatter: (value: number) => duration.hours(value, 1, false) } } : {}),
+      },
       series: [
         {
           type: 'bar',
@@ -1010,12 +1032,13 @@ function MonthBar({ rows, theme }: { rows: SummaryRow[]; theme: Theme }) {
         },
       ],
     }
-  }, [rows, theme])
+  }, [rows, theme, duration])
 
-  return <Chart option={option} ariaLabel="Driving hours per month" />
+  return <Chart option={option} ariaLabel="Driving time per month" />
 }
 
 function MonthTable({ rows }: { rows: SummaryRow[] }) {
+  const duration = useDuration()
   const sorted = [...rows].sort((a, b) => b.key.localeCompare(a.key))
   return (
     <div className="table-wrap">
@@ -1031,7 +1054,7 @@ function MonthTable({ rows }: { rows: SummaryRow[] }) {
           {sorted.map((r) => (
             <tr key={r.key}>
               <td>{monthLabel(r.key)}</td>
-              <td className="num">{hours(r.drivingHours)}</td>
+              <td className="num">{duration.hours(r.drivingHours)}</td>
               <td className="num">{num(r.sessions)}</td>
             </tr>
           ))}

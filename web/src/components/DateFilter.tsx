@@ -16,6 +16,7 @@ import { useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api, type DailyRow, type Filter } from '../api'
 import { day, dayShort } from '../format'
+import { useDuration } from '../duration'
 import { monthNames, weekdayNames } from '../locale'
 import { rangePresets, useFilter, type RangeId } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
@@ -300,6 +301,7 @@ function HeatmapPicker({
   theme: Theme
   onPick: (day: string) => void
 }) {
+  const duration = useDuration()
   const pickerFilter: Filter = useMemo(() => {
     const { range: _range, from, to, hourFrom, hourTo, weekdays, ...rest } = filter
     return rest
@@ -326,7 +328,7 @@ function HeatmapPicker({
     [onPick],
   )
 
-  const option = useMemo(() => calendarOption(rows, theme, width), [rows, theme, width])
+  const option = useMemo(() => calendarOption(rows, theme, width, duration.hours), [rows, theme, width, duration])
 
   return (
     <div className="datepanel-heatmap" ref={ref}>
@@ -351,8 +353,8 @@ function HeatmapPicker({
 const CellMax = 15
 
 /** calendarOption builds the ECharts calendar-heatmap option for the picker. */
-function calendarOption(rows: DailyRow[], theme: Theme, width: number) {
-  const data = rows.map((r) => [r.day, Number(r.drivingHours.toFixed(2))])
+function calendarOption(rows: DailyRow[], theme: Theme, width: number, formatHours: (value: number) => string) {
+  const data = rows.map((r) => [r.day, r.drivingHours])
   const max = Math.max(1, ...rows.map((r) => r.drivingHours))
 
   const { range, weeks, years } = calendarSpan(rows.map((r) => r.day))
@@ -362,7 +364,7 @@ function calendarOption(rows: DailyRow[], theme: Theme, width: number) {
     tooltip: {
       ...tooltipStyle(theme.surface, theme.textPrimary, theme.line),
       formatter: (p: { value: [string, number] }) =>
-        `${day(p.value[0])}<br/><strong>${p.value[1].toFixed(1)} h</strong> from sessions started this day`,
+        `${day(p.value[0])}<br/><strong>${formatHours(p.value[1])}</strong> from sessions started this day`,
     },
     visualMap: {
       min: 0,

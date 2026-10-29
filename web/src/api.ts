@@ -344,6 +344,8 @@ export interface Config {
   startWithWindows: boolean
   units: 'metric' | 'imperial'
   theme: 'system' | 'light' | 'dark'
+  durationFormat: 'current' | 'clock'
+  showDurationSeconds: boolean
   debug: boolean
 }
 

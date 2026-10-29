@@ -61,6 +61,13 @@ Three time counters describe each session:
 - **Driving** — the car was actually moving under live control; pit-box time
   and replay playback are excluded.
 
+**Settings → Elapsed time display** can show these and other elapsed-time totals
+as days:hours:minutes:seconds, omitting leading zero parts. For example, 65
+seconds reads `01:05`, one hour reads `01:00:00`, and one day reads
+`01:00:00:00`. Seconds can be hidden; the remaining minutes round to the nearest
+minute. The current display remains the default. Lap times, clock timestamps,
+and exported values keep their existing formats.
+
 Sessions shorter than the configured minimum are discarded. The default is 30
 seconds and can be changed in **Settings**.
 
@@ -271,7 +278,7 @@ scenario IDs are merged once, and SQLite imports update the existing rows.
 | **Top 10** | Filtered car and track rankings for completed laps, clean laps, and distance driven, split by session category. |
 | **Export** | CSV or JSON downloads of the currently filtered sessions, laps, or position changes. Empty values remain empty rather than being changed to zero. |
 | **Brake-It** | An unpublished experimental pedal-timing trainer with live target and input traces, scored results, keyboard simulation, and calibrated Gamepad API racing pedals. |
-| **Settings** | Recording frequency, minimum session length, capture retention, units, theme, startup behavior, update checks, diagnostics, data paths, and collector status. |
+| **Settings** | Recording frequency, minimum session length, capture retention, units, elapsed-time display, theme, startup behavior, update checks, diagnostics, data paths, and collector status. |
 
 ## Tray menu
 

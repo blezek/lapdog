@@ -176,7 +176,7 @@ const MEASURE = `
 })()
 `
 
-const TITLE = (process.argv[4] ?? 'DRIVING HOURS BY CATEGORY').toUpperCase()
+const TITLE = (process.argv[4] ?? 'DRIVING TIME BY CATEGORY').toUpperCase()
 
 async function main() {
   const chrome = await launch()

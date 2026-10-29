@@ -40,6 +40,8 @@ type Config struct {
 	StartWithWindows    bool    `json:"startWithWindows"`
 	Units               string  `json:"units"`
 	Theme               string  `json:"theme"`
+	DurationFormat      string  `json:"durationFormat"`
+	ShowDurationSeconds bool    `json:"showDurationSeconds"`
 
 	// Debug turns on verbose logging of the telemetry read path.
 	//
@@ -61,6 +63,8 @@ func Default() Config {
 		StartWithWindows:    true,
 		Units:               "metric",
 		Theme:               "system",
+		DurationFormat:      "current",
+		ShowDurationSeconds: true,
 		Debug:               true,
 	}
 }
@@ -100,6 +104,11 @@ func (c Config) Validate() error {
 	default:
 		return fmt.Errorf("config: theme %q must be system, light or dark", c.Theme)
 	}
+	switch c.DurationFormat {
+	case "current", "clock":
+	default:
+		return fmt.Errorf("config: durationFormat %q must be current or clock", c.DurationFormat)
+	}
 	return nil
 }
 
@@ -130,6 +139,11 @@ func (c *Config) Normalise() {
 	case "system", "light", "dark":
 	default:
 		c.Theme = "system"
+	}
+	switch c.DurationFormat {
+	case "current", "clock":
+	default:
+		c.DurationFormat = "current"
 	}
 }
 

@@ -701,7 +701,7 @@ func TestGetAndPutSettings(t *testing.T) {
 		t.Errorf("Port = %d", got.Port)
 	}
 
-	body := `{"pollIntervalSeconds":2.5,"captureEnabled":false,"theme":"dark"}`
+	body := `{"pollIntervalSeconds":2.5,"captureEnabled":false,"theme":"dark","durationFormat":"clock","showDurationSeconds":false}`
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, jsonRequest(http.MethodPut, "/api/settings", strings.NewReader(body)))
 	if rec.Code != http.StatusOK {
@@ -709,7 +709,7 @@ func TestGetAndPutSettings(t *testing.T) {
 	}
 
 	saved := cfg.Get()
-	if saved.PollIntervalSeconds != 2.5 || saved.Theme != "dark" || saved.CaptureEnabled {
+	if saved.PollIntervalSeconds != 2.5 || saved.Theme != "dark" || saved.CaptureEnabled || saved.DurationFormat != "clock" || saved.ShowDurationSeconds {
 		t.Errorf("stored config = %+v", saved)
 	}
 	// A partial body must leave unnamed fields alone rather than zeroing them.
@@ -754,6 +754,7 @@ func TestPutSettingsRejectsInvalid(t *testing.T) {
 		`{"pollIntervalSeconds":999}`,
 		`{"port":0}`,
 		`{"units":"furlongs"}`,
+		`{"durationFormat":"stopwatch"}`,
 		`{not json`,
 	} {
 		rec := httptest.NewRecorder()

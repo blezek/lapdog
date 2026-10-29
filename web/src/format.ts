@@ -45,6 +45,26 @@ export function hms(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 
+/** clockDuration renders elapsed time as D:HH:MM:SS, omitting zero leading parts. */
+export function clockDuration(seconds: number, showSeconds: boolean): string {
+  const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0
+  let total = Math.round(safe)
+  if (!showSeconds) total = Math.round(safe / 60) * 60
+  const d = Math.floor(total / 86400)
+  const h = Math.floor((total % 86400) / 3600)
+  const m = Math.floor((total % 3600) / 60)
+  const s = total % 60
+  const two = (value: number) => {
+    let digits = String(value)
+    if (digits.length < 2) digits = `0${digits}`
+    return digits
+  }
+  if (d > 0) return [two(d), two(h), two(m), ...(showSeconds ? [two(s)] : [])].join(':')
+  if (h > 0) return [two(h), two(m), ...(showSeconds ? [two(s)] : [])].join(':')
+  if (m > 0 || !showSeconds) return [two(m), ...(showSeconds ? [two(s)] : [])].join(':')
+  return two(s)
+}
+
 /**
  * lapTime renders a lap time as m:ss.mmm.
  *

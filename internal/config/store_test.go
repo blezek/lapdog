@@ -9,6 +9,13 @@ import (
 	"time"
 )
 
+func TestDefaultDurationDisplay(t *testing.T) {
+	c := Default()
+	if c.DurationFormat != "current" || !c.ShowDurationSeconds {
+		t.Fatalf("default duration display = %+v", c)
+	}
+}
+
 func TestStoreRoundTripsThroughDisk(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	s, err := NewStore(path)
@@ -22,6 +29,8 @@ func TestStoreRoundTripsThroughDisk(t *testing.T) {
 	next := Default()
 	next.PollIntervalSeconds = 2.5
 	next.Theme = "dark"
+	next.DurationFormat = "clock"
+	next.ShowDurationSeconds = false
 	if err := s.Set(next); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
@@ -32,8 +41,22 @@ func TestStoreRoundTripsThroughDisk(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s2.Get(); got.PollIntervalSeconds != 2.5 || got.Theme != "dark" {
+	if got := s2.Get(); got.PollIntervalSeconds != 2.5 || got.Theme != "dark" || got.DurationFormat != "clock" || got.ShowDurationSeconds {
 		t.Errorf("reopened store = %+v", got)
+	}
+}
+
+func TestLegacyConfigKeepsDurationDefaults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, []byte(`{"theme":"dark"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DurationFormat != "current" || !got.ShowDurationSeconds {
+		t.Fatalf("legacy duration defaults = %+v", got)
 	}
 }
 
