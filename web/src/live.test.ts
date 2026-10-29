@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 
 import { idleReasonFor, viewFor, staleAfterMs } from './live'
 import { LiveBands } from './pages/Live'
+import { DurationProvider } from './duration'
 import type { LiveResponse } from './api'
 
 const base: LiveResponse = {
@@ -45,6 +46,20 @@ describe('Live speed display', () => {
     expect(imperial).toContain('80 mph')
     expect(metric).not.toContain('m/s')
     expect(imperial).not.toContain('m/s')
+  })
+
+  it('uses the selected elapsed-total format without changing lap times', () => {
+    const timed = {
+      ...res,
+      status: { ...res.status, connectedSeconds: 90061, inCarSeconds: 65 },
+    }
+    const html = renderToStaticMarkup(createElement(DurationProvider, {
+      config: { durationFormat: 'clock', showDurationSeconds: true },
+      children: createElement(LiveBands, { res: timed, now, live: true, units: 'metric' }),
+    }))
+    expect(html).toContain('01:01:01:01')
+    expect(html).toContain('01:05')
+    expect(html).toContain('1:38.400')
   })
 })
 

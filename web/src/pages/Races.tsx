@@ -10,7 +10,8 @@ import {
 } from '@tanstack/react-table'
 
 import { api, type Session } from '../api'
-import { dayShort, hm, num, position } from '../format'
+import { dayShort, num, position } from '../format'
+import { useDuration } from '../duration'
 import { positionChange, raceStats } from '../race'
 import { useFilter } from '../useFilter'
 import { Filters } from '../components/Filters'
@@ -21,6 +22,7 @@ const col = createColumnHelper<Session>()
 
 /** Races is the result-oriented view of race sessions only. */
 export function Races() {
+  const duration = useDuration()
   const { filter } = useFilter()
   const raceFilter = useMemo(() => ({ ...filter, sessionType: ['Race'] }), [filter])
   const [sorting, setSorting] = useState<SortingState>([{ id: 'startedAt', desc: true }])
@@ -38,7 +40,7 @@ export function Races() {
     col.accessor('trackName', { header: 'Track', cell: (c) => c.getValue() ?? 'Unknown track' }),
     col.accessor('carName', { header: 'Car', cell: (c) => c.getValue() ?? 'Unknown car' }),
     col.accessor('drivingSeconds', {
-      header: 'Driving', cell: (c) => hm(c.getValue()), meta: { num: true },
+      header: 'Driving', cell: (c) => duration.seconds(c.getValue()), meta: { num: true },
     }),
     col.accessor('lapsCompleted', { header: 'Laps', meta: { num: true } }),
     col.accessor('incidents', { header: 'Inc pts', meta: { num: true } }),
@@ -51,7 +53,7 @@ export function Races() {
     col.accessor((race) => positionChange(race), {
       id: 'positionChange', header: 'Position change',
     }),
-  ], [])
+  ], [duration])
 
   const table = useReactTable({
     data: rows,
@@ -75,7 +77,7 @@ export function Races() {
         <>
           <div className="grid kpis race-kpis">
             <Stat label="Races" value={num(total)} note="total matched" />
-            <Stat label="Race time" value={hm(stats.drivingSeconds)} note={scope} />
+            <Stat label="Race time" value={duration.seconds(stats.drivingSeconds)} note={scope} />
             <Stat label="Wins" value={num(stats.wins)} note={`${num(stats.classified)} recorded finishes in ${scope}`} />
             <Stat label="Podiums" value={num(stats.podiums)} note={`${num(stats.classified)} recorded finishes in ${scope}`} />
             <Stat

@@ -17,6 +17,8 @@ const config: Config = {
   startWithWindows: true,
   units: 'metric',
   theme: 'system',
+  durationFormat: 'current',
+  showDurationSeconds: true,
   debug: true,
 }
 

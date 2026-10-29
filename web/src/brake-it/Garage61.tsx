@@ -3,8 +3,10 @@ import { useQueryClient } from '@tanstack/react-query'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { brakeApi, type GarageCatalog, type GarageJob, type GarageQueueItem, type GarageRefresh, type GarageTokenStatus, type MyDrivenCombination } from './api'
 import type { Scenario } from './types'
+import { useDuration } from '../duration'
 
 export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onReady: (scenarioId?: string) => Promise<void> }) {
+  const duration = useDuration()
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const location = useLocation()
@@ -239,7 +241,7 @@ export function Garage61({ scenarios, onReady }: { scenarios: Scenario[]; onRead
       {job.state !== 'idle' && <div className="brake-garage-progress" role="status"><strong>{job.message}</strong>{running && <><progress aria-label="Processing Garage61 telemetry" value={job.all ? job.index : undefined} max={job.all ? job.total : undefined} /><button type="button" disabled={busy} onClick={() => void cancel()}>Cancel processing</button></>}{!running && job.count > 0 && <span>{job.count} braking zone{job.count === 1 ? '' : 's'} saved locally.</span>}{(job.errors ?? []).length > 0 && <ul>{job.errors?.map((message) => <li key={message}>{message}</li>)}</ul>}</div>}
       <p className="brake-garage-note">Availability depends on the laps your Garage61 token can access. Processing may take several minutes when Garage61 limits requests. Prepared scenarios work offline.</p>
     </section>
-    {myCombos.length > 0 && <details className="brake-panel brake-garage-mine"><summary>My raced and practiced combinations ({myCombos.length})</summary><p>Pick one to fill the selectors above, then click Queue scenarios. Nothing is queued from your driving history automatically.</p><label>Find a combination<input aria-label="Find recorded combination" value={search} onChange={(event) => setSearch(event.target.value)} /></label><div className="brake-list">{visibleMyCombos.map((item) => <button key={`${item.carPlatformId}/${item.trackPlatformId}`} type="button" disabled={!catalog?.configured || busy} onClick={() => chooseMine(item)}><strong>{item.carName}</strong><span>{item.trackName}{item.trackConfig ? ` · ${item.trackConfig}` : ''} · {item.drivingHours.toFixed(1)} h</span></button>)}{visibleMyCombos.length === 0 && <p>No recorded combinations match.</p>}</div></details>}
+    {myCombos.length > 0 && <details className="brake-panel brake-garage-mine"><summary>My raced and practiced combinations ({myCombos.length})</summary><p>Pick one to fill the selectors above, then click Queue scenarios. Nothing is queued from your driving history automatically.</p><label>Find a combination<input aria-label="Find recorded combination" value={search} onChange={(event) => setSearch(event.target.value)} /></label><div className="brake-list">{visibleMyCombos.map((item) => <button key={`${item.carPlatformId}/${item.trackPlatformId}`} type="button" disabled={!catalog?.configured || busy} onClick={() => chooseMine(item)}><strong>{item.carName}</strong><span>{item.trackName}{item.trackConfig ? ` · ${item.trackConfig}` : ''} · {duration.hours(item.drivingHours)}</span></button>)}{visibleMyCombos.length === 0 && <p>No recorded combinations match.</p>}</div></details>}
     <section className="brake-panel">
       <div className="brake-panel-head"><div><h2>Processing queue</h2><span>Requested combinations start processing when Garage61 is connected</span></div></div>
       {!queue ? <p>Loading queue…</p> : queue.length === 0 ? <p>No combinations have been queued yet.</p> : <>

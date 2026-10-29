@@ -7,13 +7,13 @@ import {
   dateTime,
   day,
   delta,
-  hm,
   label,
   lapTime,
   num,
   position,
   volume,
 } from '../format'
+import { useDuration } from '../duration'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { Chart, baseGrid, axisStyle, valueAxisStyle, tooltipStyle } from '../components/Chart'
@@ -25,6 +25,7 @@ import { Filters } from '../components/Filters'
  * matched, and the right pane shows the selected session in full.
  */
 export function Sessions() {
+  const duration = useDuration()
   const { filter, state, toggleIn } = useFilter()
   const [selected, setSelected] = useState<number | null>(null)
 
@@ -137,7 +138,7 @@ export function Sessions() {
                   {day(s.startedAt)} · {label(s.sessionType, s.eventContext)}
                 </div>
                 <div className="what">
-                  {s.trackName ?? 'Unknown track'} · {hm(s.drivingSeconds)} driving
+                  {s.trackName ?? 'Unknown track'} · {duration.seconds(s.drivingSeconds)} driving
                   {s.lapsCompleted > 0 && ` · ${s.lapsCompleted} laps`}
                 </div>
               </button>
@@ -154,6 +155,7 @@ export function Sessions() {
 /* ------------------------------------------------------------------- detail */
 
 function Detail({ id }: { id: number }) {
+  const duration = useDuration()
   const theme = useTheme()
   const settings = useQuery({ queryKey: ['settings'], queryFn: api.settings })
   const units = settings.data?.units ?? 'metric'
@@ -199,9 +201,9 @@ function Detail({ id }: { id: number }) {
       {/* The three counters, side by side, because the difference between them is
           the point: connected includes the garage, in-car includes the pit box. */}
       <div className="grid kpis" style={{ gridTemplateColumns: 'repeat(3, 1fr)' }}>
-        <Stat label="Connected" value={hm(s.connectedSeconds)} />
-        <Stat label="In car" value={hm(s.inCarSeconds)} />
-        <Stat label="Driving" value={hm(s.drivingSeconds)} />
+        <Stat label="Connected" value={duration.seconds(s.connectedSeconds)} />
+        <Stat label="In car" value={duration.seconds(s.inCarSeconds)} />
+        <Stat label="Driving" value={duration.seconds(s.drivingSeconds)} />
       </div>
 
       <div className="grid" style={{ marginTop: 14 }}>

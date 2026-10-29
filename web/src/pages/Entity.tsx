@@ -12,7 +12,8 @@ import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 
 import { api, type Filter, type PaceRow } from '../api'
-import { delta, distance, hours, lapTime, monthLabel, num, pct } from '../format'
+import { delta, distance, lapTime, monthLabel, num, pct } from '../format'
+import { useDuration } from '../duration'
 import { useFilter } from '../useFilter'
 import { useTheme, type Theme } from '../theme'
 import { Card, Empty, ErrorNote, Loading, Stat } from '../components/ui'
@@ -29,6 +30,7 @@ import {
 } from '../entity'
 
 export function EntityPage({ dimension }: { dimension: Dimension }) {
+  const duration = useDuration()
   const { filter: urlFilter } = useFilter()
   const [params, setParams] = useSearchParams()
 
@@ -97,7 +99,7 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
               >
                 <div className="when">{e.name}</div>
                 <div className="what">
-                  {hours(e.drivingHours)} · {num(e.laps)} laps · {num(e.sessions)} sessions
+                  {duration.hours(e.drivingHours)} · {num(e.laps)} laps · {num(e.sessions)} sessions
                 </div>
               </button>
             ))
@@ -122,6 +124,7 @@ export function EntityPage({ dimension }: { dimension: Dimension }) {
 }
 
 function Review({ dimension, id }: { dimension: Dimension; id: number }) {
+  const duration = useDuration()
   const { filter: urlFilter } = useFilter()
   const filter = pageFilter(urlFilter, dimension)
   const theme = useTheme()
@@ -169,7 +172,7 @@ function Review({ dimension, id }: { dimension: Dimension; id: number }) {
       <div className="card" style={{ marginBottom: 14 }}>
         <strong style={{ fontSize: 15 }}>{s.name}</strong>
         <div style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 3 }}>
-          {hours(s.drivingHours)} driving · {num(s.sessions)} sessions ·{' '}
+          {duration.hours(s.drivingHours)} driving · {num(s.sessions)} sessions ·{' '}
           {num(s.laps)} laps · {distance(s.distanceKm, units)}
         </div>
       </div>

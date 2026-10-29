@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { api, type Config, type LiveFrame, type LiveResponse } from '../api'
-import { hms, lapTime, num, pct, speed, volume } from '../format'
+import { lapTime, num, pct, speed, volume } from '../format'
+import { useDuration } from '../duration'
 import { keepPrevious } from '../query'
 import { idleReasonFor, pollMs, viewFor } from '../live'
 import { Card, ErrorNote, Loading, Stat } from '../components/ui'
@@ -180,6 +181,7 @@ export function LiveBands({
   live: boolean
   units: Config['units']
 }) {
+  const duration = useDuration()
   const frame = res.frame as LiveFrame
   const ageSeconds = Math.max(0, Math.round((now - new Date(frame.at).getTime()) / 1000))
 
@@ -253,9 +255,9 @@ export function LiveBands({
       */}
       <Card title="This session">
         <div className="grid kpis">
-          <Stat label="Connected" value={hms(res.status.connectedSeconds)} />
-          <Stat label="In car" value={hms(res.status.inCarSeconds)} />
-          <Stat label="Driving" value={hms(res.status.drivingSeconds)} />
+          <Stat label="Connected" value={duration.seconds(res.status.connectedSeconds, 'hms')} />
+          <Stat label="In car" value={duration.seconds(res.status.inCarSeconds, 'hms')} />
+          <Stat label="Driving" value={duration.seconds(res.status.drivingSeconds, 'hms')} />
         </div>
         <p className="band-note">
           Accumulated for the session above; {num(res.status.sessionsRecorded)}{' '}

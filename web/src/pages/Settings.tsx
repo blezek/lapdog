@@ -396,6 +396,44 @@ export function Settings() {
 
         <div className="setting">
           <div className="setting-label">
+            Elapsed time display
+            <span className="setting-hint">
+              Applies to elapsed-time totals throughout the interface. Lap times,
+              timestamps, and exported data keep their existing format.
+            </span>
+          </div>
+          <div className="setting-control">
+            <select
+              value={c.durationFormat}
+              onChange={(e) => set({ durationFormat: e.target.value as Config['durationFormat'] })}
+              aria-label="Elapsed time display"
+            >
+              <option value="current">Current display</option>
+              <option value="clock">Days:hours:minutes:seconds</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="setting">
+          <div className="setting-label">
+            Show seconds
+            <span className="setting-hint">
+              In the days:hours:minutes format, hidden seconds round to the nearest
+              minute. Leading zero parts are omitted.
+            </span>
+          </div>
+          <div className="setting-control">
+            <Toggle
+              checked={c.showDurationSeconds}
+              onChange={(v) => set({ showDurationSeconds: v })}
+              label="Show seconds in elapsed time"
+              disabled={c.durationFormat !== 'clock'}
+            />
+          </div>
+        </div>
+
+        <div className="setting">
+          <div className="setting-label">
             Theme
             <span className="setting-hint">
               Dark mode uses its own colour steps chosen for the dark surface, not an
@@ -698,16 +736,19 @@ function Toggle({
   checked,
   onChange,
   label,
+  disabled = false,
 }: {
   checked: boolean
   onChange: (v: boolean) => void
   label: string
+  disabled?: boolean
 }) {
   return (
     <input
       type="checkbox"
       checked={checked}
       aria-label={label}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.checked)}
       style={{ width: 17, height: 17, accentColor: 'var(--accent)' }}
     />

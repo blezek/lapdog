@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  clockDuration,
   distance,
   labelForKey,
   hm,
@@ -12,6 +13,32 @@ import {
   startOfYear,
   volume,
 } from './format'
+
+describe('clockDuration', () => {
+  it('omits zero leading parts and pads the first shown time part', () => {
+    for (const [seconds, want] of [
+      [0, '00'],
+      [5, '05'],
+      [65, '01:05'],
+      [3600, '01:00:00'],
+      [90061, '01:01:01:01'],
+    ] as const) {
+      expect(clockDuration(seconds, true)).toBe(want)
+    }
+  })
+
+  it('rounds hidden seconds to the nearest minute, including a day rollover', () => {
+    for (const [seconds, want] of [
+      [29, '00'],
+      [30, '01'],
+      [89, '01'],
+      [90, '02'],
+      [86370, '01:00:00'],
+    ] as const) {
+      expect(clockDuration(seconds, false)).toBe(want)
+    }
+  })
+})
 
 describe('speed', () => {
   it('converts simulator metres per second to the selected display unit', () => {
