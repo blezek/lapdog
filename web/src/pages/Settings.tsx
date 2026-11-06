@@ -409,7 +409,7 @@ export function Settings() {
               aria-label="Elapsed time display"
             >
               <option value="current">Current display</option>
-              <option value="clock">Days:hours:minutes:seconds</option>
+              <option value="clock">Clock time (1d 02:03:04)</option>
             </select>
           </div>
         </div>
@@ -418,8 +418,8 @@ export function Settings() {
           <div className="setting-label">
             Show seconds
             <span className="setting-hint">
-              In the days:hours:minutes format, hidden seconds round to the nearest
-              minute. Leading zero parts are omitted.
+              In clock time, hidden seconds round to the nearest minute. Day
+              counts use a d suffix, as in 1d 02:03:04.
             </span>
           </div>
           <div className="setting-control">

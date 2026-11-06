@@ -21,7 +21,8 @@ describe('clockDuration', () => {
       [5, '05'],
       [65, '01:05'],
       [3600, '01:00:00'],
-      [90061, '01:01:01:01'],
+      [90061, '1d 01:01:01'],
+      [10 * 86400 + 90061, '11d 01:01:01'],
     ] as const) {
       expect(clockDuration(seconds, true)).toBe(want)
     }
@@ -33,7 +34,7 @@ describe('clockDuration', () => {
       [30, '01'],
       [89, '01'],
       [90, '02'],
-      [86370, '01:00:00'],
+      [86370, '1d 00:00'],
     ] as const) {
       expect(clockDuration(seconds, false)).toBe(want)
     }

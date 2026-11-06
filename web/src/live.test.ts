@@ -57,7 +57,7 @@ describe('Live speed display', () => {
       config: { durationFormat: 'clock', showDurationSeconds: true },
       children: createElement(LiveBands, { res: timed, now, live: true, units: 'metric' }),
     }))
-    expect(html).toContain('01:01:01:01')
+    expect(html).toContain('1d 01:01:01')
     expect(html).toContain('01:05')
     expect(html).toContain('1:38.400')
   })

@@ -45,7 +45,7 @@ export function hms(seconds: number): string {
   return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${ss}` : `${m}:${ss}`
 }
 
-/** clockDuration renders elapsed time as D:HH:MM:SS, omitting zero leading parts. */
+/** clockDuration labels days and omits zero leading time parts. */
 export function clockDuration(seconds: number, showSeconds: boolean): string {
   const safe = Number.isFinite(seconds) ? Math.max(0, seconds) : 0
   let total = Math.round(safe)
@@ -59,7 +59,7 @@ export function clockDuration(seconds: number, showSeconds: boolean): string {
     if (digits.length < 2) digits = `0${digits}`
     return digits
   }
-  if (d > 0) return [two(d), two(h), two(m), ...(showSeconds ? [two(s)] : [])].join(':')
+  if (d > 0) return `${d}d ${[two(h), two(m), ...(showSeconds ? [two(s)] : [])].join(':')}`
   if (h > 0) return [two(h), two(m), ...(showSeconds ? [two(s)] : [])].join(':')
   if (m > 0 || !showSeconds) return [two(m), ...(showSeconds ? [two(s)] : [])].join(':')
   return two(s)
