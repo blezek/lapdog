@@ -15,6 +15,6 @@ describe('elapsed-total preference', () => {
       <DurationProvider config={{ durationFormat: 'clock', showDurationSeconds: false }}>
         <Total />
       </DurationProvider>,
-    )).toContain('1:01:30')
+    )).toContain('1d 01:30')
   })
 })

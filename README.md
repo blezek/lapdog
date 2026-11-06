@@ -62,9 +62,9 @@ Three time counters describe each session:
   and replay playback are excluded.
 
 **Settings → Elapsed time display** can show these and other elapsed-time totals
-as days:hours:minutes:seconds, omitting leading zero parts. For example, 65
+as clock time, labeling displayed day counts with `d`. For example, 65
 seconds reads `01:05`, one hour reads `01:00:00`, and one day reads
-`01:00:00:00`. Seconds can be hidden; the remaining minutes round to the nearest
+`1d 00:00:00`. Seconds can be hidden; the remaining minutes round to the nearest
 minute. The current display remains the default. Lap times, clock timestamps,
 and exported values keep their existing formats.
 
